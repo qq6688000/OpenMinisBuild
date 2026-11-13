@@ -124,10 +124,59 @@ final class ChatOptimizer {
                 rewriteInFlight.insert(trimmed)
                 defer { rewriteInFlight.remove(trimmed) }
 
-                for try await delta in rewriteStreaming(trimmed, using: entry) {
-                    continuation.yield(delta)
+                // [T-optimize-fallback] Try the active entry first, then other
+                // available entries, so a model that hangs (SenseNova), returns
+                // nothing, or just echoes the input verbatim falls back to a
+                // model that actually rewrites. Bounded to 3 candidates; each
+                // gets a 15s request timeout in `optimizeStreamForCandidate`.
+                var candidates = [entry]
+                for e in availableEntries() where e.id != entry.id {
+                    if !candidates.contains(where: { $0.id == e.id }) {
+                        candidates.append(e)
+                        if candidates.count >= 3 { break }
+                    }
                 }
-                continuation.finish()
+                var lastError: Error? = nil
+                var didWriteCache = false
+                for (idx, cand) in candidates.enumerated() {
+                    do {
+                        var acc = ""
+                        let stream = try await optimizeStreamForCandidate(trimmed, using: cand)
+                        for try await chunk in stream {
+                            if case .text(let delta) = chunk {
+                                acc += delta
+                                continuation.yield(delta)
+                            }
+                        }
+                        let out = acc.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if out.isEmpty {
+                            lastError = ChatOptimizerError.emptyRewrite
+                            continue
+                        }
+                        // [T-optimize-echo] A candidate that echoes the input
+                        // back verbatim didn't rewrite anything. If another
+                        // candidate remains, fall through to it; only accept an
+                        // echo from the LAST candidate (better than nothing).
+                        let isLast = idx == candidates.count - 1
+                        if out == trimmed && !isLast {
+                            continue
+                        }
+                        if self.rewriteCache.count >= 64 {
+                            self.rewriteCache.removeAll(keepingCapacity: true)
+                        }
+                        self.rewriteCache[trimmed] = out
+                        didWriteCache = true
+                        break
+                    } catch {
+                        AppLogger(category: "ChatOptimizer").warning("[optimize] candidate \(cand.model.id) failed: \(error.localizedDescription)")
+                        lastError = error
+                    }
+                }
+                if didWriteCache {
+                    continuation.finish()
+                } else {
+                    continuation.finish(throwing: lastError ?? ChatOptimizerError.emptyRewrite)
+                }
             }
         }
     }
@@ -138,72 +187,37 @@ final class ChatOptimizer {
         rewriteCache.removeValue(forKey: trimmed)
     }
 
-    /// The actual rewrite request: streams from the provider, yielding each
-    /// delta as it arrives so the caller can render incrementally, while
-    /// accumulating the final text for the cache. Returns nothing on empty.
-    private func rewriteStreaming(
+    /// Build ONE candidate's rewrite stream. The provider is created here so a
+    /// failure (expired credential, network) throws to the caller, which then
+    /// falls back to the next candidate. A 15s request timeout is applied so a
+    /// hung model (SenseNova has been observed to block) fails fast instead of
+    /// freezing the composer for minutes. Returns the raw provider stream; the
+    /// caller consumes chunks, accumulates the final text and writes the cache.
+    private func optimizeStreamForCandidate(
         _ text: String,
         using entry: ModelEntry
-    ) -> AsyncThrowingStream<String, Error> {
+    ) async throws -> AsyncThrowingStream<LLMStreamChunk, Error> {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return AsyncThrowingStream { continuation in
-            let task = Task { @MainActor in
-                guard !trimmed.isEmpty else {
-                    continuation.yield(text)
-                    continuation.finish()
-                    return
-                }
-                let system = """
-                你是一个提示词优化助手。请把用户给出的原始指令改写成更清晰、更专业、\
-                更易于大模型理解的提示词。要求：
-                - 保留用户真实意图，不要改变任务本身；
-                - 补充必要的结构（如目标、约束、输出格式、语气）；
-                - 删除口语化废话；
-                - 保持简洁，尽量不超过原文的两倍长度；直接输出改写结果，不要解释、不要前后缀。
-                """
-                let messages: [LLMMessage] = [LLMMessage(role: .user, content: trimmed)]
-                do {
-                    let provider = try await LLMProviderFactory.makeProvider(
-                        for: entry, sessionId: OpenCodeChannel.oneOffSessionId())
-                    let stream = try await provider.streamMessage(
-                        messages: messages,
-                        systemPrompt: system,
-                        maxTokens: 384,
-                        temperature: 0.2
-                    )
-                    var acc = ""
-                    for try await chunk in stream {
-                        if case .text(let delta) = chunk {
-                            acc += delta
-                            continuation.yield(delta)
-                        }
-                    }
-                    let out = acc.trimmingCharacters(in: .whitespacesAndNewlines)
-                    // [T-optimize-empty] A provider that returns NOTHING (not the
-                    // trimmed original — nothing at all) must NOT be cached as the
-                    // original text: that made a repeated tap look like "didn't
-                    // optimize". Surface it instead so the user knows why, and
-                    // leave the cache clean so the next tap retries.
-                    guard !out.isEmpty else {
-                        continuation.finish(throwing: ChatOptimizerError.emptyRewrite)
-                        return
-                    }
-                    // Cache the final text so a repeated tap returns the exact
-                    // rewrite. Cap the cache so it cannot grow unbounded across
-                    // many distinct prompts.
-                    if self.rewriteCache.count >= 64 {
-                        self.rewriteCache.removeAll(keepingCapacity: true)
-                    }
-                    self.rewriteCache[trimmed] = out
-                    continuation.finish()
-                } catch {
-                    AppLogger(category: "ChatOptimizer").warning("[optimize] rewrite failed: \(error.localizedDescription)")
-                    continuation.finish(throwing: ChatOptimizerError.rewriteFailed(underlying: error))
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        let system = """
+        你是一个提示词优化助手。请把用户给出的原始指令改写成更清晰、更专业、\
+        更易于大模型理解的提示词。要求：
+        - 保留用户真实意图，不要改变任务本身；
+        - 补充必要的结构（如目标、约束、输出格式、语气）；
+        - 删除口语化废话；
+        - 保持简洁，尽量不超过原文的两倍长度；直接输出改写结果，不要解释、不要前后缀。
+        """
+        let messages: [LLMMessage] = [LLMMessage(role: .user, content: trimmed)]
+        let provider = try await LLMProviderFactory.makeProvider(
+            for: entry, sessionId: OpenCodeChannel.oneOffSessionId())
+        if let op = provider as? OpenAIProvider {
+            op.requestTimeout = 15
         }
+        return try await provider.streamMessage(
+            messages: messages,
+            systemPrompt: system,
+            maxTokens: 384,
+            temperature: 0.2
+        )
     }
 
     /// Back-compat: non-streaming version used by older call sites.

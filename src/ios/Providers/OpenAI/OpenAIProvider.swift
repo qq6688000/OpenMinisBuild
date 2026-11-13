@@ -202,6 +202,13 @@ final class OpenAIProvider: LLMProvider {
     /// User-set nucleus-sampling cutoff. nil = don't send the key.
     var overrideTopP: Double?
 
+    /// [T-optimize-timeout] Optional shorter idle timeout for THIS provider's
+    /// streaming requests (seconds). nil = use the session default (600s).
+    /// Set by the prompt optimizer so a slow/hung model fails fast and the
+    /// caller can fall back to another model. Only affects streaming requests
+    /// built after this is set.
+    var requestTimeout: TimeInterval?
+
     /// User-set body parameters merged into chat/responses requests.
     var overrideExtraBody: [String: String] = [:]
 
@@ -705,13 +712,21 @@ final class OpenAIProvider: LLMProvider {
     ) async throws -> AsyncThrowingStream<LLMStreamChunk, Error> {
         let useChat = usesChatCompletionsAPI
         let serialized = messages.map { useChat ? Self.openAIMessageDict($0) : Self.responsesAPIMessageDict($0) }
-        let request = try await buildRequest(
+        var request = try await buildRequest(
             systemPrompt: systemPrompt,
             messages: serialized,
             tools: nil,
             maxTokens: maxTokens,
             stream: true
         )
+        // [T-optimize-timeout] A caller (prompt rewrite) can impose a shorter
+        // idle timeout so a slow/hung provider (e.g. SenseNova returning
+        // nothing for a long time) fails fast and the optimizer falls back to
+        // another model instead of blocking the composer for minutes. nil =
+        // session default (600s).
+        if let t = requestTimeout {
+            request.timeoutInterval = t
+        }
 
         // [T-ios-stream-connection-reuse] Own session for this stream; see
         // `makeStreamingSession()`. Invalidated on every exit path below so the
