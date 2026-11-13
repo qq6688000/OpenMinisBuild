@@ -140,15 +140,23 @@ final class ChatOptimizer {
                 var didWriteCache = false
                 for (idx, cand) in candidates.enumerated() {
                     do {
-                        var acc = ""
+                        // [T-optimize-buffer-replay] Collect each candidate's
+                        // deltas FIRST and only replay the winner. Streaming
+                        // yielded every candidate's deltas live, so a model
+                        // that echoed the input (or an empty `content:""`
+                        // chunk) overwrote the composer with garbage/empty
+                        // text and the winning model's rewrite got CONCATENATED
+                        // onto the loser's — "对话框直接没有文字了". Empty deltas
+                        // are dropped here so the composer can never be set to
+                        // "" mid-rewrite.
+                        var deltas: [String] = []
                         let stream = try await optimizeStreamForCandidate(trimmed, using: cand)
                         for try await chunk in stream {
-                            if case .text(let delta) = chunk {
-                                acc += delta
-                                continuation.yield(delta)
+                            if case .text(let delta) = chunk, !delta.isEmpty {
+                                deltas.append(delta)
                             }
                         }
-                        let out = acc.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let out = deltas.joined().trimmingCharacters(in: .whitespacesAndNewlines)
                         if out.isEmpty {
                             lastError = ChatOptimizerError.emptyRewrite
                             continue
@@ -161,6 +169,9 @@ final class ChatOptimizer {
                         if out == trimmed && !isLast {
                             continue
                         }
+                        // Winner: replay its collected text in one burst (the
+                        // text is short; the burst is imperceptible) and cache.
+                        for d in deltas { continuation.yield(d) }
                         if self.rewriteCache.count >= 64 {
                             self.rewriteCache.removeAll(keepingCapacity: true)
                         }
