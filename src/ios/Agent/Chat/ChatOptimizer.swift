@@ -47,10 +47,13 @@ struct LatencyProbe: Sendable {
 /// Errors surfaced by `ChatOptimizer`.
 enum ChatOptimizerError: LocalizedError {
     case rewriteFailed(underlying: Error)
+    case emptyRewrite
     var errorDescription: String? {
         switch self {
         case .rewriteFailed(let underlying):
             return String(format: NSLocalizedString("提示词优化失败：%@", comment: "optimize rewrite failure"), underlying.localizedDescription)
+        case .emptyRewrite:
+            return NSLocalizedString("提示词优化未返回结果", comment: "optimize returned nothing")
         }
     }
 }
@@ -82,8 +85,9 @@ final class ChatOptimizer {
     /// parse) is unchanged — only the consumption is incremental.
     ///
     /// Cache hits emit the full cached text immediately. If a rewrite for the
-    /// exact same text is already in flight, an empty stream is returned (the
-    /// caller is already showing the streaming result — no duplicate request).
+    /// exact same text is already in flight, the caller WAITS for it to land in
+    /// the cache and replays the result — an empty return looked like "the
+    /// optimize button did nothing" on a quick second tap.
     func optimizeStreaming(
         _ text: String,
         using entry: ModelEntry
@@ -98,8 +102,22 @@ final class ChatOptimizer {
                     return
                 }
                 if rewriteInFlight.contains(trimmed) {
-                    // Already rewriting this exact text; caller sees the live
-                    // stream. Skip the duplicate network call entirely.
+                    // [T-optimize-dedup-wait] A rewrite for this exact text is
+                    // already in flight. Do NOT return empty — wait (bounded) for
+                    // it to land in the cache, then replay the finished rewrite.
+                    for _ in 0..<60 {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        if let c = rewriteCache[trimmed] {
+                            continuation.yield(c)
+                            break
+                        }
+                        if !rewriteInFlight.contains(trimmed) {
+                            // Finished but produced nothing (error path) — the
+                            // first caller already showed the failure toast.
+                            if let c = rewriteCache[trimmed] { continuation.yield(c) }
+                            break
+                        }
+                    }
                     continuation.finish()
                     return
                 }
@@ -162,13 +180,22 @@ final class ChatOptimizer {
                         }
                     }
                     let out = acc.trimmingCharacters(in: .whitespacesAndNewlines)
-                    // Cache the final text (not the trimmed fallback) so a
-                    // repeated tap returns the exact rewrite. Cap the cache so
-                    // it cannot grow unbounded across many distinct prompts.
+                    // [T-optimize-empty] A provider that returns NOTHING (not the
+                    // trimmed original — nothing at all) must NOT be cached as the
+                    // original text: that made a repeated tap look like "didn't
+                    // optimize". Surface it instead so the user knows why, and
+                    // leave the cache clean so the next tap retries.
+                    guard !out.isEmpty else {
+                        continuation.finish(throwing: ChatOptimizerError.emptyRewrite)
+                        return
+                    }
+                    // Cache the final text so a repeated tap returns the exact
+                    // rewrite. Cap the cache so it cannot grow unbounded across
+                    // many distinct prompts.
                     if self.rewriteCache.count >= 64 {
                         self.rewriteCache.removeAll(keepingCapacity: true)
                     }
-                    self.rewriteCache[trimmed] = out.isEmpty ? trimmed : out
+                    self.rewriteCache[trimmed] = out
                     continuation.finish()
                 } catch {
                     AppLogger(category: "ChatOptimizer").warning("[optimize] rewrite failed: \(error.localizedDescription)")
@@ -288,10 +315,16 @@ final class ChatOptimizer {
         do {
             let provider = try await LLMProviderFactory.makeProvider(for: entry, sessionId: effectiveSessionId)
             // Use the streaming path so we can capture time-to-first-token.
+            // [T-latency-min-output] Many OpenAI-compat services (SenseNova,
+            // DeepSeek V4, Kimi K3) reject a tiny max_tokens with HTTP 400 —
+            // GLM accepts 4, the others don't — so a WORKING model showed the
+            // red ✗. The probe is streaming and returns on the FIRST token, so
+            // a large max_tokens costs nothing in latency: we never wait for the
+            // full cap. 256 clears the min-output gate on every known service.
             let stream = try await provider.streamMessage(
                 messages: messages,
                 systemPrompt: nil,
-                maxTokens: 4,
+                maxTokens: 256,
                 temperature: 0
             )
             for try await chunk in stream {
