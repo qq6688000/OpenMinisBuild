@@ -58,6 +58,7 @@ static NSString *const AOJITEnabledDefaultsKey = @"aojitEnabled";
 #import "WeatherOffload.h"
 #import "VisionOffload.h"
 #import "OpenOffload.h"
+#import "NativeBuildOffload.h"
 #import "ClipboardOffload.h"
 #import "HealthKitOffload.h"
 #import "PhotosOffload.h"
@@ -1402,6 +1403,7 @@ static void handle_process_exit(struct task *task, int code) {
     weather_offload_register();
     vision_offload_register();
     open_offload_register();
+    native_build_offload_register();
     clipboard_offload_register();
     healthkit_offload_register();
     photos_offload_register();
