@@ -56,9 +56,6 @@
 #import "FileHandleSafeWrite.h"
 #import "ObjCExceptionCatcher.h"
 
-// Read-only native Apelind hello probe.
-#import "Views/Settings/ApelinNative/MinisApelinHelloTransport.h"
-
 // Reentrancy guard for -[NSTextContainer setSize:] to prevent TextKit1
 // fillLayoutHole storms (0x8BADF00D scene-update watchdog).
 #import "NSTextContainerSetSizeGuard.h"

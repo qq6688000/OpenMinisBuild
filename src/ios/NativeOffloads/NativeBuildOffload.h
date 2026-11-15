@@ -14,27 +14,11 @@ void native_build_offload_register(void);
 }
 #endif
 
-#ifdef __OBJC__
-#import <Foundation/Foundation.h>
-NS_ASSUME_NONNULL_BEGIN
-typedef NS_ENUM(NSInteger, NBLocalToolchainOperation) {
-    NBLocalToolchainOperationInspect = 0,
-    NBLocalToolchainOperationProvision = 1,
-    NBLocalToolchainOperationProbe = 2
-};
-@interface MinisNativeLocalToolchain : NSObject
-- (void)performOperation:(NBLocalToolchainOperation)operation
-              completion:(void (^)(NSDictionary *result))completion NS_SWIFT_NAME(perform(operation:completion:));
-@end
-// Structured UI adapter to the same NBPRun backend as minis-native-build.
-// Input is an already validated, immutable ObjC template source snapshot.
-@interface MinisNativeCLICompile : NSObject
-- (void)compileSource:(NSData *)source
-              output:(void (^)(NSData *chunk))output
-          completion:(void (^)(NSDictionary *result))completion NS_SWIFT_NAME(compile(source:output:completion:));
-- (void)cancel;
-@end
-NS_ASSUME_NONNULL_END
-#endif
+/* [T-remove-development-projects] The Swift shims that used to live here
+ * (`MinisNativeLocalToolchain`, `MinisNativeCLICompile`) only existed for the
+ * 开发项目 page; that page and its compile adapter (`NativeCLICompile.inc`) are
+ * gone, so exposing them to Swift again would be a dangling API. The
+ * `minis-native-build` handler below is unaffected — it is registered from
+ * iSHKernel and drives itself from the guest side. */
 
 #endif /* MINIS_NATIVE_BUILD_OFFLOAD_H */

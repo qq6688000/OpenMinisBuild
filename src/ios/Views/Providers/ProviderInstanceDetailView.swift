@@ -126,7 +126,15 @@ struct ProviderInstanceDetailView: View {
                 WorkBuddyLoginSheet(instanceId: instance.id, initialSite: instance.workBuddySite ?? .china) { success in
                     oauthRefreshTrigger.toggle()
                     if success {
-                        Task { await store.refreshModels(for: instance) }
+                        // [T-workbuddy-account-switch] Purge BEFORE fetching:
+                        // WorkBuddy re-login can be a different account under
+                        // the same instance id, and refreshModels keeps the old
+                        // entries on any fetch failure / keeps unlisted models
+                        // for the absence-grace window. Starting from an empty
+                        // list is what makes the new account's catalog the only
+                        // thing on screen. Scoped to WorkBuddy.
+                        store.removeAllModelEntries(for: instance.id, reason: "workBuddy-sign-in")
+                        Task { await store.refreshModels(for: instance, caller: "workBuddy-sign-in") }
                     }
                 }
             }
@@ -1310,7 +1318,17 @@ struct ProviderInstanceDetailView: View {
         case .xAI: XAIOAuthManager.shared.logout(instanceId: instance.id)
         case .kimiCode: KimiOAuthManager.shared.logout(instanceId: instance.id)
         case .githubCopilot: CopilotOAuthManager.shared.logout(instanceId: instance.id)
-        case .workBuddy: WorkBuddyOAuthManager.shared.logout(instanceId: instance.id)
+        case .workBuddy:
+            WorkBuddyOAuthManager.shared.logout(instanceId: instance.id)
+            // [T-workbuddy-account-switch] A signed-out provider must show no
+            // models: the entries belong to the credential that just left, and
+            // keeping them made the next account look like the previous one.
+            // Purge AFTER the token is gone so nothing can re-seed. The UI
+            // re-reads by itself: `oauthLogout`'s caller toggles
+            // `oauthRefreshTrigger`, and `save()` inside the purge publishes the
+            // new list; the Keychain delete also bumps `authRevision`, which the
+            // Providers row cache and QuotaStore both key on.
+            store.removeAllModelEntries(for: instance.id, reason: "workBuddy-sign-out")
         case .trae, .traeIntl: TraeOAuthManager.shared.logout(instanceId: instance.id)
         case .raccoon: RaccoonOAuthManager.shared.logout(instanceId: instance.id)
         case .unsupported: break

@@ -8,16 +8,183 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
 #include <dlfcn.h>
-#include <string.h>
+#endif
+
+#if defined(__APPLE__)
+/* csops is libSystem SPI (no public header); it is resolved at run time so the
+ * build needs no private header and a missing symbol degrades to valid = false
+ * instead of a link error. The CS_OPS_* selectors and status bits are spelled
+ * out below. */
+#include <sys/stat.h>
+#include <sandbox.h>
+#ifndef SANDBOX_FILTER_NONE
+#define SANDBOX_FILTER_NONE 0 /* private sandbox.h spelling */
+#endif
 #endif
 
 extern char **environ;
+
+/* CS_OPS_* selectors and status bits from Apple's cs_blobs.h. Spelled here so the
+ * file builds against the public SDK and on Linux (where they are inert). */
+#ifndef CS_OPS_STATUS
+#define CS_OPS_STATUS 0
+#endif
+#ifndef CS_OPS_ENTITLEMENTS_BLOB
+#define CS_OPS_ENTITLEMENTS_BLOB 7
+#endif
+#ifndef CS_VALID
+#define CS_VALID 0x00000001u
+#endif
+#ifndef CS_ADHOC
+#define CS_ADHOC 0x00000002u
+#endif
+#ifndef CS_HARD
+#define CS_HARD 0x00000100u
+#endif
+#ifndef CS_RESTRICT
+#define CS_RESTRICT 0x00000800u
+#endif
+#ifndef CS_ENFORCEMENT
+#define CS_ENFORCEMENT 0x00001000u
+#endif
+#ifndef CS_REQUIRE_LV
+#define CS_REQUIRE_LV 0x00002000u
+#endif
+#ifndef CS_INSTALLER
+#define CS_INSTALLER 0x00020000u
+#endif
+#ifndef CS_PLATFORM_BINARY
+#define CS_PLATFORM_BINARY 0x04000000u
+#endif
+#ifndef CS_FORCED_LV
+#define CS_FORCED_LV 0x08000000u
+#endif
+
+typedef struct {
+    const uint32_t bit;
+    const char *name;
+} NBPFlagName;
+
+static const NBPFlagName nbp_flag_names[] = {
+    {CS_VALID, "CS_VALID"},
+    {CS_ADHOC, "CS_ADHOC"},
+    {CS_HARD, "CS_HARD"},
+    {CS_RESTRICT, "CS_RESTRICT"},
+    {CS_ENFORCEMENT, "CS_ENFORCEMENT"},
+    {CS_REQUIRE_LV, "CS_REQUIRE_LV"},
+    {CS_INSTALLER, "CS_INSTALLER"},
+    {CS_PLATFORM_BINARY, "CS_PLATFORM_BINARY"},
+    {CS_FORCED_LV, "CS_FORCED_LV"},
+};
+
+size_t NBPSpawnFlagsDescribe(uint32_t flags, char *out, size_t capacity)
+{
+    size_t needed = 0;
+    if (capacity) out[0] = '\0';
+    for (size_t i = 0; i < sizeof(nbp_flag_names) / sizeof(nbp_flag_names[0]); ++i) {
+        if (!(flags & nbp_flag_names[i].bit)) continue;
+        size_t length = strlen(nbp_flag_names[i].name);
+        if (needed) {
+            if (out && needed + 1 < capacity) out[needed] = ',';
+            needed += 1;
+        }
+        if (out && needed + length < capacity)
+            memcpy(out + needed, nbp_flag_names[i].name, length);
+        needed += length;
+    }
+    if (out && capacity && needed < capacity) out[needed] = '\0';
+    else if (out && capacity) out[capacity - 1] = '\0';
+    return needed;
+}
+
+bool NBPSpawnFlagsDenyLaunchPolicy(uint32_t flags)
+{
+    /* proc_launch_check(): CS_HARD denies outright; CS_ENFORCEMENT/CS_REQUIRE_LV
+     * deny anything not platform; a missing CS_VALID means the kernel treats the
+     * signature as not having been validated by amfi. CS_FORCED_LV is the flag
+     * the kernel stamps on a process it holds to the platform trust cache. */
+    if (!(flags & CS_VALID)) return true;
+    if (flags & (CS_HARD | CS_ENFORCEMENT | CS_REQUIRE_LV | CS_FORCED_LV)) return true;
+    return false;
+}
+
+int NBPSpawnProbeSelf(const char *executable, NBPSpawnProbe *probe)
+{
+    (void)executable;
+    if (!probe) return EINVAL;
+    memset(probe, 0, sizeof(*probe));
+    probe->euid = geteuid();
+    probe->egid = getegid();
+    probe->pid = getpid();
+    probe->parent_pid = getppid();
+    probe->entitlement_blob_size = -1;
+#if defined(__APPLE__)
+    typedef int (*CSOps)(pid_t, unsigned, void *, size_t);
+    void *symbol = dlsym(RTLD_DEFAULT, "csops");
+    if (!symbol) { probe->error_number = ENOSYS; return 0; }
+    CSOps csops_fn = NULL;
+    _Static_assert(sizeof(csops_fn) == sizeof(symbol), "function pointer size");
+    memcpy(&csops_fn, &symbol, sizeof(csops_fn));
+    uint32_t flags = 0;
+    if (csops_fn(probe->pid, CS_OPS_STATUS, &flags, sizeof(flags)) == 0) {
+        probe->valid = true;
+        probe->cs_flags = flags;
+    } else {
+        probe->error_number = errno;
+    }
+    /* Entitlements blob: read a 4-byte superblock header only (magic + length).
+     * The dictionary itself is never copied out here. */
+    {
+        struct { uint32_t magic; uint32_t length; } header = {0, 0};
+        if (csops_fn(probe->pid, CS_OPS_ENTITLEMENTS_BLOB, &header,
+                     sizeof(header)) == 0 && header.magic == 0xfade7171) {
+            probe->entitlements_present = true;
+            probe->entitlement_blob_size = (int)header.length;
+        }
+    }
+    /* proc_pidpath lives in libproc; the SDK keeps libproc.h out of usr/include,
+     * so it is resolved the same way as csops. */
+    typedef int (*ProcPIDPath)(int, void *, uint32_t);
+    void *path_symbol = dlsym(RTLD_DEFAULT, "proc_pidpath");
+    int length = 0;
+    if (path_symbol) {
+        ProcPIDPath path_fn = NULL;
+        memcpy(&path_fn, &path_symbol, sizeof(path_fn));
+        length = path_fn(probe->parent_pid, probe->parent_path,
+                         (uint32_t)sizeof(probe->parent_path));
+    }
+    if (length > 0) {
+        probe->parent_path_valid = true;
+        const char *slash = strrchr(probe->parent_path, '/');
+        if (slash && slash[1]) memmove(probe->parent_path, slash + 1, strlen(slash + 1) + 1);
+    } else {
+        probe->parent_path[0] = '\0';
+    }
+    /* Seatbelt asks the same question access(X_OK) does; the kernel asks amfi.
+     * An allow here with EPERM from the kernel is a launch-policy denial. */
+    probe->sandbox_checked = false;
+    if (executable) {
+        typedef int (*SandboxCheck)(pid_t, const char *, int, ...);
+        void *sandbox_symbol = dlsym(RTLD_DEFAULT, "sandbox_check");
+        if (sandbox_symbol) {
+            SandboxCheck check_fn = NULL;
+            memcpy(&check_fn, &sandbox_symbol, sizeof(check_fn));
+            probe->sandbox_checked = true;
+            probe->sandbox_allows_exec =
+                check_fn(probe->pid, "file-write-execute",
+                         SANDBOX_FILTER_NONE, executable) == 0;
+        }
+    }
+#endif
+    return 0;
+}
 
 static int add_chdir(posix_spawn_file_actions_t *actions, const char *cwd)
 {

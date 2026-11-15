@@ -69,6 +69,51 @@ typedef struct {
  */
 NBPResult NBPRun(const NBPOptions *options);
 
+/* Read-only launch-policy fingerprint of the calling process.
+ *
+ * The kernel caches the result of proc_launch_check() in P_LFLAG_NOEXEC for the
+ * life of the process, so the first failed spawn poisons every later check. Call
+ * this before the first spawn: while no attempt has failed it reports the
+ * process's code-signing flags (csops CS_OPS_STATUS), its security-token
+ * identity, whether the sandbox would deny exec of a path, and whether access()
+ * and stat() agree with that. It never spawns, never mutates state, and makes no
+ * trust verdict: it only separates "the installation's launch policy denies this
+ * process" from "Seatbelt denies this path" from "AMFI denies this file".
+ *
+ * On non-Apple platforms every field is zero except valid = false.
+ */
+typedef struct {
+    bool valid;               /* csops(CS_OPS_STATUS) succeeded */
+    int error_number;         /* errno from csops when !valid */
+    uint32_t cs_flags;        /* raw current-process status flags */
+    bool audit_token_valid;   /* csops_audittoken(CS_OPS_STATUS) succeeded */
+    uid_t euid;
+    gid_t egid;
+    pid_t pid;
+    pid_t parent_pid;
+    bool parent_path_valid;   /* proc_pidpath(parent) returned a path */
+    char parent_path[256];    /* basename of the parent executable */
+    bool entitlements_present;/* CS_OPS_ENTITLEMENTS_BLOB returned a blob */
+    int entitlement_blob_size;
+    bool sandbox_checked;     /* sandbox_check() was available and asked */
+    bool sandbox_allows_exec; /* Seatbelt allows exec of `executable` */
+} NBPSpawnProbe;
+
+/* Fills *probe for the calling process. `executable` (may be NULL) is the path
+ * whose exec the caller is about to attempt; it is only read with access() and
+ * stat(), never opened for execution. Returns 0, or an errno for bad arguments. */
+int NBPSpawnProbeSelf(const char *executable, NBPSpawnProbe *probe);
+
+/* Shell-free decode of cs_flags into the names that matter for launch policy:
+ * "CS_VALID,CS_ADHOC" or "CS_HARD,CS_PLATFORM_BINARY". Writes at most
+ * capacity bytes, always NUL terminated. Returns the number of bytes needed. */
+size_t NBPSpawnFlagsDescribe(uint32_t flags, char *out, size_t capacity);
+
+/* True when the flags describe a process the kernel will refuse to exec from:
+ * CS_HARD, CS_ENFORCEMENT, CS_REQUIRE_LV or CS_FORCED_LV set, or CS_VALID
+ * absent (amfi treated as out of its way for nobody). */
+bool NBPSpawnFlagsDenyLaunchPolicy(uint32_t flags);
+
 #ifdef __cplusplus
 }
 #endif

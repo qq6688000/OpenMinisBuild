@@ -29,11 +29,11 @@ jobs:
           xcodebuild -version
           test "$(xcrun --sdk iphoneos --show-sdk-version)" = "26.2"
 
-      - name: Validate Apelin Swift model and templates
-        run: sh Validation/Apelin/run-swift.sh
-
-      - name: Validate Apelin native bridge and Swift logic
-        run: sh Validation/ApelinNative/run-apple.sh
+      - name: Static checks (WorkBuddy account switch, dev-projects removal)
+        run: |
+          python3 Validation/Accounts/check-workbuddy-account-switch.py
+          python3 tests/workbuddy_account_switch.py
+          python3 Validation/Removed/check-development-projects-removed.py
 
       - name: Install build tools
         run: |
@@ -120,57 +120,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
             build
 
-      - name: Stage on-device toolchain resources
-        run: |
-          set -euo pipefail
-          OUT=src/ios/ToolchainResources; mkdir -p "$OUT"
-          BASE="https://github.com/qq6688000/OpenMinisBuild/releases/download/native-toolchain-v1"
-          fetch() { # prefix, suffix list, expected sha, output
-            prefix=$1; list=$2; want=$3; out=$4
-            rm -f "$out"
-            for suffix in $list; do
-              # Verify each chunk landed whole: a truncated download silently
-              # corrupts the concatenation (seen while testing this pipeline).
-              ok=0
-              for attempt in 1 2 3 4 5; do
-                rm -f "/tmp/c.$suffix"
-                curl -fL --retry 3 -m 300 -o "/tmp/c.$suffix" "$BASE/$prefix$suffix" || true
-                sz=$(stat -f%z "/tmp/c.$suffix" 2>/dev/null || echo 0)
-                if [ "$sz" -gt 0 ] && { [ "$sz" -eq 4000000 ] || [ "$suffix" = "$last" ]; }; then
-                  ok=1; break
-                fi
-                echo "   retry $suffix (got $sz bytes)"; sleep 3
-              done
-              [ "$ok" -eq 1 ] || { echo "!! chunk $prefix$suffix failed to download" >&2; exit 1; }
-              cat "/tmp/c.$suffix" >> "$out"
-            done
-            got=$(shasum -a 256 "$out" | cut -d' ' -f1)
-            echo "   $out sha256=$got"
-            if [ "$got" != "$want" ]; then
-              echo "!! checksum mismatch for $out: want $want" >&2; exit 1
-            fi
-          }
-          last=aah
-          fetch sdk- "aaa aab aac aad aae aaf aag aah" \
-            ff94153313bb60e740b22edb548abe2e193dc84c78fc76f938f5222235f46aeb "$OUT/MinSDK.tgz"
-          last=aak
-          fetch tk-  "aaa aab aac aad aae aaf aag aah aai aaj aak" \
-            8eda57419100a136ddba544410eb7dd7329e03e5abbcbbc060bcfdd1c0bdd835 "$OUT/MinToolchain.tgz"
-          ls -lh "$OUT"
-
-      - name: Verify provision extraction (real archives and Foundation)
-        run: |
-          set -euo pipefail
-          clang -Wall -Wextra -Werror -Isrc/ios/NativeOffloads tests/native_signature_layout.c src/ios/NativeOffloads/NativeBuildMachOCore.c -o /tmp/native-signature-layout
-          /tmp/native-signature-layout
-          python3 tests/provision_extract.py src/ios/ToolchainResources/MinToolchain.tgz src/ios/ToolchainResources/MinSDK.tgz
-          clang -fobjc-arc -framework Foundation -larchive -Isrc/ios/NativeOffloads tests/provision_foundation.m src/ios/NativeOffloads/NativeBuildProvision.m src/ios/NativeOffloads/NativeBuildToolchain.m src/ios/NativeOffloads/NativeBuildProcess.c src/ios/NativeOffloads/NativeBuildMachOCore.c -o /tmp/provision-foundation
-          FIXTURE=$(mktemp -d)
-          /tmp/provision-foundation src/ios/ToolchainResources/MinToolchain.tgz Toolchain "$FIXTURE/Minis.app/Toolchain"
-          /tmp/provision-foundation src/ios/ToolchainResources/MinSDK.tgz iPhoneOS16.5.sdk "$FIXTURE/cache/iPhoneOS16.5.sdk"
-          [ ! -d "$FIXTURE/Minis.app/iPhoneOS16.5.sdk" ]
-          rm -rf "$FIXTURE"
-
       - name: Package IPA
         run: |
           set -euo pipefail
@@ -182,14 +131,6 @@ jobs:
           cp -R "$APP" Payload/
           /usr/libexec/PlistBuddy -c "Add :MinisBuildRevision string $GITHUB_SHA" Payload/Minis.app/Info.plist
           /usr/libexec/PlistBuddy -c "Add :MinisBuildRun string $GITHUB_RUN_ID" Payload/Minis.app/Info.plist
-          # Comparison variant: tools in bundle, SDK archive only.
-          mkdir -p Payload/Minis.app/ToolchainResources
-          rm -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz
-          tar xzf src/ios/ToolchainResources/MinToolchain.tgz -C Payload/Minis.app
-          cp src/ios/ToolchainResources/MinSDK.tgz Payload/Minis.app/ToolchainResources/
-          [ -f Payload/Minis.app/Toolchain/bin/clang ]
-          [ ! -d Payload/Minis.app/iPhoneOS16.5.sdk ]
-          python3 tests/sign_bundle_tools.py Payload/Minis.app/Toolchain
           # Sign EVERY Mach-O in the bundle, not just the app binary.
           # Only signing Minis.app/Minis left the three .appex binaries unsigned;
           # iOS then refuses to load the extension and the app crashes as soon as
@@ -221,8 +162,8 @@ jobs:
               echo "    UNSIGNED $(basename "$M")" >&2; fail=1; fi
           done
           [ "$fail" -eq 0 ] || { echo "!! unsigned binaries in bundle" >&2; exit 1; }
-          [ -f Payload/Minis.app/ToolchainResources/MinSDK.tgz ]
-          [ ! -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz ]
+          # The development-projects toolchain must not reappear in the IPA.
+          [ ! -e Payload/Minis.app/ToolchainResources ]
           [ ! -d Payload/Minis.app/Toolchain/sdk ]
           zip -qry Minis-unsigned.ipa Payload
           ls -lh Minis-unsigned.ipa

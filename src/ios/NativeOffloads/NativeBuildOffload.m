@@ -270,8 +270,6 @@ static int nb_handler(int argc,char **argv,int stdin_fd,int stdout_fd,int stderr
     }
     return status;
 }
-#include "NativeCLICompile.inc"
-
 void native_build_offload_register(void) {
     int err=native_offload_add_handler("minis-native-build",nb_handler);
     if(!err)noff_ensure_guest_stub("/usr/local/bin/minis-native-build");

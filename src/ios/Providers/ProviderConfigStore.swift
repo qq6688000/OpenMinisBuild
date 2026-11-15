@@ -6,6 +6,19 @@ import os.log
 
 private let logger = AppLogger(category: "ProviderConfigStore")
 
+/// [T-workbuddy-account-switch] Holder for the per-instance model slice cache
+/// (see `ProviderConfigStore.entriesByInstance()`).
+///
+/// File-scope and file-private rather than a stored property of the store: the
+/// `@Published config` observer that must invalidate it is declared ABOVE the
+/// store's stored properties, and Swift does not let an observer touch a
+/// property declared later in the type (the "used before initialized" check).
+/// A single-slot holder has no identity worth preserving and is dropped
+/// whenever `config` changes, so nothing outlives the config it describes.
+private enum ModelEntriesByInstanceCache {
+    static var cached: (revision: UInt, value: [String: [ModelEntry]])?
+}
+
 // MARK: - Persisted Config
 
 /// One soft-delete record. Persisted in `ProviderConfig` so the deletion
@@ -189,7 +202,8 @@ final class ProviderConfigStore: ObservableObject {
 
     @Published private(set) var config: ProviderConfig {
         // [T-composer-typing-lag] Any change to the config drops the entry index.
-        didSet { entryIndex = nil }
+        // [T-workbuddy-account-switch] ... and the per-instance slice cache.
+        didSet { entryIndex = nil; ModelEntriesByInstanceCache.cached = nil }
     }
 
     /// [T-composer-typing-lag] Positions in `config.modelEntries` by each
@@ -206,6 +220,27 @@ final class ProviderConfigStore: ObservableObject {
         var byColonKey: [String: Int] = [:]
     }
     private var entryIndex: EntryIndex?
+
+    /// [T-workbuddy-account-switch] Per-instance model-list cache.
+    ///
+    /// The model pickers (`shadowVoiceProviders`, `hasVoiceModels`, the
+    /// Providers rows) re-filter `config.modelEntries` by
+    /// `providerInstanceId` on every evaluation. That is cheap until an account
+    /// switch deletes several hundred rows: the UI then re-scans a list that
+    /// just changed shape, from inside a view body. This memoises the
+    /// per-instance slice for the current `configRevision`, so a purge costs
+    /// one rebuild and not one per observer — the memory/storage complaint was
+    /// about work being redone, not about a big persistent cache.
+    private func entriesByInstance() -> [String: [ModelEntry]] {
+        if let c = ModelEntriesByInstanceCache.cached, c.revision == configRevision { return c.value }
+        var out: [String: [ModelEntry]] = [:]
+        out.reserveCapacity(config.instances.count)
+        for e in config.modelEntries {
+            out[e.providerInstanceId, default: []].append(e)
+        }
+        ModelEntriesByInstanceCache.cached = (configRevision, out)
+        return out
+    }
 
     private func currentEntryIndex() -> EntryIndex {
         if let entryIndex { return entryIndex }
@@ -2111,6 +2146,66 @@ final class ProviderConfigStore: ObservableObject {
                              removed: expiredAbsent.count, unlisted: keptAbsent.count)
     }
 
+    // MARK: - Account Switch Purge
+
+    /// [T-workbuddy-account-switch] Drop EVERY model entry belonging to one
+    /// instance, without touching anything else.
+    ///
+    /// Why this exists next to `replaceEntries`: an account switch re-authenticates
+    /// the SAME `providerInstanceId` as a different user. `refreshModels` is
+    /// additive by design — it keeps custom entries, keeps catalog entries the
+    /// vendor stopped listing (7-day absence grace), and on a failed fetch keeps
+    /// the old list entirely ("Nothing was replaced"). All three behaviours are
+    /// right for a normal refresh and all three are wrong here: they leave the
+    /// previous account's models in the picker, which is the reported symptom
+    /// ("switched WorkBuddy account, models are wrong").
+    ///
+    /// So the switch path calls this BEFORE `refreshModels`: the list the refresh
+    /// starts from is empty, and whatever the new account's fetch returns (or
+    /// fails to return) can no longer be mixed with the old account's rows.
+    ///
+    /// Scope: only entries where `providerInstanceId == instanceId`. Groups and
+    /// the agent-loop list lose the dangling member ids (with the same per-member
+    /// removal stamps `updateGroup` writes, so a peer's union merge cannot
+    /// resurrect them), and the caches keyed by that instance are dropped. Other
+    /// instances, their entries and their caches are untouched.
+    /// - Returns: how many entries were removed.
+    @discardableResult
+    func removeAllModelEntries(for instanceId: String, reason: String = "account-switch") -> Int {
+        let doomedIds = Set(config.modelEntries.filter { $0.providerInstanceId == instanceId }.map(\.id))
+        if !doomedIds.isEmpty {
+            config.modelEntries.removeAll { $0.providerInstanceId == instanceId }
+            // Groups: drop the member ids and stamp the per-member removal so
+            // the inbound union-merge on peers cannot re-add them.
+            let groupsBeforePrune = config.modelGroups   // [T-group-order-log]
+            let now = Date()
+            for i in config.modelGroups.indices {
+                let hit = config.modelGroups[i].memberEntryIds.filter { doomedIds.contains($0) }
+                guard !hit.isEmpty else { continue }
+                config.modelGroups[i].memberEntryIds.removeAll { doomedIds.contains($0) }
+                for e in hit {
+                    config.modelGroups[i].removedMembers[e] = now
+                    config.modelGroups[i].addedMembers[e] = nil
+                }
+            }
+            GroupOrderLog.noteAll(reason: "entry-prune", before: groupsBeforePrune, after: config.modelGroups,
+                                  detail: "cause=purge-instance instance=\(instanceId.prefix(8)) reason=\(reason)")
+            config.agentLoopModelEntryIds.removeAll { doomedIds.contains($0) }
+            Self.recordTombstone(in: &config.deletedModelEntries, ids: Array(doomedIds))
+            save()
+        }
+        // [T-workbuddy-account-switch] Caches keyed by this instance.
+        // `ProviderCredentialCache` is the L2 "has any credential" answer; the
+        // quota store holds this instance's account subject/pools and would
+        // otherwise keep showing the OLD account's usage under the same id.
+        // Both are keyed by instance id, so they are dropped unconditionally —
+        // also on a second purge whose entries are already gone.
+        ProviderCredentialCache.shared.invalidate(instanceId)
+        QuotaStore.shared.forgetInstance(instanceId)
+        logger.info("[ModelList][AccountSwitch] purge instance=\(instanceId.prefix(8)) reason=\(reason) removed=\(doomedIds.count) — credential + quota caches dropped")
+        return doomedIds.count
+    }
+
     // MARK: - Model Groups
 
     var modelGroups: [ModelGroup] { config.modelGroups }
@@ -2906,11 +3001,18 @@ final class ProviderConfigStore: ObservableObject {
             let bucket = key.isEmpty ? "id:\(inst.id)" : key
             byKey[bucket, default: []].append(inst)
         }
+        // [T-workbuddy-account-switch] One pass over modelEntries for the whole
+        // fold instead of one full scan per instance inside a view body. Index
+        // only what the fold asks for (userModifiedAt, rep id) — the entries
+        // themselves still come from the one shared slice cache below, so this
+        // cannot go stale or leak memory between calls.
+        let modifiedByInstance = Dictionary(
+            grouping: config.modelEntries.filter { $0.userModifiedAt != nil },
+            by: \.providerInstanceId
+        ).mapValues { $0.compactMap(\.userModifiedAt).max() ?? .distantPast }
+        let byInstance = entriesByInstance()
         func mostRecentModified(_ instanceId: String) -> Date {
-            config.modelEntries
-                .filter { $0.providerInstanceId == instanceId }
-                .compactMap { $0.userModifiedAt }
-                .max() ?? .distantPast
+            modifiedByInstance[instanceId] ?? .distantPast
         }
         var result: [ShadowVoiceProvider] = []
         for (_, insts) in byKey {
@@ -2922,7 +3024,7 @@ final class ProviderConfigStore: ObservableObject {
                 if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
                 return a.id < b.id
             }.first!
-            let entries = config.modelEntries.filter { $0.providerInstanceId == rep.id }
+            let entries = byInstance[rep.id] ?? []
             let inputs = entries.filter { $0.baseModel.isVoiceInputCandidate }
             let outputs = entries.filter { $0.baseModel.isVoiceOutputCandidate }
             result.append(ShadowVoiceProvider(
@@ -3319,6 +3421,15 @@ final class ProviderConfigStore: ObservableObject {
             // 也是硬编码 workbuddy-models.json，从不请求服务器）。因此这里
             // 只校验 token 有效性（失效则抛错引导重新登录），模型列表直接
             // 用内置的 15 个，不再发起 HTTP /models 请求（否则 404 + 黄条）。
+            //
+            // [T-workbuddy-account-switch] 这 15 个是随版本写死的，不随账号
+            // 变化——所以换账号后"模型还是旧的"不可能由这一次 fetch 解释。
+            // 剩下真正会残留的是：旧账号加过的自定义条目、模型组/会话绑定、
+            // 以及配额与凭据缓存；它们统一由切换点上的
+            // `removeAllModelEntries` 清掉。
+            // 这里不再新增异常：没有凭据时原有的 token 校验本来就会抛错，
+            // 刷新失败即保留现有条目（"Nothing was replaced"），不会把内置
+            // 目录重新灌进一个已登出的实例。
             _ = try await WorkBuddyOAuthManager.shared.validAccessToken(instanceId: instance.id)
             return WorkBuddyModelsAPI.allModels
         case (.trae, _), (.traeIntl, _):

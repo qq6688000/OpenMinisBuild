@@ -32,6 +32,33 @@ NSDictionary *NBExtractArchive(NSString *archivePath, NSString *destDir,
                                       stage, path, r.error_number, detail] };
 }
 
+NSMutableDictionary *NBPLaunchPolicyDictionary(void) {
+    NBPSpawnProbe probe;
+    int rc = NBPSpawnProbeSelf(NULL, &probe);
+    char decoded[192];
+    NBPSpawnFlagsDescribe(probe.cs_flags, decoded, sizeof(decoded));
+    NSString *verdict = @"unknown";
+    if (probe.valid) {
+        verdict = NBPSpawnFlagsDenyLaunchPolicy(probe.cs_flags) ? @"install_launch_policy_denies"
+                                                               : @"launch_policy_allows";
+    }
+    return [@{@"rc":@(rc), @"probe_valid":@(probe.valid), @"probe_errno":@(probe.error_number),
+        @"cs_flags":@(probe.cs_flags), @"cs_flags_decoded":@(decoded),
+        @"denies_exec":probe.valid ? @(NBPSpawnFlagsDenyLaunchPolicy(probe.cs_flags)) : (id)NSNull.null,
+        @"verdict":verdict,
+        @"euid":@(probe.euid), @"egid":@(probe.egid), @"pid":@(probe.pid),
+        @"parent_pid":@(probe.parent_pid),
+        @"parent_executable":probe.parent_path_valid ? @(probe.parent_path) : @"unknown",
+        @"entitlements_present":@(probe.entitlements_present),
+        @"entitlement_blob_size":@(probe.entitlement_blob_size),
+        @"topic":@"cs_flags describe this installation's code signature, not the toolchain. "
+                  "CS_HARD / CS_ENFORCEMENT / CS_REQUIRE_LV / CS_FORCED_LV or a missing CS_VALID "
+                  "make the kernel refuse every exec from this process (proc_launch_check), "
+                  "including access(X_OK) on its own executable. That is an installation shape "
+                  "problem: reinstall/resign the app in TrollStore, or ship without a platform blob."}
+     mutableCopy];
+}
+
 // Shared structured entry point; callers must dispatch off the main thread.
 NSDictionary *NBProvisionBundledToolchain(void) {
     @synchronized (NSFileManager.defaultManager) {
@@ -63,6 +90,9 @@ NSDictionary *NBProvisionBundledToolchain(void) {
         /* [T-native-build] Files existing is not the question; whether this
          * installation may execute them is. Run clang once here so a single
          * provision answers it instead of costing a separate probe round. */
+        /* Before the first spawn: once one is denied the kernel caches the
+         * verdict in P_LFLAG_NOEXEC for the rest of the process's life. */
+        NSDictionary *launchPolicy=NBPLaunchPolicyDictionary();
         NSMutableDictionary *execProbe=[NSMutableDictionary dictionary];
         for(NSString *label in @[@"clang",@"ld",@"ldid"]){
             NSString *exe=[toolRoot stringByAppendingPathComponent:[@"bin/" stringByAppendingString:label]];
@@ -97,7 +127,12 @@ NSDictionary *NBProvisionBundledToolchain(void) {
         return @{@"provision":@YES, @"ok":@(extracted && filesReady),
             @"extraction_ok":@(extracted), @"files_ready":@(filesReady),
             @"execution_verified":@NO,
-            @"execution_state":[execProbe[@"clang_run"][@"errno"] intValue] == EPERM ? @"denied" : @"requires_full_probe",
+            @"execution_state":^NSString*{
+                int err=[execProbe[@"clang_run"][@"errno"] intValue];
+                if(err!=EPERM) return @"requires_full_probe";
+                return [launchPolicy[@"denies_exec"] boolValue] ? @"denied_launch_policy" : @"denied";
+            }(),
+            @"launch_policy":launchPolicy,
             @"runtime":NBRuntimeDiagnostics(),
             @"tool_source":bundleTools ? @"bundle" : @"cache_fallback",
             @"sdk_source":@"cache", @"tool_root":toolRoot,@"sdk_dir":sdkDir,@"path_diagnostics":NBToolchainDescribe(toolRoot)[@"paths"],

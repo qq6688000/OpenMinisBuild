@@ -489,6 +489,43 @@ final class QuotaStore: ObservableObject {
         }
     }
 
+    /// [T-workbuddy-account-switch] Forget everything this instance's quota was
+    /// attributed to, without touching other instances.
+    ///
+    /// A re-login can mean a different UPSTREAM ACCOUNT under the same
+    /// `providerInstanceId`. The subject id is `<vendor>:<hash of the key>`, so
+    /// the new sign-in resolves to a different subject on its own — but the old
+    /// subject, its pools and its "no credential" note would linger, and
+    /// `display(for:)` reads `instanceSubjects[id]` until the next refresh
+    /// overwrites it. Dropping the subject leaves the section in `.loading`
+    /// (an honest "we do not know yet") instead of showing the old account's
+    /// remaining usage. The next `refresh` re-derives it from the new key.
+    ///
+    /// `lastViewed` is intentionally kept: it only means "the user looked at
+    /// this recently", which is still true and is what makes the credential
+    /// change hook re-resolve it.
+    func forgetInstance(_ instanceId: String) {
+        ensureLoaded()
+        instanceNotes.removeValue(forKey: instanceId)
+        if let sid = instanceSubjects.removeValue(forKey: instanceId) {
+            removeInstance(instanceId, from: sid)
+            // That instance's subscription-header subject is keyed by the
+            // instance ("instance:<id>"), not by the key hash, so it would
+            // outlive the credential it came from.
+            for id in subjects.values.map(\.id) where id.accountKey == "instance:\(instanceId)" {
+                subjects[id] = nil
+                let gone = Set(pools.values.filter { $0.subjectId == id }.map(\.id))
+                for k in gone { pools[k] = nil }
+                bindings.removeAll { gone.contains($0.poolKey) }
+                summaries = summaries.filter { $0.value.subjectId != id }
+            }
+            changed()
+            logger.info("[Quota] forgot instance \(instanceId.prefix(8)) (account switch)")
+        } else {
+            changed(persist: false)
+        }
+    }
+
     /// Instances deleted since the cache was written leave nothing behind.
     private func pruneDeletedInstances() {
         let live = Set(ProviderConfigStore.shared.instances.map(\.id))
