@@ -425,6 +425,7 @@ private final class DevelopmentLocalToolchainState: ObservableObject {
     @Published private(set) var spawnVerified = false
     @Published private(set) var status = "尚未检测本地工具链"
     @Published private(set) var diagnostic = ""
+    @Published private(set) var diagnosticURL: URL?
     private let native = MinisNativeLocalToolchain()
     var canBuild: Bool { filesReady && spawnVerified && !running }
     func perform(_ operation: NBLocalToolchainOperation) {
@@ -441,6 +442,9 @@ private final class DevelopmentLocalToolchainState: ObservableObject {
             if let provision = report["provision"] as? [String: Any], provision["ok"] as? Bool != true {
                 self.filesReady = false
                 self.status = "初始化未完成；展开诊断查看归档错误，然后重试。"
+            } else if report["execution_state"] as? String == "denied" ||
+                        (report["provision"] as? [String: Any])?["execution_state"] as? String == "denied" {
+                self.status = self.filesReady ? "归档已提取、文件就绪；当前安装拒绝执行（EPERM）。请导出诊断；Build+Link 尚未启用。" : "当前安装拒绝执行（EPERM）；文件状态请查看诊断。"
             } else if operation == .probe {
                 self.status = self.canBuild ? "clang / ld 启动探测通过；可提交 Build+Link。" : "检测未通过；查看诊断，可重新初始化或重试探测。"
             } else {
@@ -448,6 +452,13 @@ private final class DevelopmentLocalToolchainState: ObservableObject {
             }
             if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
                 self.diagnostic = String(decoding: data, as: UTF8.self)
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-toolchain-diagnostic-\(UUID().uuidString).json")
+                do {
+                    try data.write(to: url, options: .atomic)
+                    self.diagnosticURL = url
+                } catch {
+                    self.diagnosticURL = nil
+                }
             }
         }
     }
@@ -467,8 +478,11 @@ private struct DevelopmentLocalToolchainSection: View {
                 Button("初始化 / 修复本地 SDK 与工具链") { local.perform(.provision) }
                 Button("启动探测 clang / ld（可重试）") { local.perform(.probe) }
             }.disabled(local.running || building)
+            if let url = local.diagnosticURL {
+                ShareLink("导出本地诊断 JSON", item: url)
+            }
             DisclosureGroup("本地诊断与说明") {
-                Text("文件检查只证明路径就绪；启动探测执行 clang / ld --version；只有项目 Build+Link 成功才验证编译和链接。初始化只展开随包归档。此处不签名、安装或运行产物。")
+                Text("文件检查只证明可读文件齐全；初始化展开归档并记录 clang 启动结果；启动探测执行 clang / ld --version。EPERM 单独报告，签名布局不等于信任验证。导出仅包含系统、当前进程权限白名单与工具链诊断，不含管理员凭据。只有启动探测通过后才启用 Build+Link。")
                     .font(.caption)
                 Text(local.diagnostic).font(.caption.monospaced()).textSelection(.enabled)
             }

@@ -126,6 +126,8 @@ workflows:
       - name: Verify provision extraction (real archives and Foundation)
         script: |
           set -euo pipefail
+          clang -Wall -Wextra -Werror -Isrc/ios/NativeOffloads tests/native_signature_layout.c src/ios/NativeOffloads/NativeBuildMachOCore.c -o /tmp/native-signature-layout
+          /tmp/native-signature-layout
           python3 tests/provision_extract.py src/ios/ToolchainResources/MinToolchain.tgz src/ios/ToolchainResources/MinSDK.tgz
           clang -fobjc-arc -framework Foundation -larchive -Isrc/ios/NativeOffloads tests/provision_foundation.m src/ios/NativeOffloads/NativeBuildProvision.m -o /tmp/provision-foundation
           /tmp/provision-foundation src/ios/ToolchainResources/MinToolchain.tgz Toolchain
@@ -171,29 +173,11 @@ workflows:
               echo "    UNSIGNED $(basename "$M")" >&2; fail=1; fi
           done
           [ "$fail" -eq 0 ] || { echo "!! unsigned binaries in bundle" >&2; exit 1; }
-          # Bundle the on-device toolchain into the app.
-          #
-          # NEVER ship the toolchain as a runtime-unpacked tgz under the data
-          # container (tmp or Library/Caches): on iOS 16.4.1 the sandbox returns
-          # EPERM for access(X_OK) and posix_spawn against any cloned Mach-O that
-          # lives outside the app bundle's code-signature page, no matter what
-          # entitlements are set. Probe v9 ran clang/ld/ldid fine ONLY because
-          # they shipped inside the signed .app/Toolchain.
-          #
-          # Bundle the toolchain as an ARCHIVE, never as a real Toolchain/ dir.
-          #
-          # Device evidence (ed7acd8, iOS 16.4.1): the IPA we shipped carried
-          # clang/ld/ldid byte-identical to MinToolchain.tgz with 4 signature
-          # blobs. After TrollStore installed it, provision reported the same
-          # files at +38,771 bytes each with 6 blobs - TrollStore's recursive
-          # ldid had re-signed every Mach-O under Minis.app/, appending blobs and
-          # invalidating the adhoc signature. AMFI then refuses posix_spawn with
-          # EPERM even though the file is inside the bundle and mode 100755.
-          # (The main binary survives this because it is loaded by the kernel,
-          # not by posix_spawn; that is also why the extensions still launch.)
-          #
-          # A .tgz is not a Mach-O, so TrollStore walks past it and the payload
-          # keeps its original 4-blob signature. provision unpacks it at runtime.
+          # Preserve the pinned archive bytes and deployed cache layout.
+          # Device EPERM is still unresolved: neither signature blob count nor
+          # a data-container location identifies the execution policy cause.
+          # Runtime diagnostics report actual process entitlements and launch
+          # results separately from successful extraction/readable files.
           echo "==> stage toolchain archives into bundle"
           mkdir -p Payload/Minis.app/ToolchainResources
           cp src/ios/ToolchainResources/MinToolchain.tgz Payload/Minis.app/ToolchainResources/
@@ -201,10 +185,11 @@ workflows:
           ls -lh Payload/Minis.app/ToolchainResources
           [ -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz ] || { echo "!! toolchain archive missing"; exit 1; }
           [ -f Payload/Minis.app/ToolchainResources/MinSDK.tgz ] || { echo "!! SDK archive missing"; exit 1; }
-          # No Toolchain/ directory may ship: its Mach-O would be re-signed.
-          [ ! -d Payload/Minis.app/Toolchain ] || { echo "!! stray Toolchain/ dir in bundle would be re-signed" >&2; exit 1; }
-          # Confirm the archive payload is still the pristine 4-blob build.
-          echo "==> verify archived toolchain signatures (expect 4 blobs)"
+          # Preserve archive-only packaging; no unreviewed helper/path fallback.
+          [ ! -d Payload/Minis.app/Toolchain ] || { echo "!! unexpected Toolchain/ dir in archive-only packaging" >&2; exit 1; }
+          # Check that each pinned archived helper has readable signature data.
+          # ldid -e is extraction, not signature/trust verification.
+          echo "==> inspect archived toolchain signature data"
           rm -rf /tmp/tkcheck && mkdir -p /tmp/tkcheck
           tar xzf Payload/Minis.app/ToolchainResources/MinToolchain.tgz -C /tmp/tkcheck
           for T in clang ld ldid; do

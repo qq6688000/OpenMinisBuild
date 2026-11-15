@@ -53,9 +53,9 @@ NSDictionary *NBProvisionBundledToolchain(void) {
         NSString *ldid=[toolRoot stringByAppendingPathComponent:@"bin/ldid"];
         NSString *sdkDir=[cache stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"];
         NSString *resDirClang=[toolRoot stringByAppendingPathComponent:@"lib/clang/23"];
-        BOOL clangOK=[fm isExecutableFileAtPath:clang];
-        BOOL ldOK=[fm isExecutableFileAtPath:ld];
-        BOOL ldidOK=[fm isExecutableFileAtPath:ldid];
+        BOOL clangOK=[fm isReadableFileAtPath:clang];
+        BOOL ldOK=[fm isReadableFileAtPath:ld];
+        BOOL ldidOK=[fm isReadableFileAtPath:ldid];
         BOOL sdkOK=[fm fileExistsAtPath:[sdkDir stringByAppendingPathComponent:@"SDKSettings.plist"]];
         BOOL resOK=[fm fileExistsAtPath:[resDirClang stringByAppendingPathComponent:@"include/stddef.h"]];
 
@@ -68,9 +68,7 @@ NSDictionary *NBProvisionBundledToolchain(void) {
             NSDictionary *d=NBPathDiagnostics(exe);
             NSMutableDictionary *m=[NSMutableDictionary dictionaryWithDictionary:
                 @{@"X_OK":d[@"access"][@"X_OK"],@"mode":d[@"stat"][@"mode"] ?: (id)[NSNull null]}];
-            /* Signature health: a pristine adhoc image has 4 blobs. A newer
-             * ldid re-sign appends DER entitlements (5 blobs) and AMFI then
-             * refuses to exec it with EPERM even inside the bundle. */
+            /* Structural observations only; blob count does not establish trust. */
             NSData *blobData=[NSData dataWithContentsOfFile:exe options:NSDataReadingMappedIfSafe error:NULL];
             if(blobData){
                 NBMachOInfo info; memset(&info,0,sizeof(info));
@@ -87,17 +85,25 @@ NSDictionary *NBProvisionBundledToolchain(void) {
             NBPResult r=NBPRun(&(NBPOptions){.executable=clang.fileSystemRepresentation,.argv=av,
                                              .timeout_ms=15000,.terminate_grace_ms=250,.output=NULL});
             execProbe[@"clang_run"]=@{@"ran":@(r.status==NBP_EXITED),@"exit":@(r.exit_code),
+                @"spawn_attempted":@(r.spawn_attempted), @"spawn_succeeded":@(r.pid>0),
+                @"status":@(r.status), @"signal":@(r.termination_signal),
                 @"error_stage":r.error_stage ? @(r.error_stage) : @"",@"errno":@(r.error_number),
                 @"error":@(strerror(r.error_number))};
         }
 
-        return @{@"provision":@YES, @"ok":@([toolchain[@"ok"] boolValue] && [sdk[@"ok"] boolValue] && clangOK&&ldOK&&ldidOK&&sdkOK&&resOK),
+        BOOL extracted = [toolchain[@"ok"] boolValue] && [sdk[@"ok"] boolValue];
+        BOOL filesReady = clangOK&&ldOK&&ldidOK&&sdkOK&&resOK;
+        return @{@"provision":@YES, @"ok":@(extracted && filesReady),
+            @"extraction_ok":@(extracted), @"files_ready":@(filesReady),
+            @"execution_verified":@NO,
+            @"execution_state":[execProbe[@"clang_run"][@"errno"] intValue] == EPERM ? @"denied" : @"requires_full_probe",
+            @"runtime":NBRuntimeDiagnostics(),
             @"tool_root":toolRoot,@"sdk_dir":sdkDir,@"path_diagnostics":NBToolchainDescribe(toolRoot)[@"paths"],
             @"sdk_archive":sdk,@"toolchain_archive":toolchain,
             @"clang":@(clangOK),@"ld":@(ldOK),@"ldid":@(ldidOK),
             @"sdk":@(sdkOK),@"resource_dir":@(resOK),
             @"exec_probe":execProbe,
-            @"ready":@(clangOK&&ldOK&&ldidOK&&sdkOK&&resOK),
-            @"note":@"toolchain + SDK are unpacked from ToolchainResources archives into Library/Caches (never tmp, and never shipped as a bundle dir: TrollStore re-signs every Mach-O in the bundle, inflating the adhoc signature to 6 blobs and making AMFI refuse exec). Pass tool_root paths as HOST paths in run requests. Re-run is idempotent."};
+            @"ready":@(extracted && filesReady),
+            @"note":@"ok/ready describe extraction and readable files only. clang_run records the independent launch result, including errno/stage. A full clang/ld probe still gates Build+Link. Signature layout does not verify trust or identify an EPERM cause."};
     }
 }

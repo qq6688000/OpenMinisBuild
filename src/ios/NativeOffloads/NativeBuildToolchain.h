@@ -26,10 +26,8 @@ typedef struct {
  * was built without one (normal App Store build: nothing is bundled). */
 NSString *NBToolchainRoot(void);
 
-/* [T-native-build] Writable toolchain staging area. Always <Data>/Library/Caches
- * /native-toolchain/<name>. Never the app tmp dir: iOS rejects exec there
- * (access X_OK and posix_spawn return EPERM) regardless of entitlements.
- * Creates the directory and returns its child `name`, or nil on failure. */
+/* Writable staging location <Data>/Library/Caches/native-toolchain/<name>.
+ * Execution readiness must be established independently on this installation. */
 NSString *NBSearchPathForSharedCache(NSString *name);
 
 /* Stat/access the layout rooted at `root` (nil → NBToolchainRoot()). */
@@ -39,6 +37,9 @@ NBToolchainProbe NBToolchainCheck(NSString *root);
 NSDictionary *NBToolchainDescribe(NSString *root);
 /* Independent host lstat/stat/access observations; never gates a launch. */
 NSDictionary *NBPathDiagnostics(NSString *path);
+/* Actual current-process entitlements and observed signing/mount policy.
+ * Allowlisted booleans/types only; never raw profile, preferences or credentials. */
+NSDictionary *NBRuntimeDiagnostics(void);
 
 /* [T-native-build] Artifact inspection: parse a Mach-O far enough to answer
  * "did the tool actually produce the right thing?", so no build step is ever

@@ -35,6 +35,7 @@ NSDictionary *NBPathDiagnostics(NSString *path) {
 }
 
 #include "NativeBuildMachO.inc"
+#include "NativeBuildRuntime.inc"
 
 static BOOL NBExecutableFile(NSString *path) {
     if (path.length == 0) return NO;
@@ -44,26 +45,22 @@ static BOOL NBExecutableFile(NSString *path) {
     return access(p, X_OK) == 0;
 }
 
-/* [T-native-build] Single source of truth for where the toolchain lives.
- * Never the app's tmp/: on iOS that location rejects exec (access X_OK and
- * posix_spawn both return EPERM) even with no-sandbox + AppDataContainers,
- * which is what broke the container-required builds. Library/Caches is inside
- * the data container, writable, and executable. */
+/* Writable staging location. Execution permission is installation-dependent;
+ * a cache path or mode bits alone do not establish launch permission. */
 NSString *NBSearchPathForSharedCache(NSString *name) {
     NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
     NSString *base = dirs.count > 0 ? dirs[0] : nil;
     // On iOS this is <Data>/Library/Caches; tolerate a macOS-style path.
+    if (!base.length || !name.length) return nil;
     NSString *root = [base stringByAppendingPathComponent:@"native-toolchain"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:root
-                              withIntermediateDirectories:YES attributes:nil error:NULL];
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:root
+                              withIntermediateDirectories:YES attributes:nil error:NULL]) return nil;
     return [root stringByAppendingPathComponent:name];
 }
 
 NSString *NBToolchainRoot(void) {
-    // Unpacked from <Bundle>/ToolchainResources/MinToolchain.tgz by provision.
-    // It must NOT be the bundle: TrollStore re-signs every Mach-O under the app
-    // bundle on install, which inflates our pristine 4-blob adhoc signature to
-    // 6 blobs and makes AMFI refuse exec with EPERM.
+    // Preserve the deployed archive layout. Signature layout changes and EPERM
+    // are observations; neither blob count nor path proves the policy cause.
     NSString *cache = NBSearchPathForSharedCache(@"native-toolchain");
     if (cache.length) return [cache stringByAppendingPathComponent:@"Toolchain"];
     return nil;
@@ -88,7 +85,22 @@ NSDictionary *NBToolchainDescribe(NSString *root) {
     if (root.length == 0) root = NBToolchainRoot();
     NBToolchainProbe p = NBToolchainCheck(root);
     BOOL present = p.clang || p.ld || p.ldid || p.sdk || p.resourceDir;
+    NSMutableDictionary *files = [NSMutableDictionary dictionary];
+    BOOL filesReady = p.sdk && p.resourceDir;
+    NSMutableDictionary *signatures = [NSMutableDictionary dictionary];
+    for (NSString *name in @[@"clang", @"ld", @"ldid"]) {
+        NSString *path = [root stringByAppendingPathComponent:[@"bin/" stringByAppendingString:name]];
+        struct stat st;
+        BOOL readable = path && stat(path.fileSystemRepresentation, &st) == 0 &&
+            S_ISREG(st.st_mode) && access(path.fileSystemRepresentation, R_OK) == 0;
+        files[name] = @(readable);
+        signatures[name] = NBMachOInspect(path);
+        filesReady = filesReady && readable;
+        present = present || readable;
+    }
     return @{
+        @"files":files, @"files_ready":@(filesReady), @"signatures":signatures,
+        @"execution_verified":@NO,
         @"root": root ?: @"",
         @"paths": @{@"clang":NBPathDiagnostics([root stringByAppendingPathComponent:@"bin/clang"]),
                     @"ld":NBPathDiagnostics([root stringByAppendingPathComponent:@"bin/ld"]),

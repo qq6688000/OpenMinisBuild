@@ -135,18 +135,8 @@ static int nb_handle(int argc,char **argv,int stdin_fd,struct NBOutput *fds) {
             nb_json(fds,NBP_STDOUT,info);
             return [info[@"valid"] boolValue] ? 0 : 1;
         }
-        /* [T-native-build] Expand the bundled toolchain into a writable dir.
-         * The app bundle is read-only and a Toolchain/ directory inside it broke
-         * TrollStore's recursive signing, so the archives ship flat and are
-         * unpacked here, once, with verification. */
+        /* Keep extraction/readable file readiness separate from launch policy. */
         if(argc==2 && strcmp(argv[1],"provision")==0) {
-            /* [T-native-build] The toolchain ships as a .tgz and is unpacked here.
-             * Shipping it as a real bundle/Toolchain directory failed on device:
-             * TrollStore re-signs EVERY Mach-O under Minis.app/ on install, which
-             * turned the pristine 4-blob adhoc signature into 6 blobs and made
-             * AMFI refuse posix_spawn with EPERM (mode stayed 100755, F_OK/R_OK
-             * fine). TrollStore cannot see inside an archive, so the payload
-             * keeps its original signature. */
             NSDictionary *result=NBProvisionBundledToolchain();
             nb_json(fds,NBP_STDOUT,result);
             return [result[@"ok"] boolValue] ? 0 : 1;

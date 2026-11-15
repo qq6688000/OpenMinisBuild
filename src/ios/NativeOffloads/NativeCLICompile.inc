@@ -194,12 +194,16 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
     dispatch_once(&once, ^{ queue = dispatch_queue_create("minis.local-toolchain", DISPATCH_QUEUE_SERIAL); });
     dispatch_async(queue, ^{
         NSMutableDictionary *report = [NSMutableDictionary dictionary];
+        report[@"schema_version"] = @1;
+        report[@"runtime"] = NBRuntimeDiagnostics();
+        report[@"operation"] = operation == NBLocalToolchainOperationProvision ? @"provision" : operation == NBLocalToolchainOperationProbe ? @"probe" : @"inspect";
         if (operation == NBLocalToolchainOperationProvision) report[@"provision"] = NBProvisionBundledToolchain();
         report[@"toolchain"] = NBToolchainDescribe(nil);
         NSString *root = NBToolchainRoot().stringByResolvingSymlinksInPath;
         NSString *sdk = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"];
         BOOL headers = [NSFileManager.defaultManager isReadableFileAtPath:[sdk stringByAppendingPathComponent:@"System/Library/Frameworks/Foundation.framework/Headers/Foundation.h"]];
-        report[@"files_ready"] = @([report[@"toolchain"][@"clang"] boolValue] && [report[@"toolchain"][@"ld"] boolValue] && [report[@"toolchain"][@"sdk"] boolValue] && [report[@"toolchain"][@"resource_dir"] boolValue] && headers);
+        report[@"files_ready"] = @([report[@"toolchain"][@"files_ready"] boolValue] && headers);
+        report[@"execution_state"] = @"not_probed";
         report[@"sdk"] = sdk ?: @"";
         if (operation == NBLocalToolchainOperationProbe) {
             NSMutableDictionary *probes = [NSMutableDictionary dictionary];
@@ -219,6 +223,8 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
             }
             report[@"probe"] = probes;
             report[@"spawn_verified"] = @(passed);
+            BOOL denied = [probes[@"clang"][@"errno"] intValue] == EPERM || [probes[@"ld"][@"errno"] intValue] == EPERM;
+            report[@"execution_state"] = passed ? @"verified" : denied ? @"denied" : @"failed";
         }
         dispatch_async(dispatch_get_main_queue(), ^{ completion(report); });
     });

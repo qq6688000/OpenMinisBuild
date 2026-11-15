@@ -43,6 +43,9 @@ NSDictionary *NBMachOInspect(NSString *path)
     out[@"has_ios_build"] = @(info.has_ios_build);
     out[@"has_code_signature"] = @(info.has_code_signature);
     out[@"signature_size"] = @(info.signature_size);
+    out[@"signature_blobs"] = @(info.signature_blobs);
+    out[@"code_directory_size"] = @(info.code_directory_size);
+    out[@"signature_trust_verified"] = @NO;
     out[@"error"] = @(info.error);
     if (info.has_ios_build) {
         unsigned v = info.min_ios;

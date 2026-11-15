@@ -142,18 +142,33 @@ void NBMachOParse(const void *data, size_t len, NBMachOInfo *out)
                                               sg.datasize <= len - sg.dataoff;
                     if (out->has_code_signature) {
                         out->signature_size = sg.datasize;
-                        /* Read the superblock when it fits: gives blob count and
-                         * CodeDirectory length, the two numbers that tell a
-                         * pristine adhoc signature from one a newer ldid
-                         * appended DER entitlements to. */
+                        /* SuperBlob length is NOT CodeDirectory length. Walk
+                         * the bounded index to primary slot 0 / CSMAGIC_CODEDIRECTORY.
+                         * These observations do not verify signature trust. */
                         const unsigned char *sup = (const unsigned char *)data + sg.dataoff;
                         if (sg.datasize >= 12) {
                             unsigned magic = nb_be32(sup);
-                            unsigned cdlen = nb_be32(sup + 4);
+                            unsigned total = nb_be32(sup + 4);
                             unsigned count = nb_be32(sup + 8);
-                            if (magic == 0xFADE0CC0u && count < 64) {
-                                out->signature_blobs = count;
-                                out->code_directory_size = cdlen;
+                            if (magic == 0xFADE0CC0u && total >= 12 && total <= sg.datasize &&
+                                count < 64 && count <= (total - 12) / 8) {
+                                unsigned directory = 0;
+                                bool layout = true;
+                                for (unsigned j = 0; j < count; j++) {
+                                    unsigned kind = nb_be32(sup + 12 + j * 8);
+                                    unsigned offset = nb_be32(sup + 16 + j * 8);
+                                    if (offset < 12 + count * 8 || offset > total || total - offset < 8) {
+                                        layout = false; break;
+                                    }
+                                    unsigned length = nb_be32(sup + offset + 4);
+                                    if (length < 8 || length > total - offset) { layout = false; break; }
+                                    if (kind == 0 && nb_be32(sup + offset) == 0xFADE0C02u)
+                                        directory = length;
+                                }
+                                if (layout) {
+                                    out->signature_blobs = count;
+                                    out->code_directory_size = directory;
+                                }
                             }
                         }
                     }
