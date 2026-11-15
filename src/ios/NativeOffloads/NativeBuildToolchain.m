@@ -76,8 +76,8 @@ NBToolchainProbe NBToolchainCheck(NSString *root) {
     r.clang = NBExecutableFile([root stringByAppendingPathComponent:@"bin/clang"]);
     r.ld    = NBExecutableFile([root stringByAppendingPathComponent:@"bin/ld"]);
     r.ldid  = NBExecutableFile([root stringByAppendingPathComponent:@"bin/ldid"]);
-    // Provision retains the SDK directory under the writable toolchain root.
-    NSString *archive = [root stringByAppendingPathComponent:@"iPhoneOS16.5.sdk/SDKSettings.plist"];
+    // Provision places SDK beside Toolchain, shared with the CLI compiler.
+    NSString *archive = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"iPhoneOS16.5.sdk/SDKSettings.plist"];
     r.sdk = archive.length > 0 && access(archive.fileSystemRepresentation, R_OK) == 0;
     r.resourceDir = (access([[root stringByAppendingPathComponent:@"lib/clang/23/include"]
                               fileSystemRepresentation], R_OK) == 0);

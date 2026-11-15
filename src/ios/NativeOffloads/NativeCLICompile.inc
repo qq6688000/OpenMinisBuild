@@ -183,3 +183,44 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
     });
 }
 @end
+
+#import "NativeBuildProvision.h"
+@implementation MinisNativeLocalToolchain
+- (void)performOperation:(NBLocalToolchainOperation)operation completion:(void (^)(NSDictionary *))completion {
+    // Serialize provisioning and inspections across UI instances. NBPRun policy
+    // remains unchanged. Only bundled clang and ld --version may be probed.
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("minis.local-toolchain", DISPATCH_QUEUE_SERIAL); });
+    dispatch_async(queue, ^{
+        NSMutableDictionary *report = [NSMutableDictionary dictionary];
+        if (operation == NBLocalToolchainOperationProvision) report[@"provision"] = NBProvisionBundledToolchain();
+        report[@"toolchain"] = NBToolchainDescribe(nil);
+        NSString *root = NBToolchainRoot().stringByResolvingSymlinksInPath;
+        NSString *sdk = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"];
+        BOOL headers = [NSFileManager.defaultManager isReadableFileAtPath:[sdk stringByAppendingPathComponent:@"System/Library/Frameworks/Foundation.framework/Headers/Foundation.h"]];
+        report[@"files_ready"] = @([report[@"toolchain"][@"clang"] boolValue] && [report[@"toolchain"][@"ld"] boolValue] && [report[@"toolchain"][@"sdk"] boolValue] && [report[@"toolchain"][@"resource_dir"] boolValue] && headers);
+        report[@"sdk"] = sdk ?: @"";
+        if (operation == NBLocalToolchainOperationProbe) {
+            NSMutableDictionary *probes = [NSMutableDictionary dictionary];
+            BOOL passed = YES;
+            for (NSString *name in @[@"clang", @"ld"]) {
+                NSString *exe = [root stringByAppendingPathComponent:[@"bin/" stringByAppendingString:name]];
+                // Same no-symlink requirement as Build+Link, not an X_OK gate.
+                if (!exe || ![exe.stringByResolvingSymlinksInPath isEqual:exe.stringByStandardizingPath]) {
+                    probes[name] = @{@"ok":@NO, @"error":@"Tool path unavailable or symlinked"}; passed = NO; continue;
+                }
+                const char *args[] = {exe.fileSystemRepresentation, "--version", NULL};
+                const char *env[] = {"PATH=/usr/bin:/bin", "LANG=C", NULL};
+                NBPResult result = NBPRun(&(NBPOptions){.executable=exe.fileSystemRepresentation, .argv=args, .envp=env, .timeout_ms=15000, .terminate_grace_ms=250});
+                BOOL ok = result.status == NBP_EXITED && result.exit_code == 0;
+                probes[name] = @{@"ok":@(ok), @"spawn_attempted":@(result.spawn_attempted), @"spawn_succeeded":@(result.pid>0), @"status":@(result.status), @"exit":@(result.exit_code), @"errno":@(result.error_number), @"error_stage":result.error_stage ? @(result.error_stage) : @"", @"signal":@(result.termination_signal)};
+                passed = passed && ok;
+            }
+            report[@"probe"] = probes;
+            report[@"spawn_verified"] = @(passed);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(report); });
+    });
+}
+@end

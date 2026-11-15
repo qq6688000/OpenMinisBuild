@@ -16,3 +16,8 @@
  * Returns a dictionary: ok, entries, bytes, error. */
 NSDictionary *NBExtractArchive(NSString *archivePath, NSString *destDir,
                                NSString *stripFirstComponent);
+
+/* Same bundled archives, extraction checks and cache layout as native provision.
+ * Blocking: call on a worker queue. ok includes BOTH archive results and paths;
+ * ready describes files only. exec_probe is a clang --version launch, not a build. */
+NSDictionary *NBProvisionBundledToolchain(void);

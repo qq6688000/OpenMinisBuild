@@ -162,7 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tests/provision_extract.py src/ios/ToolchainResources/MinToolchain.tgz src/ios/ToolchainResources/MinSDK.tgz
-          clang -fobjc-arc -framework Foundation -larchive -Isrc/ios/NativeOffloads tests/provision_foundation.m src/ios/NativeOffloads/NativeBuildProvision.m -o /tmp/provision-foundation
+          clang -fobjc-arc -framework Foundation -larchive -Isrc/ios/NativeOffloads tests/provision_foundation.m src/ios/NativeOffloads/NativeBuildProvision.m src/ios/NativeOffloads/NativeBuildToolchain.m src/ios/NativeOffloads/NativeBuildProcess.c src/ios/NativeOffloads/NativeBuildMachOCore.c -o /tmp/provision-foundation
           /tmp/provision-foundation src/ios/ToolchainResources/MinToolchain.tgz Toolchain
           /tmp/provision-foundation src/ios/ToolchainResources/MinSDK.tgz iPhoneOS16.5.sdk
 

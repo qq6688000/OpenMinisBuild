@@ -17,10 +17,14 @@ cat > "$out/adapter.m" <<'EOF'
 #include "NativeCLICompile.inc"
 EOF
 "$cc" -target arm64-apple-ios16.0 -isysroot "$sdk" -fobjc-arc -fblocks -Werror -I "$src" -c "$out/adapter.m" -o "$out/adapter.o"
+# libarchive headers are platform-neutral declarations; isolate them from Linux libc.
+mkdir -p "$out/archive-headers"
+cp /usr/include/archive.h /usr/include/archive_entry.h "$out/archive-headers/"
+"$cc" -target arm64-apple-ios16.0 -isysroot "$sdk" -fobjc-arc -fblocks -Werror -I "$out/archive-headers" -I "$src" -c "$src/NativeBuildProvision.m" -o "$out/provision.o"
 "$cc" -target arm64-apple-ios16.0 -isysroot "$sdk" -fobjc-arc -fblocks -Werror -I "$src" -c "$src/NativeBuildToolchain.m" -o "$out/toolchain.o"
 "$cc" -target arm64-apple-ios16.0 -isysroot "$sdk" -Werror -I "$src" -c "$src/NativeBuildProcess.c" -o "$out/process.o"
 "$cc" -target arm64-apple-ios16.0 -isysroot "$sdk" -Werror -I "$src" -c "$src/NativeBuildMachOCore.c" -o "$out/macho.o"
-"$ld" -dylib -arch arm64 -platform_version ios 16.0 16.5 -syslibroot "$sdk" -lSystem -lobjc -framework Foundation -install_name @rpath/NativeCLICompile.dylib "$out/adapter.o" "$out/toolchain.o" "$out/process.o" "$out/macho.o" -o "$out/adapter.dylib"
+"$ld" -dylib -arch arm64 -platform_version ios 16.0 16.5 -syslibroot "$sdk" -lSystem -lobjc -framework Foundation -larchive -install_name @rpath/NativeCLICompile.dylib "$out/adapter.o" "$out/provision.o" "$out/toolchain.o" "$out/process.o" "$out/macho.o" -o "$out/adapter.dylib"
 # Also compile the actual ObjC template with the exact fixed defines used by UI.
 python3 - "$root" "$out" <<'PY'
 from pathlib import Path

@@ -133,10 +133,11 @@ private enum DevelopmentProjects {
 
 struct DevelopmentProjectsView: View {
     @StateObject private var nativeService = ApelinHelloInspection()
+    @StateObject private var local = DevelopmentLocalToolchainState()
     @State private var projects: [DevelopmentProject] = []
     @State private var warnings: [String] = []
     @State private var name = ""
-    @State private var choice: MinisProjectTemplate = .linux
+    @State private var choice: MinisProjectTemplate = .cli
     @State private var errorMessage: String?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -147,54 +148,61 @@ struct DevelopmentProjectsView: View {
 
     var body: some View {
         List {
-            Section("构建后端") {
-                Label(nativeService.status, systemImage: "info.circle")
-                if nativeService.checking { ProgressView() }
-                Button("检查 Apelind、SDK 与工具链（只读）") { nativeService.inspect() }
-                    .disabled(nativeService.checking)
-                if let snapshot = nativeService.snapshot {
-                    Text("协议：\(snapshot.protocolVersion) · 安装根：\(snapshot.installRoot)")
-                        .font(.caption.monospaced()).textSelection(.enabled)
-                    if let date = nativeService.checkedAt {
-                        Text("检查时间：\(date.formatted())").font(.caption)
-                    }
-                    DisclosureGroup("服务声明的操作（\(snapshot.operations.count)）") {
-                        Text(snapshot.operations.joined(separator: "\n"))
+            DevelopmentLocalToolchainSection(local: local)
+            Section("Apelin 服务（可选）") {
+                Text("ObjC CLI 使用上方 Minis 本地后端，无需 Apelind。若服务不可用，不影响本地初始化。")
+                    .font(.footnote)
+                DisclosureGroup("Apelin 状态与诊断") {
+                    Label(nativeService.status, systemImage: "info.circle")
+                    if nativeService.checking { ProgressView() }
+                    Button("检查 Apelind、SDK 与工具链（只读）") { nativeService.inspect() }
+                        .disabled(nativeService.checking)
+                    if let snapshot = nativeService.snapshot {
+                        Text("协议：\(snapshot.protocolVersion) · 安装根：\(snapshot.installRoot)")
                             .font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                    Text("这是一次握手快照；连接已关闭。操作名称包含尚未实现的能力，不证明 SDK、工具链、构建或安装可用。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Text(nativeService.environmentStatus).font(.caption)
-                if let sdks = nativeService.sdks {
-                    DisclosureGroup("已注册 SDK（\(sdks.sdks.count)）；活动任务 \(sdks.activeTasks.count)") {
-                        ForEach(Array(sdks.sdks.enumerated()), id: \.offset) { _, sdk in
-                            Text("\(sdk.canonicalName) · \(sdk.version)\n\(sdk.path)\n\(sdk.warnings.joined(separator: "\n"))")
-                                .font(.caption).textSelection(.enabled)
+                        if let date = nativeService.checkedAt {
+                            Text("检查时间：\(date.formatted())").font(.caption)
                         }
+                        DisclosureGroup("服务声明的操作（\(snapshot.operations.count)）") {
+                            Text(snapshot.operations.joined(separator: "\n"))
+                                .font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                        Text("这是一次握手快照；连接已关闭。操作名称包含尚未实现的能力，不证明 SDK、工具链、构建或安装可用。")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
-                }
-                if let status = nativeService.toolchains {
-                    DisclosureGroup("已注册工具链（\(status.toolchains.count)）；活动任务 \(status.activeTasks.count)") {
-                        Text("默认：\(status.defaultID ?? "未设置")").font(.caption)
-                        ForEach(Array(status.toolchains.enumerated()), id: \.offset) { _, tool in
-                            Text("\(tool.id) · \(tool.version)\n\(tool.path ?? "未记录路径")")
-                                .font(.caption).textSelection(.enabled)
-                            ForEach(Array(tool.components.enumerated()), id: \.offset) { _, component in
-                                Text("\(component.kind)：历史自检 \(component.selfCheckPassed.map { $0 ? "通过" : "失败" } ?? "未记录") \(component.problem ?? "")")
-                                    .font(.caption)
+                    Text(nativeService.environmentStatus).font(.caption)
+                    if let sdks = nativeService.sdks {
+                        DisclosureGroup("已注册 SDK（\(sdks.sdks.count)）；活动任务 \(sdks.activeTasks.count)") {
+                            ForEach(Array(sdks.sdks.enumerated()), id: \.offset) { _, sdk in
+                                Text("\(sdk.canonicalName) · \(sdk.version)\n\(sdk.path)\n\(sdk.warnings.joined(separator: "\n"))")
+                                    .font(.caption).textSelection(.enabled)
                             }
                         }
                     }
+                    if let status = nativeService.toolchains {
+                        DisclosureGroup("已注册工具链（\(status.toolchains.count)）；活动任务 \(status.activeTasks.count)") {
+                            Text("默认：\(status.defaultID ?? "未设置")").font(.caption)
+                            ForEach(Array(status.toolchains.enumerated()), id: \.offset) { _, tool in
+                                Text("\(tool.id) · \(tool.version)\n\(tool.path ?? "未记录路径")")
+                                    .font(.caption).textSelection(.enabled)
+                                ForEach(Array(tool.components.enumerated()), id: \.offset) { _, component in
+                                    Text("\(component.kind)：历史自检 \(component.selfCheckPassed.map { $0 ? "通过" : "失败" } ?? "未记录") \(component.problem ?? "")")
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                    Text("需要经过审核的 Apelin 伴生部署与固定路径 Minis 客户端。当前 TrollStore 容器安装不满足其路径认证；添加 entitlement 本身不能解决。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("Apelin 连接仅读取 hello、SDK 与工具链注册记录。Linux C CLI 可在终端手动构建。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("App、Tweak 和 Preferences 模板目前仅创建项目；Apelin SDK / 工具链绑定独立于 Minis 本地后端。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("需要经过审核的 Apelin 伴生部署与固定路径 Minis 客户端。当前 TrollStore 容器安装不满足其路径认证；添加 entitlement 本身不能解决。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Text("Apelin 连接读取 hello、SDK 与工具链注册记录。ObjC CLI 详情页另有 Minis 原生编译按钮，使用本机已 provision 的 clang/ld/SDK 生成 arm64 iOS unsigned executable；不调用签名或安装。Linux C CLI 可在终端手动构建。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Text("Apelin 原生模板仅创建项目：SDK/工具链尚未绑定，iOS 模板面向 rootless/roothide 环境。")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("新建项目") {
+                Text("选择 ObjC CLI · iOS → 输入名称 → 创建项目 → 打开项目 → 检测本地工具链 → Build+Link。")
+                    .font(.footnote)
                 Picker("模板", selection: $choice) {
                     ForEach(MinisProjectTemplate.allCases) { item in Text(item.title).tag(item) }
                 }
@@ -213,7 +221,7 @@ struct DevelopmentProjectsView: View {
             Section("项目") {
                 if projects.isEmpty { Text("暂无项目").foregroundStyle(.secondary) }
                 ForEach(projects) { project in
-                    NavigationLink(project.name) { DevelopmentProjectDetail(project: project) }
+                    NavigationLink(project.name) { DevelopmentProjectDetail(project: project, local: local) }
                 }
             }
             if !warnings.isEmpty {
@@ -243,6 +251,7 @@ struct DevelopmentProjectsView: View {
 
 private struct DevelopmentProjectDetail: View {
     let project: DevelopmentProject
+    @ObservedObject var local: DevelopmentLocalToolchainState
     @StateObject private var build = DevelopmentCLICompileState()
     @Environment(\.scenePhase) private var scenePhase
     private var choice: MinisProjectTemplate { MinisProjectTemplate(rawValue: project.template) ?? .linux }
@@ -258,10 +267,11 @@ private struct DevelopmentProjectDetail: View {
                     .font(.caption.monospaced()).textSelection(.enabled)
             }
             if choice == .cli {
+                DevelopmentLocalToolchainSection(local: local, building: build.running)
                 Section("Minis 原生编译") {
-                    Text("固定 Debug 子集：Sources/main.m · arm64 · iOS 16.0 · ARC。使用 Minis 已 provision 的 SDK/clang，不修改 Apelin 环境绑定，不执行脚本。")
+                    Text("Sources/main.m · arm64 · iOS 16.0 · ARC。先通过文件检查与启动探测，再编译链接。产物不会自动运行。")
                         .font(.footnote)
-                    Button("Build+Link · ObjC CLI") { build.start(project) }.disabled(build.running)
+                    Button("Build+Link · ObjC CLI") { build.start(project) }.disabled(build.running || local.running || !local.canBuild)
                     if build.running {
                         ProgressView()
                         Button("取消编译", role: .destructive) { build.cancel() }
@@ -288,7 +298,7 @@ private struct DevelopmentProjectDetail: View {
                 Text("需先安装 C 编译器与 libc 开发头文件，详见 README.md。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            } else {
+            } else if choice != .cli {
                 Section("原生构建要求") {
                     Text("尚未绑定 SDK 与工具链。此模板需要 Apelin 原生后端、匹配版本的开发扩展及相应签名与运行权限；不能在 iSH Linux 直接构建或安装。")
                     Text("清单已通过上游 schema 与语义规则验证；这不代表环境可用。详见 README.md。")
@@ -404,5 +414,64 @@ private struct DevelopmentProjectFile: View {
         .alert("文件操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("好", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+    }
+}
+
+// The native adapter owns background work and returns on the main queue.
+@MainActor
+private final class DevelopmentLocalToolchainState: ObservableObject {
+    @Published private(set) var running = false
+    @Published private(set) var filesReady = false
+    @Published private(set) var spawnVerified = false
+    @Published private(set) var status = "尚未检测本地工具链"
+    @Published private(set) var diagnostic = ""
+    private let native = MinisNativeLocalToolchain()
+    var canBuild: Bool { filesReady && spawnVerified && !running }
+    func perform(_ operation: NBLocalToolchainOperation) {
+        guard !running else { return }
+        running = true
+        filesReady = false
+        spawnVerified = false
+        status = operation == .provision ? "正在初始化归档，请保持 Minis 在前台…" : "正在检测本地工具链…"
+        native.perform(operation: operation) { [weak self] report in
+            guard let self = self else { return }
+            self.running = false
+            self.filesReady = report["files_ready"] as? Bool == true
+            self.spawnVerified = report["spawn_verified"] as? Bool == true
+            if let provision = report["provision"] as? [String: Any], provision["ok"] as? Bool != true {
+                self.filesReady = false
+                self.status = "初始化未完成；展开诊断查看归档错误，然后重试。"
+            } else if operation == .probe {
+                self.status = self.canBuild ? "clang / ld 启动探测通过；可提交 Build+Link。" : "检测未通过；查看诊断，可重新初始化或重试探测。"
+            } else {
+                self.status = self.filesReady ? "文件就绪；请继续运行启动探测。" : "文件尚未就绪；请初始化本地 SDK 与工具链。"
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                self.diagnostic = String(decoding: data, as: UTF8.self)
+            }
+        }
+    }
+}
+
+private struct DevelopmentLocalToolchainSection: View {
+    @ObservedObject var local: DevelopmentLocalToolchainState
+    var building = false
+    var body: some View {
+        Section("Minis 本地后端 · ObjC CLI") {
+            Text("独立使用随包 SDK 与工具链，无需 Apelind。")
+                .font(.footnote)
+            Text(local.status).font(.caption).textSelection(.enabled)
+            if local.running { ProgressView() }
+            Group {
+                Button("检测本地文件（不启动工具）") { local.perform(.inspect) }
+                Button("初始化 / 修复本地 SDK 与工具链") { local.perform(.provision) }
+                Button("启动探测 clang / ld（可重试）") { local.perform(.probe) }
+            }.disabled(local.running || building)
+            DisclosureGroup("本地诊断与说明") {
+                Text("文件检查只证明路径就绪；启动探测执行 clang / ld --version；只有项目 Build+Link 成功才验证编译和链接。初始化只展开随包归档。此处不签名、安装或运行产物。")
+                    .font(.caption)
+                Text(local.diagnostic).font(.caption.monospaced()).textSelection(.enabled)
+            }
+        }
     }
 }

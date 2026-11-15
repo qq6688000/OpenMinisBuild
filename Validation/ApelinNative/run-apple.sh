@@ -39,3 +39,23 @@ xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -I "$root/src/ios/Native
     "$root/Validation/ApelinNative/cli-process-fixture.c" "$root/src/ios/NativeOffloads/NativeBuildProcess.c" -o "$tmp/process-fixture"
 "$tmp/process-fixture"
 echo 'PASS: touched native bridge, compile adapter and Swift logic compiled; actual process cancellation tested. Full app/UI/device remains separate.'
+
+# Typecheck the actual project UI and shared Swift model with a tiny app-root
+# substitute only; native selectors are imported from production headers.
+cat > "$tmp/local-bridge.h" <<EOF
+#import "$src/MinisApelinHelloTransport.h"
+#import "$root/src/ios/NativeOffloads/NativeBuildOffload.h"
+EOF
+cat > "$tmp/app-root.swift" <<'EOF'
+import Foundation
+enum AIChatViewModel {
+    static var minisAppGroupRoot: URL { FileManager.default.temporaryDirectory }
+}
+EOF
+xcrun --sdk iphoneos swiftc -swift-version 5 -target arm64-apple-ios16.0 -sdk "$sdk" \
+    -import-objc-header "$tmp/local-bridge.h" -typecheck \
+    "$tmp/app-root.swift" "$src/ApelinHelloInspection.swift" \
+    "$root"/src/ios/Views/Settings/ApelinModel/*.swift \
+    "$root/src/ios/Views/Settings/ApelinProjectAdapter.swift" \
+    "$root/src/ios/Views/Settings/DevelopmentProjectsView.swift"
+echo 'PASS: actual project SwiftUI and structured local toolchain selectors typechecked for iOS; device checks remain separate.'

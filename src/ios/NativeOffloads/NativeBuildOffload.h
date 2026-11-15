@@ -17,6 +17,15 @@ void native_build_offload_register(void);
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
 NS_ASSUME_NONNULL_BEGIN
+typedef NS_ENUM(NSInteger, NBLocalToolchainOperation) {
+    NBLocalToolchainOperationInspect = 0,
+    NBLocalToolchainOperationProvision = 1,
+    NBLocalToolchainOperationProbe = 2
+};
+@interface MinisNativeLocalToolchain : NSObject
+- (void)performOperation:(NBLocalToolchainOperation)operation
+              completion:(void (^)(NSDictionary *result))completion NS_SWIFT_NAME(perform(operation:completion:));
+@end
 // Structured UI adapter to the same NBPRun backend as minis-native-build.
 // Input is an already validated, immutable ObjC template source snapshot.
 @interface MinisNativeCLICompile : NSObject

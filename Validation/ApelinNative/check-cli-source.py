@@ -12,7 +12,7 @@ for token in ['NBPRun(', 'NBMachOInspect(artifact)', 'NBP_CANCELLED', 'NBP_TIMED
     assert token in m,token
 for token in ['DevelopmentProjectEditing.parent', 'DevelopmentProjectEditing.readAt', 'ApelinProjectAdapter.validate', 'ProjectValidation.load', 'compiles == [.compile(product: "tool", flags: [])]', 'names == ["main.m"]', 'record["target"] as? String == "ios"']:
     assert token in s,token
-for token in ['Button("Build+Link · ObjC CLI")', 'native.compile(source:', 'native.cancel()', '.disabled(build.running)', 'build.cancel()', 'DevelopmentCLICompileInput.snapshot']:
+for token in ['Button("Build+Link · ObjC CLI")', 'native.compile(source:', 'native.cancel()', '.disabled(build.running || local.running || !local.canBuild)', 'build.cancel()', 'DevelopmentCLICompileInput.snapshot']:
     assert token in u,token
 for token in ['system(', 'popen(', 'execve(', '/bin/sh', 'ISHShellExecutor', 'ldid', 'xpc_connection']:
     assert token not in m,token
