@@ -182,7 +182,7 @@ static CGSize SPOrientedSize(id controller,CGSize size) {
   }
  }
  w.hidden=NO;[self layout];
- if(self.active)[self.panel message:@"单焦点 + 冻结画面（远程内容未验证）。点击冻结侧请求切换；系统完成回调尚缺，交接将超时退出。"];
+ if(self.active)[self.panel message:@"单焦点 + 冻结画面（远程内容未验证）。点击冻结侧请求切换；等待系统完成事件与目标就绪。"];
  }@catch(NSException *e){[self stopPair];[self.panel message:[@"组合失败：" stringByAppendingString:e.reason?:e.name]];}
 }
 - (void)selectFrozen:(UITapGestureRecognizer *)gesture {
@@ -213,14 +213,14 @@ static CGSize SPOrientedSize(id controller,CGSize size) {
    if(!self.active||!self.pending||self.generation!=generation)return;
    BOOL ready=self.readyController!=nil;
    [self stopPair];
-   [self.panel message:ready?@"已观察到目标就绪，但缺少已验证系统 transition 完成回调；已退出，未执行交接。":@"激活等待超时，未取得匹配的就绪场景；已退出。"];
+   [self.panel message:ready?@"已观察到目标就绪，但未满足同一 transition 完成门槛；已超时退出，未执行交接。":@"激活等待超时，未取得匹配的就绪场景；已退出。"];
   }];
   [self layout];
   if(!self.active||self.generation!=generation||self.pending!=target)return;
   if(!SPSubmit(record.switcher,record.layout,target.item)){
    [self stopPair];[self.panel message:@"激活 ABI 或请求无效；已退出。"];return;
   }
-  [self.panel message:@"已提交单项激活，等待目标身份/就绪；缺少系统完成回调，禁止提前交接。"];
+  [self.panel message:@"已提交单项激活，等待匹配 transition 完成及目标身份/就绪。"];
  }@catch(NSException *e){[self stopPair];[self.panel message:@"激活异常，已清理本地呈现。"];}
 }
 - (void)observeTransition:(id)event {
