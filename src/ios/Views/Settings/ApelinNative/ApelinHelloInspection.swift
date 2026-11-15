@@ -32,7 +32,38 @@ final class ApelinHelloInspection: ObservableObject {
     @Published private(set) var status = "尚未检查原生服务"
     @Published private(set) var snapshot: ApelinHelloSnapshot?
     @Published private(set) var checkedAt: Date?
+    @Published private(set) var sdks: ApelinSDKStatus?
+    @Published private(set) var toolchains: ApelinToolchainStatus?
+    @Published private(set) var environmentStatus = "尚未读取 SDK / 工具链"
     private let transport = MinisApelinHelloTransport()
+
+    private func read(_ operation: (@escaping (Data?, Error?) -> Void) -> Void) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            operation { data, error in
+                if let error = error { continuation.resume(throwing: error) }
+                else if let data = data { continuation.resume(returning: data) }
+                else { continuation.resume(throwing: NSError(domain: "MinisApelinHello", code: 3)) }
+            }
+        }
+    }
+
+    private func readEnvironment(token: UUID) async {
+        environmentStatus = "正在读取 SDK / 工具链…"
+        var failures: [String] = []
+        do {
+            let data = try await read { transport.listSDKs(completion: $0) }
+            guard !Task.isCancelled, generation == token else { return }
+            sdks = try JSONDecoder().decode(ApelinSDKStatus.self, from: data)
+        } catch { failures.append("SDK：" + error.localizedDescription) }
+        guard !Task.isCancelled, generation == token else { return }
+        do {
+            let data = try await read { transport.toolchainStatus(completion: $0) }
+            guard !Task.isCancelled, generation == token else { return }
+            toolchains = try JSONDecoder().decode(ApelinToolchainStatus.self, from: data)
+        } catch { failures.append("工具链：" + error.localizedDescription) }
+        guard !Task.isCancelled, generation == token else { return }
+        environmentStatus = failures.isEmpty ? "已读取注册记录；未运行编译器或自检" : failures.joined(separator: "\n")
+    }
     private var task: Task<Void, Never>?
     private var generation = UUID()
 
@@ -59,6 +90,8 @@ final class ApelinHelloInspection: ObservableObject {
                     self.snapshot = value
                     self.checkedAt = Date()
                     self.status = "已收到 hello（只读快照）"
+                    await self.readEnvironment(token: token)
+                    guard !Task.isCancelled, self.generation == token else { return }
                     self.checking = false
                     self.task = nil
                     return
@@ -89,7 +122,47 @@ final class ApelinHelloInspection: ObservableObject {
         transport.cancel()
         checking = false
         snapshot = nil
+        sdks = nil
+        toolchains = nil
+        environmentStatus = "尚未读取 SDK / 工具链"
         checkedAt = nil
         status = "尚未检查原生服务"
     }
+}
+
+// Read-only projections of ApelinProtocol SDK.swift / Toolchain.swift / Tasks.swift.
+// Unknown optional metadata is ignored; required wire fields retain their types.
+struct ApelinEnvironmentTask: Decodable, Equatable {
+    let taskID: String
+    let kind: String
+}
+struct ApelinSDKStatus: Decodable, Equatable {
+    struct SDK: Decodable, Equatable, Identifiable {
+        let id: String
+        let canonicalName: String
+        let version: String
+        let path: String
+        let targets: [String]
+        let warnings: [String]
+    }
+    let sdks: [SDK]
+    let activeTasks: [ApelinEnvironmentTask]
+}
+struct ApelinToolchainStatus: Decodable, Equatable {
+    struct Component: Decodable, Equatable {
+        let kind: String
+        let selfCheckPassed: Bool?
+        let problem: String?
+    }
+    struct Toolchain: Decodable, Equatable, Identifiable {
+        let id: String
+        let version: String
+        let components: [Component]
+        let path: String?
+        let newestSDK: String?
+        let selfTestSDK: String?
+    }
+    let toolchains: [Toolchain]
+    let defaultID: String?
+    let activeTasks: [ApelinEnvironmentTask]
 }

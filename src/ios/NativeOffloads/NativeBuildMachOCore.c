@@ -90,6 +90,24 @@ void NBMachOParse(const void *data, size_t len, NBMachOInfo *out)
         size_t body = off + sizeof(lc), body_len = lc.cmdsize - sizeof(lc);
 
         switch (lc.cmd) {
+            case 0xCu: /* LC_LOAD_DYLIB */
+            case 0x80000018u: /* LC_LOAD_WEAK_DYLIB */
+            case 0x8000001Fu: /* LC_REEXPORT_DYLIB */
+            case 0x20u: /* LC_LAZY_LOAD_DYLIB */
+            case 0x80000023u: { /* LC_LOAD_UPWARD_DYLIB */
+                uint32_t nameoff = 0;
+                if (body_len < 16 || !nb_read(p, len, body, &nameoff, 4) ||
+                    nameoff < 24 || nameoff >= lc.cmdsize) {
+                    nb_fail(out, "bad_dylib_command"); return;
+                }
+                const unsigned char *name = p + off + nameoff;
+                const unsigned char *end = memchr(name, 0, lc.cmdsize - nameoff);
+                if (!end || end == name || (size_t)(end - name) >= 256 || out->dependency_count >= 32) {
+                    nb_fail(out, "bad_dylib_name_or_limit"); return;
+                }
+                memcpy(out->dependencies[out->dependency_count++], name, (size_t)(end - name));
+                break;
+            }
             case LC_MAIN: {
                 struct entry_point_command ep;
                 /* cmdsize counts load_command + struct: compare the payload. */

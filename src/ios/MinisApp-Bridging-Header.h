@@ -28,6 +28,7 @@
 // Native Offloads (native offload handlers for iSH commands)
 #import "FFmpegOffload.h"
 #import "NativeOffloadUtils.h"
+#import "NativeBuildOffload.h"
 #import "CalendarOffload.h"
 #import "LocationOffload.h"
 #import "WeatherOffload.h"

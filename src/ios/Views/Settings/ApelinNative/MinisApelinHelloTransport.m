@@ -30,6 +30,18 @@ static NSError *HelloError(NSInteger code, NSString *message) {
     });
 }
 - (void)probeWithCompletion:(void (^)(NSData *, NSError *))completion {
+    [self requestOperation:@"hello" payload:@"{}" completion:completion];
+}
+- (void)listSDKsWithCompletion:(void (^)(NSData *, NSError *))completion {
+    [self requestOperation:@"sdkList" payload:@"{\"includeSources\":false,\"readSources\":false}" completion:completion];
+}
+- (void)sdkListWithCompletion:(void (^)(NSData *, NSError *))completion {
+    [self listSDKsWithCompletion:completion];
+}
+- (void)toolchainStatusWithCompletion:(void (^)(NSData *, NSError *))completion {
+    [self requestOperation:@"toolchainStatus" payload:@"{}" completion:completion];
+}
+- (void)requestOperation:(NSString *)operation payload:(NSString *)payload completion:(void (^)(NSData *, NSError *))completion {
     dispatch_async(_queue, ^{
         [self finish:nil error:HelloError(6, @"检查已替换")];
         NSUInteger generation = ++self->_generation;
@@ -44,10 +56,11 @@ static NSError *HelloError(NSInteger code, NSString *message) {
         xpc_connection_activate(self->_connection);
         NSString *requestID = NSUUID.UUID.UUIDString;
         xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
-        xpc_dictionary_set_string(request, "op", "hello");
+        xpc_dictionary_set_string(request, "op", operation.UTF8String);
         xpc_dictionary_set_int64(request, "protocolVersion", 2);
         xpc_dictionary_set_string(request, "requestID", requestID.UTF8String);
-        xpc_dictionary_set_data(request, "payload", "{}", 2);
+        NSData *body = [payload dataUsingEncoding:NSUTF8StringEncoding];
+        xpc_dictionary_set_data(request, "payload", body.bytes, body.length);
         xpc_connection_send_message_with_reply(self->_connection, request, self->_queue, ^(xpc_object_t reply) {
             if (generation != self->_generation || !self->_completion) return;
             if (xpc_get_type(reply) == XPC_TYPE_ERROR) {

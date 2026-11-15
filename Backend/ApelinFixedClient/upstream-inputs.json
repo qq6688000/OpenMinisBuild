@@ -1,0 +1,9 @@
+{
+  "Apelind/PeerAuthenticator.swift": "32c1dc5c2469caf62d525c6a1382ebc677677a73da376254526d77ad7f1efc4f",
+  "Apelind/Spawn.swift": "617f67a214d62a4f15984b74ebae5daa0cc0a1dbd88e9f6b5ca4d0ff88ddf7c2",
+  "Shared/Protocol/AppProtocol.swift": "457826ada09bfddacaeb40228bdc33752729f22a2942f9776b4ed4a958d865dc",
+  "Apelind/Proxy/Proxy.swift": "19d0a61ee8992c9fe189fce290235bafce6e840006cff0cecab02ddc4e02272c",
+  "Packages/ApelinKit/Sources/ApelinProtocol/Operations/SDK.swift": "02e21cf8666737c94630abf505fdc79c273ea4233b689da09b89ec3d789c885b",
+  "Packages/ApelinKit/Sources/ApelinProtocol/Operations/Toolchain.swift": "29f36438d769992b2b686155bdfdd04ee0ed30f6429b4df49a4678f344dc2cf6",
+  "Packages/ApelinKit/Sources/ApelinProtocol/Tasks.swift": "958a07f50ca328e83835ba5090647bb1bc19ba86389e8d46a4efc6a82d740db0"
+}

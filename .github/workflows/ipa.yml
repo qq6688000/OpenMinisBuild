@@ -116,7 +116,7 @@ jobs:
           xcodebuild -project src/ios/Minis.xcodeproj -scheme Minis \
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData -skipPackagePluginValidation \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
             build
 
@@ -175,6 +175,8 @@ jobs:
           rm -rf Payload Minis-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
+          /usr/libexec/PlistBuddy -c "Add :MinisBuildRevision string $GITHUB_SHA" Payload/Minis.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :MinisBuildRun string $GITHUB_RUN_ID" Payload/Minis.app/Info.plist
           # Sign EVERY Mach-O in the bundle, not just the app binary.
           # Only signing Minis.app/Minis left the three .appex binaries unsigned;
           # iOS then refuses to load the extension and the app crashes as soon as

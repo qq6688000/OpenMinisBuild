@@ -24,6 +24,8 @@ typedef struct {
     unsigned long long size;
     char arch[16];          /* arm64 / x86_64 / other / unknown */
     char filetype[16];      /* object / executable / dylib / ... / unknown */
+    unsigned dependency_count;
+    char dependencies[32][256]; /* bounded LC_LOAD_* names; overflow is invalid */
     bool pie;
     bool has_main;
     bool has_ios_build;

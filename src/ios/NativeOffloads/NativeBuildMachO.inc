@@ -26,6 +26,13 @@ NSDictionary *NBMachOInspect(NSString *path)
         NBMachOParse(d.bytes, (size_t)d.length, &info);
     }
 
+    NSMutableArray *dependencies = [NSMutableArray array];
+    for (unsigned i = 0; i < info.dependency_count; ++i) {
+        NSString *name = [NSString stringWithUTF8String:info.dependencies[i]];
+        if (!name) { info.valid = false; snprintf(info.error, sizeof(info.error), "invalid_dependency_utf8"); break; }
+        [dependencies addObject:name];
+    }
+    out[@"dependencies"] = dependencies;
     out[@"exists"] = @(info.exists);
     out[@"valid"] = @(info.valid);
     out[@"size"] = @(info.size);

@@ -24,4 +24,18 @@ xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$sdk" \
 xcrun --sdk iphoneos swiftc -swift-version 5 -target arm64-apple-ios16.0 -sdk "$sdk" \
     -import-objc-header "$src/MinisApelinHelloTransport.h" \
     -typecheck "$src/ApelinHelloInspection.swift"
-echo 'PASS: touched native bridge and Swift logic compiled with macOS/iOS SDK; full app/UI/device remains separate.'
+# Compile the real structured UI adapter in isolation from generated iSH headers.
+cat > "$tmp/cli.m" <<'EOF'
+#import "NativeBuildOffload.h"
+#import "NativeBuildProcess.h"
+#import "NativeBuildToolchain.h"
+#include <errno.h>
+#include <string.h>
+#include "NativeCLICompile.inc"
+EOF
+xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$sdk" \
+    -fobjc-arc -fblocks -Werror -I "$root/src/ios/NativeOffloads" -c "$tmp/cli.m" -o "$tmp/cli.o"
+xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -I "$root/src/ios/NativeOffloads" \
+    "$root/Validation/ApelinNative/cli-process-fixture.c" "$root/src/ios/NativeOffloads/NativeBuildProcess.c" -o "$tmp/process-fixture"
+"$tmp/process-fixture"
+echo 'PASS: touched native bridge, compile adapter and Swift logic compiled; actual process cancellation tested. Full app/UI/device remains separate.'

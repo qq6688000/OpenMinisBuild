@@ -8,8 +8,10 @@ pbx=(r/'src/ios/Minis.xcodeproj/project.pbxproj').read_text()
 m=(d/'MinisApelinHelloTransport.m').read_text()
 s=(d/'ApelinHelloInspection.swift').read_text()
 v=(r/'src/ios/Views/Settings/DevelopmentProjectsView.swift').read_text()
-assert re.findall(r'xpc_dictionary_set_string\(request, "op", "([^"]+)"\)',m)==['hello']
-for text in ['"wiki.qaq.apelin.service"','"protocolVersion", 2','"requestID"','"payload", "{}", 2','xpc_connection_send_message_with_reply','xpc_connection_cancel','XPC_TYPE_BOOL','262144','"unsupportedVersion"','"denied"','5 * NSEC_PER_SEC']:
+assert re.findall(r'\[self requestOperation:@"([^"]+)"',m)==['hello','sdkList','toolchainStatus']
+assert 'xpc_dictionary_set_string(request, "op", operation.UTF8String)' in m
+assert 'payload:@"{\\"includeSources\\":false,\\"readSources\\":false}"' in m
+for text in ['"wiki.qaq.apelin.service"','"protocolVersion", 2','"requestID"','"payload", body.bytes, body.length','xpc_connection_send_message_with_reply','xpc_connection_cancel','XPC_TYPE_BOOL','262144','"unsupportedVersion"','"denied"','5 * NSEC_PER_SEC']:
  assert text in m,text
 assert 'import XPC' not in s
 assert 'systemUptime' in s and '< 10' in s
@@ -27,4 +29,4 @@ if len(sys.argv)>1:
  upstream=Path(sys.argv[1])
  for path,digest in json.loads((d/'Notices/PROVENANCE.json').read_text())['references'].items():
   assert hashlib.sha256((upstream/path).read_bytes()).hexdigest()==digest,path
-print('PASS: hello-only wire constants, bounded lifecycle source, Xcode/bridge/license registration and optional upstream hashes (STATIC ONLY)')
+print('PASS: three read-only operations and wire constants, bounded lifecycle source, Xcode/bridge/license registration and optional upstream hashes (STATIC ONLY)')

@@ -150,7 +150,7 @@ struct DevelopmentProjectsView: View {
             Section("构建后端") {
                 Label(nativeService.status, systemImage: "info.circle")
                 if nativeService.checking { ProgressView() }
-                Button("检查 Apelind（只读 hello）") { nativeService.inspect() }
+                Button("检查 Apelind、SDK 与工具链（只读）") { nativeService.inspect() }
                     .disabled(nativeService.checking)
                 if let snapshot = nativeService.snapshot {
                     Text("协议：\(snapshot.protocolVersion) · 安装根：\(snapshot.installRoot)")
@@ -165,9 +165,31 @@ struct DevelopmentProjectsView: View {
                     Text("这是一次握手快照；连接已关闭。操作名称包含尚未实现的能力，不证明 SDK、工具链、构建或安装可用。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("上游仅信任安装根下的 Apelin.app/Apelin，并验证 uid、私有 entitlement 和 root 所有权。当前 Minis 分发身份尚未获准；需要独立审核的原生打包与精确 peer 授权，普通沙盒安装不能满足。")
+                Text(nativeService.environmentStatus).font(.caption)
+                if let sdks = nativeService.sdks {
+                    DisclosureGroup("已注册 SDK（\(sdks.sdks.count)）；活动任务 \(sdks.activeTasks.count)") {
+                        ForEach(Array(sdks.sdks.enumerated()), id: \.offset) { _, sdk in
+                            Text("\(sdk.canonicalName) · \(sdk.version)\n\(sdk.path)\n\(sdk.warnings.joined(separator: "\n"))")
+                                .font(.caption).textSelection(.enabled)
+                        }
+                    }
+                }
+                if let status = nativeService.toolchains {
+                    DisclosureGroup("已注册工具链（\(status.toolchains.count)）；活动任务 \(status.activeTasks.count)") {
+                        Text("默认：\(status.defaultID ?? "未设置")").font(.caption)
+                        ForEach(Array(status.toolchains.enumerated()), id: \.offset) { _, tool in
+                            Text("\(tool.id) · \(tool.version)\n\(tool.path ?? "未记录路径")")
+                                .font(.caption).textSelection(.enabled)
+                            ForEach(Array(tool.components.enumerated()), id: \.offset) { _, component in
+                                Text("\(component.kind)：历史自检 \(component.selfCheckPassed.map { $0 ? "通过" : "失败" } ?? "未记录") \(component.problem ?? "")")
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                }
+                Text("需要经过审核的 Apelin 伴生部署与固定路径 Minis 客户端。当前 TrollStore 容器安装不满足其路径认证；添加 entitlement 本身不能解决。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("项目文件可正常创建与浏览。此版本仅检查原生 hello，不调用构建、签名或安装服务；可在终端手动构建 Linux C CLI。")
+                Text("Apelin 连接读取 hello、SDK 与工具链注册记录。ObjC CLI 详情页另有 Minis 原生编译按钮，使用本机已 provision 的 clang/ld/SDK 生成 arm64 iOS unsigned executable；不调用签名或安装。Linux C CLI 可在终端手动构建。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("Apelin 原生模板仅创建项目：SDK/工具链尚未绑定，iOS 模板面向 rootless/roothide 环境。")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -201,7 +223,7 @@ struct DevelopmentProjectsView: View {
             }
             Section("文件位置") {
                 Text(DevelopmentProjects.linuxRoot).font(.caption.monospaced()).textSelection(.enabled)
-                Text("可通过共享文件夹或终端编辑文件；下拉刷新项目列表。")
+                Text("打开项目文件可直接编辑并保存；也可使用共享文件夹或终端。下拉刷新项目列表。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -221,6 +243,8 @@ struct DevelopmentProjectsView: View {
 
 private struct DevelopmentProjectDetail: View {
     let project: DevelopmentProject
+    @StateObject private var build = DevelopmentCLICompileState()
+    @Environment(\.scenePhase) private var scenePhase
     private var choice: MinisProjectTemplate { MinisProjectTemplate(rawValue: project.template) ?? .linux }
     private var files: [String] {
         choice == .linux ? DevelopmentProjects.files : ((try? ApelinProjectAdapter.previewFiles(choice)) ?? ["minis-project.json", "apelin-project.json", "README.md"])
@@ -229,14 +253,33 @@ private struct DevelopmentProjectDetail: View {
         List {
             Section("项目信息") {
                 Text(choice.title)
-                Text("未连接构建后端；没有构建或安装结果。")
+                Text(choice == .cli ? "可提交 Minis 原生 Debug Build+Link；产物为 arm64 iOS unsigned executable，未签名或安装，不保证设备可运行。" : "此模板尚未接入构建操作。")
                 Text(DevelopmentProjects.linuxRoot + "/" + project.name)
                     .font(.caption.monospaced()).textSelection(.enabled)
             }
-            Section("文件 · 只读预览") {
-                ForEach(files, id: \.self) { file in
-                    NavigationLink(file) { DevelopmentProjectFile(name: project.name, file: file) }
+            if choice == .cli {
+                Section("Minis 原生编译") {
+                    Text("固定 Debug 子集：Sources/main.m · arm64 · iOS 16.0 · ARC。使用 Minis 已 provision 的 SDK/clang，不修改 Apelin 环境绑定，不执行脚本。")
+                        .font(.footnote)
+                    Button("Build+Link · ObjC CLI") { build.start(project) }.disabled(build.running)
+                    if build.running {
+                        ProgressView()
+                        Button("取消编译", role: .destructive) { build.cancel() }
+                    }
+                    Text(build.status).font(.caption).textSelection(.enabled)
+                    if !build.log.isEmpty {
+                        DisclosureGroup("编译日志 / 状态（最多 128 KiB）") {
+                            Text(build.log).font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                    }
                 }
+            }
+            Section("项目文件") {
+                ForEach(files, id: \.self) { file in
+                    NavigationLink(file) { DevelopmentProjectFile(project: project, file: file) }
+                }
+                Text("源文件、Apelin 清单、plist、构建脚本与 README 可编辑；身份和来源记录只读。UTF-8 文件上限 256 KiB。保存不会构建或安装。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             if choice == .linux {
             Section("手动构建") {
@@ -252,22 +295,114 @@ private struct DevelopmentProjectDetail: View {
                 }
             }
         }.navigationTitle(project.name)
+            .onDisappear { build.cancel() }
+            .onChange(of: scenePhase) { phase in if phase != .active { build.cancel() } }
+    }
+}
+
+@MainActor
+private final class DevelopmentCLICompileState: ObservableObject {
+    @Published private(set) var running = false
+    @Published private(set) var status = "尚未提交编译"
+    @Published private(set) var log = ""
+    private let native = MinisNativeCLICompile()
+    private var bytes = Data()
+    func start(_ project: DevelopmentProject) {
+        guard !running else { return }
+        do {
+            let root = try DevelopmentProjects.directory(project.name)
+            let source = try DevelopmentCLICompileInput.snapshot(root: root, id: project.id, name: project.name)
+            running = true; status = "已提交：检查本机编译器 / SDK，然后编译…"; bytes = Data(); log = ""
+            native.compile(source: source, output: { [weak self] chunk in
+                guard let self = self else { return }
+                self.bytes.append(chunk)
+                self.log = String(decoding: self.bytes, as: UTF8.self)
+            }, completion: { [weak self] report in
+                guard let self = self else { return }
+                self.running = false
+                self.status = (report["ok"] as? Bool == true) ? "Build+Link 成功：arm64 iOS unsigned executable 已验证；未签名或安装，不代表可在设备运行。" : "编译未完成：\(report["error"] ?? "未知错误")"
+                if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                    self.log += "\n" + String(decoding: data, as: UTF8.self)
+                }
+            })
+        } catch { status = "未提交：" + error.localizedDescription }
+    }
+    func cancel() {
+        guard running else { return }
+        status = "正在请求取消；等待原生进程回收…"
+        native.cancel()
     }
 }
 
 private struct DevelopmentProjectFile: View {
-    let name: String
+    let project: DevelopmentProject
     let file: String
+    @Environment(\.dismiss) private var dismiss
     @State private var content = ""
+    @State private var original: DevelopmentProjectEditing.Snapshot?
+    @State private var loaded = false
+    @State private var errorMessage: String?
+    @State private var discard = false
+    private var choice: MinisProjectTemplate { MinisProjectTemplate(rawValue: project.template) ?? .linux }
+    private var editable: Bool { ((try? DevelopmentProjectEditing.editableFiles(choice)) ?? []).contains(file) }
+    private var dirty: Bool { original.map { content != $0.text } ?? false }
+    private var tooLarge: Bool { content.utf8.count > DevelopmentProjectEditing.byteLimit }
+    private func load() {
+        guard !loaded else { return }
+        do {
+            if editable {
+                let snapshot = try DevelopmentProjectEditing.load(root: DevelopmentProjects.directory(project.name), file: file, choice: choice)
+                original = snapshot
+                content = snapshot.text
+            } else { content = try DevelopmentProjects.read(project.name, file: file) }
+            loaded = true
+        } catch { errorMessage = error.localizedDescription }
+    }
+    private func save() {
+        guard let original = original else { return }
+        do {
+            self.original = try DevelopmentProjectEditing.save(root: DevelopmentProjects.directory(project.name), file: file,
+                choice: choice, id: project.id, text: content, original: original)
+        } catch { errorMessage = error.localizedDescription }
+    }
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            Text(content).font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled).padding()
+        VStack(alignment: .leading, spacing: 8) {
+            if editable {
+                TextEditor(text: $content)
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .disabled(!loaded)
+                    .accessibilityLabel("编辑 \(file)")
+                Text("\(dirty ? "未保存" : "已保存") · \(content.utf8.count) / 262144 字节")
+                    .font(.caption).foregroundColor(tooLarge ? .red : .secondary)
+                if tooLarge { Text("内容超过 256 KiB，无法保存。").font(.caption).foregroundColor(.red) }
+            } else {
+                Text("身份与来源记录 · 只读").font(.caption).foregroundStyle(.secondary)
+                ScrollView([.horizontal, .vertical]) {
+                    Text(content).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                }
+            }
         }
+        .padding()
         .navigationTitle(file)
-        .onAppear {
-            do { content = try DevelopmentProjects.read(name, file: file) }
-            catch { content = "无法读取文件：\(error.localizedDescription)" }
+        .navigationBarBackButtonHidden(dirty)
+        .toolbar {
+            if editable {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { if dirty { discard = true } else { dismiss() } }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("保存", action: save).disabled(!loaded || !dirty || tooLarge)
+                }
+            }
         }
+        .onAppear(perform: load)
+        .confirmationDialog("放弃未保存的修改？", isPresented: $discard, titleVisibility: .visible) {
+            Button("放弃修改", role: .destructive) { dismiss() }
+            Button("继续编辑", role: .cancel) { }
+        }
+        .alert("文件操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("好", role: .cancel) { errorMessage = nil }
+        } message: { Text(errorMessage ?? "") }
     }
 }

@@ -14,4 +14,18 @@ void native_build_offload_register(void);
 }
 #endif
 
+#ifdef __OBJC__
+#import <Foundation/Foundation.h>
+NS_ASSUME_NONNULL_BEGIN
+// Structured UI adapter to the same NBPRun backend as minis-native-build.
+// Input is an already validated, immutable ObjC template source snapshot.
+@interface MinisNativeCLICompile : NSObject
+- (void)compileSource:(NSData *)source
+              output:(void (^)(NSData *chunk))output
+          completion:(void (^)(NSDictionary *result))completion NS_SWIFT_NAME(compile(source:output:completion:));
+- (void)cancel;
+@end
+NS_ASSUME_NONNULL_END
+#endif
+
 #endif /* MINIS_NATIVE_BUILD_OFFLOAD_H */
