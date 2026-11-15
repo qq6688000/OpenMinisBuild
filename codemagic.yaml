@@ -15,6 +15,12 @@ workflows:
       - name: Xcode version
         script: xcodebuild -version
 
+      - name: Validate Apelin Swift model and templates
+        script: sh Validation/Apelin/run-swift.sh
+
+      - name: Validate Apelin native bridge and Swift logic
+        script: sh Validation/ApelinNative/run-apple.sh
+
       - name: Install build tools
         script: |
           brew install ninja llvm libarchive pkg-config go meson lld ldid || true

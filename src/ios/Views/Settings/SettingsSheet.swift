@@ -217,6 +217,14 @@ struct SettingsSheet: View {
                     Text("「优化词条」按钮常驻在输入框旁，可将当前文字改写为更清晰的提示词。")
                 }
 
+                Section("Development") {
+                    NavigationLink {
+                        DevelopmentProjectsView()
+                    } label: {
+                        Label("开发项目", systemImage: "hammer")
+                    }
+                }
+
                 Section("Storage") {
                     NavigationLink {
                         StorageManagementView()

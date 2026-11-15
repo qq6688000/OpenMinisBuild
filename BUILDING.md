@@ -1,5 +1,13 @@
 # Building Minis
 
+For the read-only Apelind transport, Linux LLVM plus an iPhoneOS SDK can run
+`sh Validation/ApelinNative/check-objc-cross.sh /tmp/apelin-objc-check`.
+Set SDKROOT, CLANG or LD64 to override local defaults. This builds the actual
+arm64 iOS Objective-C object and strictly links an SDK probe; it does not build
+Swift or the whole app. Declaration provenance and observed results are in
+[Validation/ApelinNative/XPC-ABI.md](Validation/ApelinNative/XPC-ABI.md).
+
+
 Minis ships a full Linux sandbox inside the app, so a first build is not just
 "open the project and press Run": the native dependencies (iSH on iOS, PRoot on
 Android, FFmpeg, LAME) and the Alpine rootfs are **built from source by the

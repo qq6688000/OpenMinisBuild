@@ -1,0 +1,15 @@
+{
+  "source": "https://github.com/owngoal-dev/Apelin",
+  "revision": "unknown (source archive)",
+  "license": "MIT, Copyright 2026 OwnGoal Studio",
+  "adaptation": "Hello-only Objective-C XPC transport and Swift snapshot; no full protocol graph; protocol version 2",
+  "references": {
+    "Shared/Protocol/AppProtocol.swift": "457826ada09bfddacaeb40228bdc33752729f22a2942f9776b4ed4a958d865dc",
+    "Shared/Protocol/XPCEnvelope.swift": "e13e8ace8f31c343906379d9a1d23201af55df4af0da2f4045eceb46f29ff82e",
+    "Apelin/DaemonClient.swift": "078377ed11223cbb5de1155464e8e0a821cbec5f7aa476a6c16ce40f0b99f878",
+    "Apelind/PeerAuthenticator.swift": "32c1dc5c2469caf62d525c6a1382ebc677677a73da376254526d77ad7f1efc4f",
+    "Apelind/Proxy/Proxy.swift": "19d0a61ee8992c9fe189fce290235bafce6e840006cff0cecab02ddc4e02272c",
+    "Packages/ApelinKit/Sources/ApelinProtocol/Envelope.swift": "5fcd2b655a196f9167b299b6c5d8a470a5ebf72004ae1a90f41e68cefff836fa",
+    "Packages/ApelinKit/Sources/ApelinProtocol/Operations/Hello.swift": "53383ca0eb76d39886c8e339d2aef311569e0961762fd266f58a98c4c60a5daa"
+  }
+}

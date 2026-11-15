@@ -7,6 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D3A500000000000000000001 = {isa = PBXBuildFile; fileRef = D3A500000000000000000011; };
+		D3A500000000000000000002 = {isa = PBXBuildFile; fileRef = D3A500000000000000000012; };
+		D3A500000000000000000003 = {isa = PBXBuildFile; fileRef = D3A500000000000000000014; };
+		D3A200000000000000000000 /* ApelinProjectAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000000; };
+		D3A200000000000000000001 /* ApelinModel/CanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000001; };
+		D3A200000000000000000002 /* ApelinModel/EmbeddedSchemas.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000002; };
+		D3A200000000000000000003 /* ApelinModel/ExtensionManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000003; };
+		D3A200000000000000000004 /* ApelinModel/JSONDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000004; };
+		D3A200000000000000000005 /* ApelinModel/ProjectDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000005; };
+		D3A200000000000000000006 /* ApelinModel/ProjectValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000006; };
+		D3A200000000000000000007 /* ApelinModel/SchemaValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000007; };
+		D3A200000000000000000008 /* ApelinModel/Templates.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A300000000000000000008; };
+		D3A400000000000000000001 /* ApelinTemplates in Resources */ = {isa = PBXBuildFile; fileRef = D3A400000000000000000002; };
+		D3A100000000000000000001 /* DevelopmentProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A100000000000000000002 /* DevelopmentProjectsView.swift */; };
 		NB0000000000000000000001 /* NativeBuildProcess.c in Sources */ = {isa = PBXBuildFile; fileRef = NB0000000000000000000011; };
 		NB0000000000000000000002 /* NativeBuildOffload.m in Sources */ = {isa = PBXBuildFile; fileRef = NB0000000000000000000012; };
 		NB0000000000000000000003 /* NativeBuildToolchain.m in Sources */ = {isa = PBXBuildFile; fileRef = NB0000000000000000000015; };
@@ -739,6 +753,21 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D3A500000000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "ApelinNative/MinisApelinHelloTransport.m"; sourceTree = "<group>"; };
+		D3A500000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinNative/ApelinHelloInspection.swift"; sourceTree = "<group>"; };
+		D3A500000000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ApelinNative/MinisApelinHelloTransport.h"; sourceTree = "<group>"; };
+		D3A500000000000000000014 = {isa = PBXFileReference; lastKnownFileType = folder; path = "ApelinNative/Notices"; sourceTree = "<group>"; };
+		D3A300000000000000000000 /* ApelinProjectAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinProjectAdapter.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000001 /* ApelinModel/CanonicalJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/CanonicalJSON.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000002 /* ApelinModel/EmbeddedSchemas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/EmbeddedSchemas.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000003 /* ApelinModel/ExtensionManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/ExtensionManifest.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000004 /* ApelinModel/JSONDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/JSONDocument.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000005 /* ApelinModel/ProjectDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/ProjectDocument.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000006 /* ApelinModel/ProjectValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/ProjectValidation.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000007 /* ApelinModel/SchemaValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/SchemaValidator.swift"; sourceTree = "<group>"; };
+		D3A300000000000000000008 /* ApelinModel/Templates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ApelinModel/Templates.swift"; sourceTree = "<group>"; };
+		D3A400000000000000000002 /* ApelinTemplates */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ApelinTemplates; sourceTree = "<group>"; };
+		D3A100000000000000000002 /* DevelopmentProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopmentProjectsView.swift; sourceTree = "<group>"; };
 		NB0000000000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = NativeBuildProcess.c; sourceTree = "<group>"; };
 		NB0000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NativeBuildProcess.h; sourceTree = "<group>"; };
 		NB0000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NativeBuildOffload.m; sourceTree = "<group>"; };
@@ -2681,6 +2710,21 @@
 				E5MNT0103 /* MountedFoldersSettingsView.swift */,
 				E5SHV0101 /* SharedFolderVisibility.swift */,
 				E5SHV0103 /* SharedFoldersSettingsView.swift */,
+				D3A100000000000000000002 /* DevelopmentProjectsView.swift */,
+				D3A500000000000000000011,
+				D3A500000000000000000012,
+				D3A500000000000000000013,
+				D3A500000000000000000014,
+				D3A300000000000000000000 /* ApelinProjectAdapter.swift */,
+				D3A300000000000000000001 /* ApelinModel/CanonicalJSON.swift */,
+				D3A300000000000000000002 /* ApelinModel/EmbeddedSchemas.swift */,
+				D3A300000000000000000003 /* ApelinModel/ExtensionManifest.swift */,
+				D3A300000000000000000004 /* ApelinModel/JSONDocument.swift */,
+				D3A300000000000000000005 /* ApelinModel/ProjectDocument.swift */,
+				D3A300000000000000000006 /* ApelinModel/ProjectValidation.swift */,
+				D3A300000000000000000007 /* ApelinModel/SchemaValidator.swift */,
+				D3A300000000000000000008 /* ApelinModel/Templates.swift */,
+				D3A400000000000000000002 /* ApelinTemplates */,
 				E5SHV0104 /* MountDetailView.swift */,
 				E5SOUL102 /* SoulSettingsView.swift */,
 				E5CVSET0000000000000A011 /* SettingsSheet.swift */,
@@ -3021,6 +3065,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D3A500000000000000000003 /* Apelin native notices in Resources */,
+				D3A400000000000000000001 /* ApelinTemplates in Resources */,
 				E51000004 /* Preview Assets.xcassets in Resources */,
 				AA26CCB72F31067900AECF2D /* alpine-rootfs.zip in Resources */,
 				E5BSH0004 /* bashism_rules.json in Resources */,
@@ -3196,6 +3242,18 @@
 				E5MNT0003 /* MountedFoldersSettingsView.swift in Sources */,
 				E5SHV0001 /* SharedFolderVisibility.swift in Sources */,
 				E5SHV0003 /* SharedFoldersSettingsView.swift in Sources */,
+				D3A100000000000000000001 /* DevelopmentProjectsView.swift in Sources */,
+				D3A500000000000000000001 /* MinisApelinHelloTransport.m in Sources */,
+				D3A500000000000000000002 /* ApelinHelloInspection.swift in Sources */,
+				D3A200000000000000000000 /* ApelinProjectAdapter.swift in Sources */,
+				D3A200000000000000000001 /* ApelinModel/CanonicalJSON.swift in Sources */,
+				D3A200000000000000000002 /* ApelinModel/EmbeddedSchemas.swift in Sources */,
+				D3A200000000000000000003 /* ApelinModel/ExtensionManifest.swift in Sources */,
+				D3A200000000000000000004 /* ApelinModel/JSONDocument.swift in Sources */,
+				D3A200000000000000000005 /* ApelinModel/ProjectDocument.swift in Sources */,
+				D3A200000000000000000006 /* ApelinModel/ProjectValidation.swift in Sources */,
+				D3A200000000000000000007 /* ApelinModel/SchemaValidator.swift in Sources */,
+				D3A200000000000000000008 /* ApelinModel/Templates.swift in Sources */,
 				E5SHV0004 /* MountDetailView.swift in Sources */,
 				E52000001 /* LLMTypes.swift in Sources */,
 				E52000002 /* LLMError.swift in Sources */,
