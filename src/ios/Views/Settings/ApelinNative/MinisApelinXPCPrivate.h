@@ -52,8 +52,10 @@ extern void xpc_connection_send_message_with_reply(xpc_connection_t connection,
     xpc_object_t message, dispatch_queue_t replyq, xpc_handler_t handler);
 #endif
 
-// Some SDKs expose XPC but omit this iOS SPI. The create +1 annotation is
-// essential: a bare extern would cause ARC to treat the result as +0.
-extern xpc_connection_t xpc_connection_create_mach_service(const char *name,
-    dispatch_queue_t targetq, uint64_t flags) OS_OBJECT_RETURNS_RETAINED;
+// Newer iOS SDKs declare the Mach-service SPI unavailable. Use a private C
+// name bound to the existing symbol, so its SDK availability annotation does
+// not merge into this SPI declaration. Keep create's +1 ARC ownership.
+extern xpc_connection_t MinisApelinCreateMachService(const char *name,
+    dispatch_queue_t targetq, uint64_t flags)
+    __asm__("_xpc_connection_create_mach_service") OS_OBJECT_RETURNS_RETAINED;
 #endif

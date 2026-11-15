@@ -34,7 +34,7 @@ static NSError *HelloError(NSInteger code, NSString *message) {
         [self finish:nil error:HelloError(6, @"检查已替换")];
         NSUInteger generation = ++self->_generation;
         self->_completion = [completion copy];
-        self->_connection = xpc_connection_create_mach_service("wiki.qaq.apelin.service", self->_queue, 0);
+        self->_connection = MinisApelinCreateMachService("wiki.qaq.apelin.service", self->_queue, 0);
         if (!self->_connection) {
             [self finish:nil error:HelloError(1, @"服务不可用：无法创建连接")];
             return;
