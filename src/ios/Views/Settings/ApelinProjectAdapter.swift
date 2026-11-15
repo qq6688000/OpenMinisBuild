@@ -213,7 +213,7 @@ enum DevelopmentProjectEditing {
             for part in root.path.split(separator: "/").map(String.init) + Array(parts.dropLast()) {
                 guard part != ".", part != ".." else { throw TemplateError("不安全的目录路径。") }
                 let next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                guard next >= 0 else { throw TemplateError("目录不可访问或包含符号链接。") }
+                guard next >= 0 else { throw TemplateError("目录不可访问或包含符号链接：\(part)（errno=\(errno)，root=\(root.path)）。") }
                 close(fd); fd = next
             }
             return (fd, parts.last!)

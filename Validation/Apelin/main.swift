@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw TemplateError("FAIL: " + message) }
@@ -8,8 +9,11 @@ func rejects(_ label: String, _ body: () throws -> Void) throws {
     throw TemplateError("FAIL: accepted " + label)
 }
 let fm = FileManager.default
-let scratch = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString, isDirectory: true)
-try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+let temporaryScratch = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+try fm.createDirectory(at: temporaryScratch, withIntermediateDirectories: true)
+guard let physicalScratch = realpath(temporaryScratch.path, nil) else { throw TemplateError("Cannot resolve scratch directory") }
+let scratch = URL(fileURLWithPath: String(cString: physicalScratch), isDirectory: true)
+free(physicalScratch)
 defer { try? fm.removeItem(at: scratch) }
 let resources = try ApelinProjectAdapter.resources
 try require(fm.fileExists(atPath: resources.path), "Bundle.main resources")
