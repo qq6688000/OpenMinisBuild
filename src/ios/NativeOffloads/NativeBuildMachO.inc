@@ -33,6 +33,7 @@ NSDictionary *NBMachOInspect(NSString *path)
         [dependencies addObject:name];
     }
     out[@"dependencies"] = dependencies;
+    out[@"dependencies_truncated"] = @(info.dependencies_truncated);
     out[@"exists"] = @(info.exists);
     out[@"valid"] = @(info.valid);
     out[@"size"] = @(info.size);

@@ -37,12 +37,12 @@ NSDictionary *NBPathDiagnostics(NSString *path) {
 #include "NativeBuildMachO.inc"
 #include "NativeBuildRuntime.inc"
 
-static BOOL NBExecutableFile(NSString *path) {
+static BOOL NBReadableToolFile(NSString *path) {
     if (path.length == 0) return NO;
     const char *p = path.fileSystemRepresentation;
     struct stat st;
     if (stat(p, &st) != 0 || !S_ISREG(st.st_mode)) return NO;
-    return access(p, X_OK) == 0;
+    return access(p, R_OK) == 0;
 }
 
 /* Writable staging location. Execution permission is installation-dependent;
@@ -59,22 +59,28 @@ NSString *NBSearchPathForSharedCache(NSString *name) {
 }
 
 NSString *NBToolchainRoot(void) {
-    // Preserve the deployed archive layout. Signature layout changes and EPERM
-    // are observations; neither blob count nor path proves the policy cause.
+    NSString *bundle = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Toolchain"];
+    BOOL directory = NO;
+    if ([NSFileManager.defaultManager fileExistsAtPath:bundle isDirectory:&directory] && directory)
+        return bundle;
     NSString *cache = NBSearchPathForSharedCache(@"native-toolchain");
-    if (cache.length) return [cache stringByAppendingPathComponent:@"Toolchain"];
-    return nil;
+    return cache.length ? [cache stringByAppendingPathComponent:@"Toolchain"] : nil;
+}
+
+NSString *NBSDKRoot(void) {
+    NSString *cache = NBSearchPathForSharedCache(@"native-toolchain");
+    return cache.length ? [cache stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"] : nil;
 }
 
 NBToolchainProbe NBToolchainCheck(NSString *root) {
     NBToolchainProbe r = {0};
     if (root.length == 0) root = NBToolchainRoot();
     if (root.length == 0) return r;
-    r.clang = NBExecutableFile([root stringByAppendingPathComponent:@"bin/clang"]);
-    r.ld    = NBExecutableFile([root stringByAppendingPathComponent:@"bin/ld"]);
-    r.ldid  = NBExecutableFile([root stringByAppendingPathComponent:@"bin/ldid"]);
-    // Provision places SDK beside Toolchain, shared with the CLI compiler.
-    NSString *archive = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"iPhoneOS16.5.sdk/SDKSettings.plist"];
+    r.clang = NBReadableToolFile([root stringByAppendingPathComponent:@"bin/clang"]);
+    r.ld    = NBReadableToolFile([root stringByAppendingPathComponent:@"bin/ld"]);
+    r.ldid  = NBReadableToolFile([root stringByAppendingPathComponent:@"bin/ldid"]);
+    // SDK provisioning is independent of the selected tool location.
+    NSString *archive = [NBSDKRoot() stringByAppendingPathComponent:@"SDKSettings.plist"];
     r.sdk = archive.length > 0 && access(archive.fileSystemRepresentation, R_OK) == 0;
     r.resourceDir = (access([[root stringByAppendingPathComponent:@"lib/clang/23/include"]
                               fileSystemRepresentation], R_OK) == 0);
@@ -102,6 +108,9 @@ NSDictionary *NBToolchainDescribe(NSString *root) {
         @"files":files, @"files_ready":@(filesReady), @"signatures":signatures,
         @"execution_verified":@NO,
         @"root": root ?: @"",
+        @"source": [root isEqual:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Toolchain"]] ? @"bundle" : @"cache_fallback",
+        @"sdk_root": NBSDKRoot() ?: @"",
+        @"sdk_source": @"cache",
         @"paths": @{@"clang":NBPathDiagnostics([root stringByAppendingPathComponent:@"bin/clang"]),
                     @"ld":NBPathDiagnostics([root stringByAppendingPathComponent:@"bin/ld"]),
                     @"ldid":NBPathDiagnostics([root stringByAppendingPathComponent:@"bin/ldid"])},
@@ -113,7 +122,7 @@ NSDictionary *NBToolchainDescribe(NSString *root) {
         @"resource_dir": @(p.resourceDir),
         @"ready": @(p.clang && p.ld && p.ldid && p.sdk && p.resourceDir),
         @"sdk_mode": @"provisioned-sdk-directory",
-        @"note": @"ready only means every expected path exists and is executable; "
+        @"note": @"ready only means every expected path is readable; "
                  @"run the probe tests on this installation before claiming a build."
     };
 }

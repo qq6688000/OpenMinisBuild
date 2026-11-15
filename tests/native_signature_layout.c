@@ -23,5 +23,18 @@ int main(void) {
     be(s+8,2); be(s+64,13); r=parse(b,sizeof(b)); assert(r.signature_blobs==0);
     be(s+64,12); be(s+28,0xfade7171); r=parse(b,sizeof(b)); assert(r.signature_blobs==2 && r.code_directory_size==0);
     puts("PASS production parser: CodeDirectory differs from SuperBlob/padding; truncated indexes/offsets/lengths do not report valid layout");
+    unsigned char many[32+33*32]={0};
+    le(many,0xfeedfacf); le(many+4,0x100000c); le(many+12,2);
+    le(many+16,33); le(many+20,33*32);
+    for (unsigned i=0;i<33;i++) {
+        unsigned char *cmd=many+32+i*32;
+        le(cmd,12); le(cmd+4,32); le(cmd+8,24); memcpy(cmd+24,"/lib/a",7);
+    }
+    r=parse(many,sizeof(many));
+    assert(r.dependency_count==32 && r.dependencies_truncated);
+    /* Validate commands beyond the storage cap too: malformed is still invalid. */
+    memset(many+32+32*32+24,'x',8);
+    NBMachOParse(many,sizeof(many),&r); assert(!r.valid);
+    puts("PASS: >32 dependencies are bounded diagnostics; malformed trailing commands still reject; CLI requires complete dependencies");
     return 0;
 }

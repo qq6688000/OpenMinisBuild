@@ -62,7 +62,7 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
             // iOS commonly returns /var/mobile paths whose system /var parent
             // aliases /private/var. Resolve that alias before composing children.
             NSString *root = NBToolchainRoot().stringByResolvingSymlinksInPath;
-            NSString *sdk = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"];
+            NSString *sdk = NBSDKRoot().stringByResolvingSymlinksInPath;
             NSString *clang = [root stringByAppendingPathComponent:@"bin/clang"];
             NSString *resource = [root stringByAppendingPathComponent:@"lib/clang/23"];
             NSString *linker = [root stringByAppendingPathComponent:@"bin/ld"];
@@ -73,8 +73,7 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
             }
             report[@"compiler"] = clang ?: @"";
             report[@"sdk"] = sdk ?: @"";
-            // Provision's actual SDK layout is a sibling of Toolchain, not a
-            // registry assertion and not the erroneous Toolchain/sdk lookup.
+            // The SDK is provisioned to cache independently of bundle tools.
             BOOL paths = root && [fm isExecutableFileAtPath:clang] &&
                 [fm isReadableFileAtPath:[sdk stringByAppendingPathComponent:@"SDKSettings.plist"]] &&
                 [fm isReadableFileAtPath:[sdk stringByAppendingPathComponent:@"System/Library/Frameworks/Foundation.framework/Headers/Foundation.h"]] &&
@@ -171,7 +170,7 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
             ok = [inspection[@"valid"] boolValue] && [inspection[@"arch"] isEqual:@"arm64"] &&
                 [inspection[@"filetype"] isEqual:@"executable"] && [inspection[@"pie"] boolValue] &&
                 [inspection[@"has_main"] boolValue] && [inspection[@"has_ios_build"] boolValue] &&
-                ![inspection[@"has_code_signature"] boolValue] && dependencies.count == actual.count &&
+                ![inspection[@"has_code_signature"] boolValue] && ![inspection[@"dependencies_truncated"] boolValue] && dependencies.count == actual.count &&
                 [required isSubsetOfSet:actual] && [actual isSubsetOfSet:allowed];
             report[@"ok"] = @(ok);
             report[@"phase"] = @"artifact-inspection";
@@ -200,7 +199,7 @@ static void nb_cli_output(NBPStream stream, const void *bytes, size_t size, void
         if (operation == NBLocalToolchainOperationProvision) report[@"provision"] = NBProvisionBundledToolchain();
         report[@"toolchain"] = NBToolchainDescribe(nil);
         NSString *root = NBToolchainRoot().stringByResolvingSymlinksInPath;
-        NSString *sdk = [[root stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"];
+        NSString *sdk = NBSDKRoot().stringByResolvingSymlinksInPath;
         BOOL headers = [NSFileManager.defaultManager isReadableFileAtPath:[sdk stringByAppendingPathComponent:@"System/Library/Frameworks/Foundation.framework/Headers/Foundation.h"]];
         report[@"files_ready"] = @([report[@"toolchain"][@"files_ready"] boolValue] && headers);
         report[@"execution_state"] = @"not_probed";

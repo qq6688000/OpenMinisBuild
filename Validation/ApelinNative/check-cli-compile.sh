@@ -3,8 +3,13 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 sdk=${SDKROOT:-/opt/theos/sdks/iPhoneOS16.5.sdk}
-cc=${CLANG:-clang}
-ld=${LD64:-ld64.lld}
+toolbin=${TOOLCHAIN_ROOT:+$TOOLCHAIN_ROOT/bin/}
+cc=${CLANG:-${toolbin}clang}
+if [ -n "${TOOLCHAIN_ROOT:-}" ]; then
+    ld=${LD64:-${toolbin}ld}
+else
+    ld=${LD64:-ld64.lld}
+fi
 out=${1:-$(mktemp -d)}
 mkdir -p "$out"
 src="$root/src/ios/NativeOffloads"

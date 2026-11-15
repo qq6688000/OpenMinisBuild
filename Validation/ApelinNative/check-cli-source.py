@@ -8,7 +8,7 @@ s=(r/'src/ios/Views/Settings/ApelinProjectAdapter.swift').read_text().split('enu
 u=(r/'src/ios/Views/Settings/DevelopmentProjectsView.swift').read_text()
 assert '#include "NativeCLICompile.inc"' in (n/'NativeBuildOffload.m').read_text()
 assert '#import "NativeBuildOffload.h"' in (r/'src/ios/MinisApp-Bridging-Header.h').read_text()
-for token in ['NBPRun(', 'NBMachOInspect(artifact)', 'NBP_CANCELLED', 'NBP_TIMED_OUT', 'atomic_load', 'atomic_store', '.envp=env', '.timeout_ms=120000', '.terminate_grace_ms=250', '131072', 'stringByDeletingLastPathComponent', 'Foundation.framework/Headers/Foundation.h', '@"object"', '@"arm64"', '@"signed":@NO', '@"installed":@NO']:
+for token in ['NBPRun(', 'NBMachOInspect(artifact)', 'NBP_CANCELLED', 'NBP_TIMED_OUT', 'atomic_load', 'atomic_store', '.envp=env', '.timeout_ms=120000', '.terminate_grace_ms=250', '131072', 'NBSDKRoot()', 'Foundation.framework/Headers/Foundation.h', '@"object"', '@"arm64"', '@"signed":@NO', '@"installed":@NO']:
     assert token in m,token
 for token in ['DevelopmentProjectEditing.parent', 'DevelopmentProjectEditing.readAt', 'ApelinProjectAdapter.validate', 'ProjectValidation.load', 'compiles == [.compile(product: "tool", flags: [])]', 'names == ["main.m"]', 'record["target"] as? String == "ios"']:
     assert token in s,token

@@ -1,14 +1,5 @@
-/* [T-native-build] Runtime toolchain discovery for minis-native-build.
- *
- * Device-verified layout (probe v8/v9, iOS 16.4.1): the exact same steps —
- * clang + iPhoneOS SDK + ld + ldid staged under the app bundle and executed
- * through NBPRun — produced, signed and exported an installable IPA.
- *
- * This header/impl only *locates and describes* a staged toolchain. It never
- * downloads, never installs into PATH and never claims a compiler works because
- * a file exists: every check is a stat/access probe plus the caller's optional
- * live `--version` run, and `ready` means "paths present and executable".
- */
+/* Tool discovery and file diagnostics only. Actual launch probes establish
+ * execution readiness on this installation; bundle placement does not prove it. */
 #ifndef MINIS_NATIVE_BUILD_TOOLCHAIN_H
 #define MINIS_NATIVE_BUILD_TOOLCHAIN_H
 
@@ -22,9 +13,11 @@ typedef struct {
     BOOL clang, ld, ldid, sdk, resourceDir;
 } NBToolchainProbe;
 
-/* Root of a staged toolchain inside the app bundle. Returns nil when the app
- * was built without one (normal App Store build: nothing is bundled). */
+/* Prefer bundle Toolchain/ when present, otherwise the legacy cache location.
+ * NBToolchainDescribe reports the selected source; no launch-based fallback. */
 NSString *NBToolchainRoot(void);
+/* SDK always lives in the writable cache, independently of the tool root. */
+NSString *NBSDKRoot(void);
 
 /* Writable staging location <Data>/Library/Caches/native-toolchain/<name>.
  * Execution readiness must be established independently on this installation. */

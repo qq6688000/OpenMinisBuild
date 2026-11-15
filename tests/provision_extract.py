@@ -45,8 +45,14 @@ with tempfile.TemporaryDirectory() as tmp:
         arc=pathlib.Path(arg)
         with tarfile.open(arc) as t:
             members=t.getmembers(); strip=members[0].name.rstrip('/')
-            dest=root/arc.stem
+            # Match production: tools in bundle; SDK in an independent cache.
+            # Destination must depend on archive layout, not archive filename.
+            dest=(root/'Minis.app'/'Toolchain' if strip == 'Toolchain'
+                  else root/'Library'/'Caches'/'native-toolchain'/strip)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             run(arc,dest,strip); run(arc,dest,strip)
+            if strip == 'iPhoneOS16.5.sdk':
+                assert not (root/'Minis.app'/strip).exists()
             files=links=0
             t.close()
             t = tarfile.open(arc, 'r|gz')

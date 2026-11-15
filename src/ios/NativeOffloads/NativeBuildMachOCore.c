@@ -102,10 +102,14 @@ void NBMachOParse(const void *data, size_t len, NBMachOInfo *out)
                 }
                 const unsigned char *name = p + off + nameoff;
                 const unsigned char *end = memchr(name, 0, lc.cmdsize - nameoff);
-                if (!end || end == name || (size_t)(end - name) >= 256 || out->dependency_count >= 32) {
-                    nb_fail(out, "bad_dylib_name_or_limit"); return;
+                if (!end || end == name) {
+                    nb_fail(out, "bad_dylib_name"); return;
                 }
-                memcpy(out->dependencies[out->dependency_count++], name, (size_t)(end - name));
+                if ((size_t)(end - name) >= sizeof(out->dependencies[0]) || out->dependency_count >= 32) {
+                    out->dependencies_truncated = true;
+                } else {
+                    memcpy(out->dependencies[out->dependency_count++], name, (size_t)(end - name));
+                }
                 break;
             }
             case LC_MAIN: {

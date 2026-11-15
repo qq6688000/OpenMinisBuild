@@ -25,7 +25,8 @@ typedef struct {
     char arch[16];          /* arm64 / x86_64 / other / unknown */
     char filetype[16];      /* object / executable / dylib / ... / unknown */
     unsigned dependency_count;
-    char dependencies[32][256]; /* bounded LC_LOAD_* names; overflow is invalid */
+    char dependencies[32][256]; /* bounded LC_LOAD_* names */
+    bool dependencies_truncated; /* valid commands exceeded diagnostic storage */
     bool pie;
     bool has_main;
     bool has_ios_build;

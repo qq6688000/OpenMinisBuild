@@ -165,8 +165,11 @@ jobs:
           /tmp/native-signature-layout
           python3 tests/provision_extract.py src/ios/ToolchainResources/MinToolchain.tgz src/ios/ToolchainResources/MinSDK.tgz
           clang -fobjc-arc -framework Foundation -larchive -Isrc/ios/NativeOffloads tests/provision_foundation.m src/ios/NativeOffloads/NativeBuildProvision.m src/ios/NativeOffloads/NativeBuildToolchain.m src/ios/NativeOffloads/NativeBuildProcess.c src/ios/NativeOffloads/NativeBuildMachOCore.c -o /tmp/provision-foundation
-          /tmp/provision-foundation src/ios/ToolchainResources/MinToolchain.tgz Toolchain
-          /tmp/provision-foundation src/ios/ToolchainResources/MinSDK.tgz iPhoneOS16.5.sdk
+          FIXTURE=$(mktemp -d)
+          /tmp/provision-foundation src/ios/ToolchainResources/MinToolchain.tgz Toolchain "$FIXTURE/Minis.app/Toolchain"
+          /tmp/provision-foundation src/ios/ToolchainResources/MinSDK.tgz iPhoneOS16.5.sdk "$FIXTURE/cache/iPhoneOS16.5.sdk"
+          [ ! -d "$FIXTURE/Minis.app/iPhoneOS16.5.sdk" ]
+          rm -rf "$FIXTURE"
 
       - name: Package IPA
         run: |
@@ -179,6 +182,14 @@ jobs:
           cp -R "$APP" Payload/
           /usr/libexec/PlistBuddy -c "Add :MinisBuildRevision string $GITHUB_SHA" Payload/Minis.app/Info.plist
           /usr/libexec/PlistBuddy -c "Add :MinisBuildRun string $GITHUB_RUN_ID" Payload/Minis.app/Info.plist
+          # Comparison variant: tools in bundle, SDK archive only.
+          mkdir -p Payload/Minis.app/ToolchainResources
+          rm -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz
+          tar xzf src/ios/ToolchainResources/MinToolchain.tgz -C Payload/Minis.app
+          cp src/ios/ToolchainResources/MinSDK.tgz Payload/Minis.app/ToolchainResources/
+          [ -f Payload/Minis.app/Toolchain/bin/clang ]
+          [ ! -d Payload/Minis.app/iPhoneOS16.5.sdk ]
+          python3 tests/sign_bundle_tools.py Payload/Minis.app/Toolchain
           # Sign EVERY Mach-O in the bundle, not just the app binary.
           # Only signing Minis.app/Minis left the three .appex binaries unsigned;
           # iOS then refuses to load the extension and the app crashes as soon as
@@ -210,32 +221,9 @@ jobs:
               echo "    UNSIGNED $(basename "$M")" >&2; fail=1; fi
           done
           [ "$fail" -eq 0 ] || { echo "!! unsigned binaries in bundle" >&2; exit 1; }
-          # Preserve the pinned archive bytes and deployed cache layout.
-          # Device EPERM is still unresolved: neither signature blob count nor
-          # a data-container location identifies the execution policy cause.
-          # Runtime diagnostics report actual process entitlements and launch
-          # results separately from successful extraction/readable files.
-          echo "==> stage toolchain archives into bundle"
-          mkdir -p Payload/Minis.app/ToolchainResources
-          cp src/ios/ToolchainResources/MinToolchain.tgz Payload/Minis.app/ToolchainResources/
-          cp src/ios/ToolchainResources/MinSDK.tgz Payload/Minis.app/ToolchainResources/
-          ls -lh Payload/Minis.app/ToolchainResources
-          [ -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz ] || { echo "!! toolchain archive missing"; exit 1; }
-          [ -f Payload/Minis.app/ToolchainResources/MinSDK.tgz ] || { echo "!! SDK archive missing"; exit 1; }
-          # Preserve archive-only packaging; no unreviewed helper/path fallback.
-          [ ! -d Payload/Minis.app/Toolchain ] || { echo "!! unexpected Toolchain/ dir in archive-only packaging" >&2; exit 1; }
-          # Check that each pinned archived helper has readable signature data.
-          # ldid -e is extraction, not signature/trust verification.
-          echo "==> inspect archived toolchain signature data"
-          rm -rf /tmp/tkcheck && mkdir -p /tmp/tkcheck
-          tar xzf Payload/Minis.app/ToolchainResources/MinToolchain.tgz -C /tmp/tkcheck
-          for T in clang ld ldid; do
-            M=/tmp/tkcheck/Toolchain/bin/$T
-            [ -f "$M" ] || { echo "!! missing $T in archive" >&2; exit 1; }
-            ldid -e "$M" >/dev/null 2>&1 || { echo "!! unreadable signature: $T" >&2; exit 1; }
-            echo "    ok $T $(stat -f%z "$M") bytes"
-          done
-          rm -rf /tmp/tkcheck
+          [ -f Payload/Minis.app/ToolchainResources/MinSDK.tgz ]
+          [ ! -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz ]
+          [ ! -d Payload/Minis.app/Toolchain/sdk ]
           zip -qry Minis-unsigned.ipa Payload
           ls -lh Minis-unsigned.ipa
 

@@ -6,13 +6,14 @@ import os, re, struct, subprocess, tempfile
 r = Path(__file__).resolve().parents[2]
 n = r / 'src/ios/NativeOffloads'
 sdk = os.environ.get('SDKROOT', '/opt/theos/sdks/iPhoneOS16.5.sdk')
-cc = os.environ.get('CLANG', 'clang')
-ld = os.environ.get('LD64', 'ld64.lld')
+toolroot = os.environ.get('TOOLCHAIN_ROOT')
+cc = os.environ.get('CLANG', str(Path(toolroot)/'bin/clang') if toolroot else 'clang')
+ld = os.environ.get('LD64', str(Path(toolroot)/'bin/ld') if toolroot else 'ld64.lld')
 class Info(C.Structure):
     _fields_ = [('exists', C.c_bool), ('valid', C.c_bool), ('size', C.c_ulonglong),
                 ('arch', C.c_char*16), ('filetype', C.c_char*16),
                 ('dependency_count', C.c_uint), ('dependencies', (C.c_char*256)*32),
-                ('pie', C.c_bool), ('has_main', C.c_bool), ('has_ios_build', C.c_bool),
+                ('dependencies_truncated', C.c_bool), ('pie', C.c_bool), ('has_main', C.c_bool), ('has_ios_build', C.c_bool),
                 ('min_ios', C.c_uint), ('has_code_signature', C.c_bool),
                 ('signature_size', C.c_ulonglong), ('signature_blobs', C.c_uint),
                 ('code_directory_size', C.c_ulonglong), ('error', C.c_char*48)]
@@ -41,7 +42,8 @@ with tempfile.TemporaryDirectory(prefix='cli-link-') as tmp:
     data=(p/'hello-cli').read_bytes(); i=inspect(data)
     assert i.valid and i.arch==b'arm64' and i.filetype==b'executable'
     assert i.pie and i.has_main and i.has_ios_build and i.min_ios==0x100000
-    assert not i.has_code_signature
+    assert not i.has_code_signature and not i.dependencies_truncated
+    assert '![inspection[@"dependencies_truncated"] boolValue]' in source
     deps={bytes(i.dependencies[j]).split(b'\0')[0].decode() for j in range(i.dependency_count)}
     required={'/usr/lib/libSystem.B.dylib','/usr/lib/libobjc.A.dylib','/System/Library/Frameworks/Foundation.framework/Foundation'}
     assert required <= deps <= required | {'/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'}

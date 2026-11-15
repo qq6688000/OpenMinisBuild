@@ -40,18 +40,19 @@ NSDictionary *NBProvisionBundledToolchain(void) {
         NSString *cache=NBSearchPathForSharedCache(@"native-toolchain").stringByResolvingSymlinksInPath;
         if(!cache) return @{@"ready":@NO, @"ok":@NO, @"error":@"Writable native toolchain cache unavailable"};
         NSFileManager *fm=[NSFileManager defaultManager];
-        NSString *toolRoot=[cache stringByAppendingPathComponent:@"Toolchain"];
+        NSString *toolRoot=NBToolchainRoot();
+        BOOL bundleTools=[toolRoot isEqual:[bundle stringByAppendingPathComponent:@"Toolchain"]];
 
-        NSDictionary *toolchain=NBExtractArchive([resDir stringByAppendingPathComponent:@"MinToolchain.tgz"],
+        NSDictionary *toolchain=bundleTools ? @{ @"ok":@YES, @"skipped":@YES, @"source":@"bundle" } : NBExtractArchive([resDir stringByAppendingPathComponent:@"MinToolchain.tgz"],
                                                  toolRoot,@"Toolchain");
         NSDictionary *sdk=NBExtractArchive([resDir stringByAppendingPathComponent:@"MinSDK.tgz"],
-                                           [cache stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"],@"iPhoneOS16.5.sdk");
+                                           NBSDKRoot(),@"iPhoneOS16.5.sdk");
 
         /* Trust nothing that was not checked: stat the things a build needs. */
         NSString *clang=[toolRoot stringByAppendingPathComponent:@"bin/clang"];
         NSString *ld=[toolRoot stringByAppendingPathComponent:@"bin/ld"];
         NSString *ldid=[toolRoot stringByAppendingPathComponent:@"bin/ldid"];
-        NSString *sdkDir=[cache stringByAppendingPathComponent:@"iPhoneOS16.5.sdk"];
+        NSString *sdkDir=NBSDKRoot();
         NSString *resDirClang=[toolRoot stringByAppendingPathComponent:@"lib/clang/23"];
         BOOL clangOK=[fm isReadableFileAtPath:clang];
         BOOL ldOK=[fm isReadableFileAtPath:ld];
@@ -98,7 +99,8 @@ NSDictionary *NBProvisionBundledToolchain(void) {
             @"execution_verified":@NO,
             @"execution_state":[execProbe[@"clang_run"][@"errno"] intValue] == EPERM ? @"denied" : @"requires_full_probe",
             @"runtime":NBRuntimeDiagnostics(),
-            @"tool_root":toolRoot,@"sdk_dir":sdkDir,@"path_diagnostics":NBToolchainDescribe(toolRoot)[@"paths"],
+            @"tool_source":bundleTools ? @"bundle" : @"cache_fallback",
+            @"sdk_source":@"cache", @"tool_root":toolRoot,@"sdk_dir":sdkDir,@"path_diagnostics":NBToolchainDescribe(toolRoot)[@"paths"],
             @"sdk_archive":sdk,@"toolchain_archive":toolchain,
             @"clang":@(clangOK),@"ld":@(ldOK),@"ldid":@(ldidOK),
             @"sdk":@(sdkOK),@"resource_dir":@(resOK),
