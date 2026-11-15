@@ -1,0 +1,12 @@
+Package: com.minis.seagullpair
+Name: SeagullPair
+Version: 0.1.0
+Architecture: iphoneos-arm64e
+Description: SeagullPair experimental multitasking tweak
+ Maintains the experimental Seagull multitasking behavior in SpringBoard.
+Author: Minis
+Maintainer: Minis
+Section: Tweaks
+Priority: optional
+Depends: firmware (>= 16.1), mobilesubstrate
+Conflicts: com.82flex.panoramicview

@@ -1,0 +1,31 @@
+name: SeagullPair experimental deb
+on:
+  workflow_dispatch:
+  push:
+    branches: [seagull-pair-build]
+    paths:
+      - 'seagull-pair/**'
+      - '.github/workflows/seagull-deb.yml'
+permissions:
+  contents: read
+jobs:
+  deb:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging tool
+        run: brew install dpkg
+      - name: Build and verify
+        working-directory: seagull-pair
+        run: |
+          set -o pipefail
+          python3 build-apple.py 2>&1 | tee apple-build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SeagullPair-build
+          path: |
+            seagull-pair/dist-apple/*.deb
+            seagull-pair/apple-build.log
+          if-no-files-found: error
