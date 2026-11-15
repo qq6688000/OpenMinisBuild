@@ -96,7 +96,7 @@ private enum DevelopmentProjects {
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw failure("同名项目或文件已存在，请使用其他名称。")
         }
-        let staging = try checkedRoot().appendingPathComponent(".creating-" + UUID().uuidString(), isDirectory: true)
+        let staging = try checkedRoot().appendingPathComponent(".creating-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: staging.appendingPathComponent("Sources"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
         let project = DevelopmentProject(schemaVersion: 1, id: UUID(), name: name, template: choice.rawValue, target: choice == .linux ? "linux" : "ios", createdAt: Date(), buildRecipe: choice == .linux ? "sh build.sh" : "unconfigured")
