@@ -31,7 +31,7 @@
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.windowLevel = UIWindowLevelStatusBar + 120.0;
+        self.windowLevel = 2100.0;
         self.backgroundColor = [UIColor clearColor];
         self.opaque = NO;
         self.userInteractionEnabled = YES;

@@ -119,7 +119,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         win = [[DPPassthroughWindow alloc] initWithFrame:bounds];
     }
 
-    win.windowLevel = UIWindowLevelStatusBar + 120.0;
+    win.windowLevel = 2100.0; // above apps, below keyboard window pass-through
     win.backgroundColor = [UIColor clearColor];
     win.hidden = NO;
 
@@ -153,7 +153,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         return;
     }
     self.overlayWindow.hidden = NO;
-    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
+    self.overlayWindow.windowLevel = 2100.0;
     // 重新挂到当前 scene（切 App 后 scene 可能变）
     if (@available(iOS 13.0, *)) {
         UIWindowScene *scene = [self activeWindowScene];
