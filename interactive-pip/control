@@ -1,0 +1,10 @@
+Package: com.seagull.interactivepip
+Name: InteractivePiP - 交互分屏
+Version: 0.1.1
+Architecture: iphoneos-arm64e
+Description: Native live-scene floating windows and dual-app split for iOS 16 RootHide. True arm64e (Apple ld -fixup_chains).
+Maintainer: InteractivePiP Contributors
+Author: InteractivePiP Contributors; DualPane Contributors
+Section: Tweaks
+Depends: firmware (>= 16.1), firmware (<< 17.0), mobilesubstrate, preferenceloader, roothide
+Conflicts: com.dualpane.tweak

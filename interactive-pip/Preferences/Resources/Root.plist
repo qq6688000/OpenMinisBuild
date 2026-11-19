@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>DualPane</string>
+			<key>footerText</key><string>RootHide Bootstrap roothide arm64e. Floating windows only.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>enabled</string>
+			<key>label</key><string>Enabled</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>Activation</string>
+			<key>footerText</key><string>Swipe an icon up or long-press an icon to open a resizable floating window.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>gestureIconSwipeUp</string>
+			<key>label</key><string>Icon Swipe Up</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>gestureIconLongPress</string>
+			<key>label</key><string>Icon Long Press</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><false/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>gestureEdgeSwipe</string>
+			<key>label</key><string>Edge Swipe</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSliderCell</string>
+			<key>default</key><real>0.5</real>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>edgeSwipeSensitivity</string>
+			<key>min</key><real>0.0</real><key>max</key><real>1.0</real>
+			<key>showValue</key><true/>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>Floating Window</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSliderCell</string>
+			<key>default</key><real>280</real>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>floatingWidth</string>
+			<key>min</key><real>180</real><key>max</key><real>400</real>
+			<key>showValue</key><true/>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSliderCell</string>
+			<key>default</key><real>500</real>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>floatingHeight</string>
+			<key>min</key><real>220</real><key>max</key><real>700</real>
+			<key>showValue</key><true/>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSliderCell</string>
+			<key>default</key><real>1.0</real>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>floatingOpacity</string>
+			<key>min</key><real>0.5</real><key>max</key><real>1.0</real>
+			<key>showValue</key><true/>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSliderCell</string>
+			<key>default</key><real>16</real>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>floatingCornerRadius</string>
+			<key>min</key><real>0</real><key>max</key><real>32</real>
+			<key>showValue</key><true/>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>showBorder</string>
+			<key>label</key><string>Show Border</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSegmentCell</string>
+			<key>default</key><integer>2</integer>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>maxFloatingWindows</string>
+			<key>validTitles</key><array><string>1</string><string>2</string><string>3</string><string>4</string></array>
+			<key>validValues</key><array><integer>1</integer><integer>2</integer><integer>3</integer><integer>4</integer></array>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>Behavior</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>hapticFeedback</string>
+			<key>label</key><string>Haptic Feedback</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>animateTransitions</string>
+			<key>label</key><string>Animations</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>rememberLastApps</string>
+			<key>label</key><string>Remember Last Apps</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.interactivepip</string>
+			<key>key</key><string>allowLandscape</string>
+			<key>label</key><string>Allow Landscape</string>
+			<key>PostNotification</key><string>com.seagull.interactivepip/settings.changed</string>
+		</dict>
+
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>Apps</string>
+			<key>footerText</key><string>Favorites appear first. Blacklisted apps cannot be opened in a floating window.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSLinkCell</string>
+			<key>detail</key><string>DPAppListController</string><key>isController</key><true/>
+			<key>label</key><string>Favorites</string><key>listType</key><string>favorites</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSLinkCell</string>
+			<key>detail</key><string>DPAppListController</string><key>isController</key><true/>
+			<key>label</key><string>Blacklist</string><key>listType</key><string>blacklist</string>
+		</dict>
+
+		<dict><key>cell</key><string>PSGroupCell</string><key>label</key><string>Actions</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>action</key><string>respring</string><key>label</key><string>Respring</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>action</key><string>resetSettings</string><key>label</key><string>Reset Settings</string></dict>
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>About</string>
+			<key>footerText</key><string>DualPane 1.2.0. RootHide Bootstrap roothide arm64e.</string>
+		</dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>action</key><string>openGitHub</string><key>label</key><string>Open GitHub</string></dict>
+	</array>
+	<key>title</key><string>DualPane</string>
+</dict>
+</plist>
