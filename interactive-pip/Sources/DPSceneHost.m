@@ -1391,8 +1391,7 @@
     self.scene = scene;
     self.lastCommittedSceneSize = CGSizeZero;
     if (self.nativeSceneSize.width < 2 || self.nativeSceneSize.height < 2) {
-        self.nativeSceneSize = self.view.bounds.size.width > 2
-            ? self.view.bounds.size : [UIScreen mainScreen].bounds.size;
+        self.nativeSceneSize = [UIScreen mainScreen].bounds.size;
     }
     hostView.autoresizingMask = UIViewAutoresizingNone;
     hostView.clipsToBounds = YES;
@@ -1420,9 +1419,14 @@
     if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
 
-    self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.frame = CGRectMake(0, 0, target.width, target.height);
-    self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    // Uniform downscale: the app keeps its native layout and the whole UI
+    // (fonts, buttons, spacing) shrinks together. No axis distortion.
+    self.hostView.autoresizingMask = UIViewAutoresizingNone;
+    self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
+    self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    CGFloat k = MIN(target.width / canvas.width, target.height / canvas.height);
+    self.hostView.transform = CGAffineTransformMakeScale(k, k);
+    self.view.backgroundColor = [UIColor blackColor];
 }
 
 - (void)applySnapshotFallback {
@@ -1648,12 +1652,10 @@
 - (void)updateSceneSettingsWithSize:(CGSize)size {
     if (!self.scene || size.width < 1 || size.height < 1) return;
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
-    if ([self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES]) {
+    if ([self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO]) {
         self.lastCommittedSceneSize = size;
         [self layoutHostView];
-        [self.hostView setNeedsLayout];
-        [self.hostView layoutIfNeeded];
-        NSLog(@"[InteractivePiP] viewport %@ %.0fx%.0f", self.bundleID, size.width, size.height);
+        NSLog(@"[InteractivePiP] scaled host %@ pane=%.0fx%.0f", self.bundleID, size.width, size.height);
     }
 }
 

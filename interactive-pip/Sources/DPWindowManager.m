@@ -24,6 +24,8 @@
 @property (nonatomic, assign) BOOL oldWindowEnabled;
 @property (nonatomic, weak, nullable) DPFloatingWindow *keyboardRoutedWindow;
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
+@property (nonatomic, strong, nullable) NSValue *frameBeforeKeyboard;
+- (void)avoidKeyboardWithHeight:(CGFloat)height;
 - (BOOL)kbBool:(id)kb name:(NSString *)n;
 - (void)kbBool:(id)kb name:(NSString *)n value:(BOOL)v;
 - (void)syncOverlayVisibility;
@@ -34,6 +36,11 @@
 - (id)sharedRemoteKeyboards;
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
 @end
+
+static CGFloat _kbHeightFromNotification(NSNotification *note) {
+    CGRect r = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    return r.size.height;
+}
 
 @implementation DPWindowManager
 
@@ -61,11 +68,11 @@
                                                       name:kDPSettingsChangedNotification
                                                     object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillHide)
+                                                   selector:@selector(hostedKeyboardWillHide:)
                                                        name:UIKeyboardWillHideNotification
                                                      object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillShow)
+                                                   selector:@selector(hostedKeyboardWillShow:)
                                                        name:UIKeyboardWillShowNotification
                                                      object:nil];
     }
@@ -647,13 +654,17 @@
     }
 }
 
-- (void)hostedKeyboardWillShow {
+- (void)hostedKeyboardWillShow:(NSNotification *)note {
     if (self.mode != DPPresentationModeNone) {
         [self prepareForHostedInput];
     }
+    [self avoidKeyboardWithHeight:_kbHeightFromNotification(note)];
 }
 
-- (void)hostedKeyboardWillHide {
+
+
+- (void)hostedKeyboardWillHide:(NSNotification *)note {
+    [self avoidKeyboardWithHeight:0];
     // Keep remote keyboard support armed while a hosted app is open. UIKit
     // sends hide notifications while changing text fields.
     if (self.mutableFloatingWindows.count > 0) {
@@ -962,5 +973,33 @@
     }
 }
 
+
+#pragma mark - Keyboard avoidance
+
+- (void)avoidKeyboardWithHeight:(CGFloat)height {
+    DPFloatingWindow *w = self.focusedWindow;
+    if (!w) return;
+    CGRect screen = self.overlayRoot.bounds;
+    if (height <= 1.0) {
+        NSValue *v = self.frameBeforeKeyboard;
+        self.frameBeforeKeyboard = nil;
+        if (v) {
+            w.frame = v.CGRectValue;
+            [w layoutIfNeeded];
+            [w commitSceneLayout];
+        }
+        return;
+    }
+    if (!self.frameBeforeKeyboard) self.frameBeforeKeyboard = [NSValue valueWithCGRect:w.frame];
+    CGRect base = self.frameBeforeKeyboard.CGRectValue;
+    CGFloat limit = screen.size.height - height - 8.0;
+    CGRect f = base;
+    if (f.size.height > limit) f.size.height = MAX(160.0, limit);
+    if (CGRectGetMaxY(f) > limit) f.origin.y = MAX(0.0, limit - f.size.height);
+    w.frame = f;
+    [w layoutIfNeeded];
+    [w commitSceneLayout];
+    NSLog(@"[InteractivePiP] keyboard %.0f -> %@", height, NSStringFromCGRect(f));
+}
 
 @end
