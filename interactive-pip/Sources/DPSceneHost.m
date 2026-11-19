@@ -843,7 +843,11 @@
 
 - (UIView *)hostViewFromFBScene:(id)scene {
     if (!scene) return nil;
-    CGSize ref = self.view.bounds.size;
+    // Request the scene at the phone's native canvas, not the pane size: a
+    // mismatched reference size makes the client lay itself out narrow, which
+    // then shows as side bars after scaling.
+    CGSize ref = self.nativeSceneSize;
+    if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
     if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
 
     // 1) Ask FrontBoard for a real scene view. It owns the remote scene's
@@ -1424,9 +1428,10 @@
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
     self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    // Preserve the native phone canvas: one scale on both axes, centered letterbox.
-    CGFloat scale = MIN(target.width / canvas.width, target.height / canvas.height);
-    self.view.backgroundColor = [UIColor blackColor];
+    // Fill the pane: take the larger factor so no letterbox remains, and let
+    // the overflowing axis be clipped. Uniform scale keeps text undistorted.
+    CGFloat scale = MAX(target.width / canvas.width, target.height / canvas.height);
+    self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
