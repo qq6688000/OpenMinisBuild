@@ -16,7 +16,6 @@ static const CGFloat kDPMinHeight = 220.0;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UIButton *closeButton;
 @property (nonatomic, strong) UIButton *fullscreenButton;
-@property (nonatomic, strong) UIButton *splitButton;
 @property (nonatomic, strong) UIView *contentContainer;
 @property (nonatomic, strong) UIView *resizeHandle;
 @property (nonatomic, strong) UIVisualEffectView *blurView;
@@ -25,8 +24,6 @@ static const CGFloat kDPMinHeight = 220.0;
 @property (nonatomic, assign) CGPoint resizeStartOrigin;
 @property (nonatomic, assign) BOOL isActive;
 @property (nonatomic, assign) BOOL maximized;
-@property (nonatomic, assign) CGFloat floatingCornerRadiusValue;
-@property (nonatomic, assign) BOOL floatingShowsBorder;
 @property (nonatomic, assign) CGRect restoreFrame;
 - (CGRect)clampFrame:(CGRect)frame inBounds:(CGRect)bounds;
 - (void)leaveMaximizedState;
@@ -113,10 +110,6 @@ static const CGFloat kDPMinHeight = 220.0;
     self.fullscreenButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     self.fullscreenButton.frame = CGRectMake(self.bounds.size.width - 36, 4, 28, 28);
     [self.titleBar addSubview:self.fullscreenButton];
-    self.splitButton = [self chromeButtonWithSymbol:@"rectangle.split.2x1" action:@selector(splitTapped)];
-    self.splitButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    self.splitButton.frame = CGRectMake(self.bounds.size.width - 70, 4, 28, 28);
-    [self.titleBar addSubview:self.splitButton];
 
     self.contentContainer = [[UIView alloc] initWithFrame:CGRectMake(0, kDPTitleBarHeight,
                                                                      self.bounds.size.width,
@@ -195,16 +188,14 @@ static const CGFloat kDPMinHeight = 220.0;
     [self.resizeHandle addGestureRecognizer:resizePan];
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
-    tap.cancelsTouchesInView = NO;
-    [self.titleBar addGestureRecognizer:tap];
+    [self addGestureRecognizer:tap];
 
     UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
     pinch.cancelsTouchesInView = YES;
-    [self.titleBar addGestureRecognizer:pinch];
+    [self addGestureRecognizer:pinch];
 }
 
 - (void)handleTitlePan:(UIPanGestureRecognizer *)gr {
-    if (self.isTiled) return;
     UIView *superview = self.superview;
     if (!superview) return;
 
@@ -239,7 +230,6 @@ static const CGFloat kDPMinHeight = 220.0;
 }
 
 - (void)handleResizePan:(UIPanGestureRecognizer *)gr {
-    if (self.isTiled) return;
     UIView *superview = self.superview;
     if (!superview) return;
 
@@ -265,7 +255,6 @@ static const CGFloat kDPMinHeight = 220.0;
 }
 
 - (void)handlePinch:(UIPinchGestureRecognizer *)gr {
-    if (self.isTiled) return;
     if (gr.state == UIGestureRecognizerStateBegan) {
         [self leaveMaximizedState];
     } else if (gr.state == UIGestureRecognizerStateChanged) {
@@ -331,7 +320,6 @@ static const CGFloat kDPMinHeight = 220.0;
 }
 
 - (void)fullscreenTapped {
-    if (self.isTiled) { if (self.onSplit) self.onSplit(self); return; }
     [self haptic:UIImpactFeedbackStyleLight];
     UIView *superview = self.superview;
     if (!superview) return;
@@ -365,40 +353,6 @@ static const CGFloat kDPMinHeight = 220.0;
         [self.sceneHost commitHostedFrame];
         if (self.onFrameChanged) self.onFrameChanged(self, self.frame);
     }
-}
-
-- (void)splitTapped {
-    if (self.onSplit) self.onSplit(self);
-}
-
-- (void)setTiled:(BOOL)tiled {
-    if (_tiled == tiled) return;
-    if (tiled) {
-        // Duo posture: two full-bleed panes split by a hinge. No floating chrome.
-        self.floatingCornerRadiusValue = _cornerRadiusValue;
-        self.floatingShowsBorder = _showsBorder;
-        _cornerRadiusValue = 0;
-        _showsBorder = NO;
-    } else {
-        _cornerRadiusValue = self.floatingCornerRadiusValue;
-        _showsBorder = self.floatingShowsBorder;
-    }
-    _tiled = tiled;
-    self.clipsToBounds = tiled;
-    self.chromeView.layer.cornerRadius = tiled ? 0 : _cornerRadiusValue;
-    self.titleBar.hidden = tiled;
-    self.blurView.hidden = tiled;
-    self.resizeHandle.hidden = tiled;
-    self.layer.shadowOpacity = tiled ? 0 : (self.isActive ? 0.4 : 0.25);
-    self.layer.shadowRadius = tiled ? 0 : 16.0;
-    self.chromeView.layer.borderWidth = 0;
-    self.backgroundColor = tiled ? [UIColor blackColor] : [UIColor clearColor];
-    self.contentContainer.backgroundColor = tiled
-        ? [UIColor blackColor]
-        : [UIColor colorWithRed:0.10 green:0.11 blue:0.13 alpha:1.0];
-    if (!tiled) self.maximized = NO;
-    [self setNeedsLayout];
-    [self layoutIfNeeded];
 }
 
 #pragma mark - Scene
@@ -441,10 +395,9 @@ static const CGFloat kDPMinHeight = 220.0;
     self.chromeView.frame = self.bounds;
     self.chromeView.layer.cornerRadius = self.cornerRadiusValue;
     self.titleBar.frame = CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight);
-    CGFloat contentY = self.tiled ? 0 : kDPTitleBarHeight;
-    self.contentContainer.frame = CGRectMake(0, contentY,
+    self.contentContainer.frame = CGRectMake(0, kDPTitleBarHeight,
                                              self.bounds.size.width,
-                                             MAX(0, self.bounds.size.height - contentY));
+                                             MAX(0, self.bounds.size.height - kDPTitleBarHeight));
     self.resizeHandle.frame = CGRectMake(self.bounds.size.width - kDPResizeHandle,
                                          self.bounds.size.height - kDPResizeHandle,
                                          kDPResizeHandle, kDPResizeHandle);
@@ -470,7 +423,7 @@ static const CGFloat kDPMinHeight = 220.0;
 }
 
 - (void)applyAppearance {
-    if (self.showsBorder && !self.tiled) {
+    if (self.showsBorder) {
         self.chromeView.layer.borderWidth = self.isActive ? 1.5 : 0.5;
         // 用浅白描边，不用 systemBlue（在深色底上容易整块发蓝）
         self.chromeView.layer.borderColor = self.isActive
@@ -479,7 +432,7 @@ static const CGFloat kDPMinHeight = 220.0;
     } else {
         self.chromeView.layer.borderWidth = 0;
     }
-    self.layer.shadowOpacity = self.tiled ? 0 : (self.isActive ? 0.4 : 0.25);
+    self.layer.shadowOpacity = self.isActive ? 0.4 : 0.25;
 }
 
 - (void)setActive:(BOOL)active animated:(BOOL)animated {

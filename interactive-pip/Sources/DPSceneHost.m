@@ -23,12 +23,10 @@
 @property (nonatomic, strong, nullable) NSString *requesterToken;
 @property (nonatomic, assign) NSInteger attemptCount;
 @property (nonatomic, assign) BOOL attaching;
-@property (nonatomic, assign) BOOL invalidated;
-@property (nonatomic, strong) id originalSettings;
-@property (nonatomic, strong) id settingsScene;
 @property (nonatomic, assign) BOOL snapshotAttempted;
 @property (nonatomic, assign) CGSize lastCommittedSceneSize;
 @property (nonatomic, assign) CGSize nativeSceneSize;
+@property (nonatomic, assign) BOOL hostIsWrapper;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t reconnectTimer;
 @property (nonatomic, assign) NSUInteger reconnectAttempts;
@@ -45,6 +43,7 @@
 - (nullable Class)externalSceneHostClass;
 - (nullable id)layerManagerFromScene:(id)scene;
 - (BOOL)layerHasExternalSceneID:(id)layer;
+- (void)prepareRemoteKeyboardSupport;
 @property (nonatomic, strong, nullable) id retainedSceneController; // 防止 VC 被释放
 - (void)layoutHostView;
 @end
@@ -463,11 +462,11 @@
             [inv getReturnValue:&result];
             UIView *v = [self viewFromMaybeController:result];
             if (v) {
-                NSLog(@"[InteractivePiP] %@ via %@", self.bundleID, name);
+                NSLog(@"[DualPane] %@ via %@", self.bundleID, name);
                 return v;
             }
         } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] %@ 异常: %@", name, e);
+            NSLog(@"[DualPane] %@ 异常: %@", name, e);
         }
     }
 
@@ -488,11 +487,11 @@
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
                 if (v) {
-                    NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize OK %@", self.bundleID);
+                    NSLog(@"[DualPane] newSceneViewWithReferenceSize OK %@", self.bundleID);
                     return v;
                 }
             } @catch (NSException *e) {
-                NSLog(@"[InteractivePiP] newSceneView 异常: %@", e);
+                NSLog(@"[DualPane] newSceneView 异常: %@", e);
             }
         }
     }
@@ -588,11 +587,11 @@
                 __unsafe_unretained UIView *view = nil;
                 [inv getReturnValue:&view];
                 if ([view isKindOfClass:[UIView class]]) {
-                    NSLog(@"[InteractivePiP] hostViewForRequester:enableAndOrderFront OK %@", self.bundleID);
+                    NSLog(@"[DualPane] hostViewForRequester:enableAndOrderFront OK %@", self.bundleID);
                     return view;
                 }
             } @catch (NSException *e) {
-                NSLog(@"[InteractivePiP] hostViewForRequester 异常: %@", e);
+                NSLog(@"[DualPane] hostViewForRequester 异常: %@", e);
             }
         }
     }
@@ -705,7 +704,7 @@
             return YES;
         }
     } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] scene settings failed %@: %@", self.bundleID, e);
+        NSLog(@"[DualPane] scene settings failed %@: %@", self.bundleID, e);
     }
     return NO;
 }
@@ -716,13 +715,12 @@
                    includeFrame:(BOOL)includeFrame {
     id settings = [self settingsCopyForScene:self.scene];
     if (!settings) return NO;
-    if (self.settingsScene != self.scene) {
-        if (self.settingsScene && self.originalSettings) [self submitSettings:self.originalSettings toScene:self.settingsScene];
-        self.settingsScene = self.scene;
-        self.originalSettings = [self settingsCopyForScene:self.scene];
-    }
 
     @try {
+        SEL setContentState = NSSelectorFromString(@"_setContentState:");
+        if (foreground && [self.scene respondsToSelector:setContentState]) {
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(self.scene, setContentState, 2);
+        }
 
         SEL setForeground = NSSelectorFromString(@"setForeground:");
         if ([settings respondsToSelector:setForeground]) {
@@ -749,7 +747,7 @@
             }
         }
     } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] scene state failed %@: %@", self.bundleID, e);
+        NSLog(@"[DualPane] scene state failed %@: %@", self.bundleID, e);
         return NO;
     }
 
@@ -826,7 +824,7 @@
         }
 
         if (created > 0) {
-            NSLog(@"[InteractivePiP] layer container attached %@ layers=%@", self.bundleID, @(created));
+            NSLog(@"[DualPane] layer container attached %@ layers=%@", self.bundleID, @(created));
             return containerView;
         }
 
@@ -835,7 +833,7 @@
             ((void (*)(id, SEL))objc_msgSend)(container, invalidate);
         }
     } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] layer container failed %@: %@", self.bundleID, e);
+        NSLog(@"[DualPane] layer container failed %@: %@", self.bundleID, e);
     }
     return nil;
 }
@@ -849,10 +847,17 @@
     id hostManager = [self hostManagerFromScene:scene];
     if (hostManager) {
         UIView *hv = [self invokeHostViewForRequester:hostManager];
-        if (hv) return hv;
+        if (hv) {
+            self.hostIsWrapper = YES;
+            NSLog(@"[InteractivePiP] host view %@ -> %@ (wrapper)", self.bundleID, NSStringFromClass(hv.class));
+            return hv;
+        }
     }
 
-    return [self layerContainerViewFromScene:scene];
+    UIView *fallback = [self layerContainerViewFromScene:scene];
+    self.hostIsWrapper = NO;
+    NSLog(@"[InteractivePiP] host view %@ -> layer fallback (no keyboard routing)", self.bundleID);
+    return fallback;
 }
 
 - (nullable id)layerManagerFromScene:(id)scene {
@@ -949,7 +954,7 @@
         self.observedLayerManager = layerManager;
         self.observingLayerManager = YES;
     } @catch (NSException *exception) {
-        NSLog(@"[InteractivePiP] layer observe failed %@: %@", self.bundleID, exception);
+        NSLog(@"[DualPane] layer observe failed %@: %@", self.bundleID, exception);
         self.observedLayerManager = nil;
         self.observingLayerManager = NO;
     }
@@ -977,6 +982,54 @@
         return;
     }
     [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+- (void)prepareRemoteKeyboardSupport {
+    Class remoteClass = NSClassFromString(@"_UIRemoteKeyboards");
+    if (!remoteClass) return;
+    id keyboards = nil;
+    SEL shared = NSSelectorFromString(@"sharedRemoteKeyboards");
+    @try {
+        if ([remoteClass respondsToSelector:shared]) {
+            keyboards = ((id (*)(id, SEL))objc_msgSend)(remoteClass, shared);
+        }
+    } @catch (__unused NSException *exception) {}
+    if (!keyboards) return;
+
+    @try {
+        SEL setSuppressing = NSSelectorFromString(@"setSuppressingKeyboard:");
+        if ([keyboards respondsToSelector:setSuppressing]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboards, setSuppressing, NO);
+        }
+    } @catch (__unused NSException *exception) {}
+
+    @try {
+        SEL setWindowEnabled = NSSelectorFromString(@"setWindowEnabled:");
+        if ([keyboards respondsToSelector:setWindowEnabled]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboards, setWindowEnabled, YES);
+        }
+    } @catch (__unused NSException *exception) {}
+
+    @try {
+        SEL setCurrentKeyboard = NSSelectorFromString(@"setCurrentKeyboard:");
+        if ([keyboards respondsToSelector:setCurrentKeyboard]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboards, setCurrentKeyboard, YES);
+        }
+    } @catch (__unused NSException *exception) {}
+
+    @try {
+        SEL prepareHosted = NSSelectorFromString(@"prepareForHostedWindow");
+        if ([keyboards respondsToSelector:prepareHosted]) {
+            ((id (*)(id, SEL))objc_msgSend)(keyboards, prepareHosted);
+        }
+    } @catch (__unused NSException *exception) {}
+
+    @try {
+        SEL clean = NSSelectorFromString(@"cleanSuppression");
+        if ([keyboards respondsToSelector:clean]) {
+            ((void (*)(id, SEL))objc_msgSend)(keyboards, clean);
+        }
+    } @catch (__unused NSException *exception) {}
 }
 
 - (void)scheduleExternalSceneRefresh {
@@ -1015,7 +1068,7 @@
     Class externalHostClass = [self externalSceneHostClass];
     SEL initializer = NSSelectorFromString(@"initWithSceneLayer:parentScene:");
     if (!externalHostClass) {
-        NSLog(@"[InteractivePiP] no external scene host class for %@", self.bundleID);
+        NSLog(@"[DualPane] no external scene host class for %@", self.bundleID);
         return;
     }
 
@@ -1039,11 +1092,11 @@
             [container addSubview:host];
             created += 1;
         } @catch (NSException *exception) {
-            NSLog(@"[InteractivePiP] external host create failed %@: %@", self.bundleID, exception);
+            NSLog(@"[DualPane] external host create failed %@: %@", self.bundleID, exception);
         }
     }
     if (created == 0) {
-        NSLog(@"[InteractivePiP] external layers present but host create failed %@ count=%@",
+        NSLog(@"[DualPane] external layers present but host create failed %@ count=%@",
               self.bundleID, @(layers.count));
         return;
     }
@@ -1053,7 +1106,7 @@
     self.externalSceneContainer = container;
     [root addSubview:container];
     [root bringSubviewToFront:container];
-    NSLog(@"[InteractivePiP] external scene hosts %@ class=%@ layers=%@",
+    NSLog(@"[DualPane] external scene hosts %@ class=%@ layers=%@",
           self.bundleID, NSStringFromClass(externalHostClass), @(created));
 }
 
@@ -1131,7 +1184,7 @@
 #pragma mark - Main attach
 
 - (void)attemptLiveSceneHost {
-    if (self.invalidated || self.attaching || (self.live && self.hostView.superview == self.view)) return;
+    if (self.attaching || (self.live && self.hostView.superview == self.view)) return;
     self.attaching = YES;
     self.attemptCount += 1;
 
@@ -1149,8 +1202,8 @@
         id scene = [self findFBScene];
         self.scene = scene;
         if (scene) {
-            CGSize size = self.view.bounds.size;
-            if (size.width < 2 || size.height < 2) size = [UIScreen mainScreen].bounds.size;
+            CGSize size = [UIScreen mainScreen].bounds.size;
+            if (size.width < 2 || size.height < 2) size = CGSizeMake(390, 844);
             self.nativeSceneSize = size;
             [self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES];
 
@@ -1162,11 +1215,11 @@
             }
             self.statusText = [NSString stringWithFormat:@"找到 %@，但没有可用宿主图层",
                                NSStringFromClass([scene class])];
-            NSLog(@"[InteractivePiP] scene found but no host view: %@ class=%@",
+            NSLog(@"[DualPane] scene found but no host view: %@ class=%@",
                   self.bundleID, NSStringFromClass([scene class]));
         } else {
             self.statusText = @"应用尚未在后台运行";
-            NSLog(@"[InteractivePiP] no scene for %@", self.bundleID);
+            NSLog(@"[DualPane] no scene for %@", self.bundleID);
         }
 
         [self applySnapshotFallback];
@@ -1189,7 +1242,7 @@
     dispatch_source_set_event_handler(timer, ^{
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2 || !self2.live || !self2.scene) return;
-        // Keep the process assertion only; do not undo lock/background transitions.
+        [self2 applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
         [self2 acquireProcessAssertionIfNeeded];
         [self2 refreshExternalSceneHosts];
     });
@@ -1204,7 +1257,7 @@
 }
 
 - (void)scheduleReconnect {
-    if (self.invalidated || self.reconnectTimer || self.live) return;
+    if (self.reconnectTimer || self.live) return;
 
     self.reconnectAttempts = 0;
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -1293,13 +1346,13 @@
         self.processAssertionAttempted = YES;
         if (acquired) {
             self.processAssertion = assertion;
-            NSLog(@"[InteractivePiP] process assertion acquired %@ pid=%d", self.bundleID, pid);
+            NSLog(@"[DualPane] process assertion acquired %@ pid=%d", self.bundleID, pid);
         } else {
-            NSLog(@"[InteractivePiP] process assertion failed %@: %@", self.bundleID, error);
+            NSLog(@"[DualPane] process assertion failed %@: %@", self.bundleID, error);
         }
     } @catch (NSException *e) {
         self.processAssertionAttempted = YES;
-        NSLog(@"[InteractivePiP] process assertion exception %@: %@", self.bundleID, e);
+        NSLog(@"[DualPane] process assertion exception %@: %@", self.bundleID, e);
     }
 }
 
@@ -1325,6 +1378,7 @@
         self.placeholder.hidden = YES;
         self.snapshotView.hidden = YES;
         self.live = YES;
+        [self prepareForInput];
     [self startObservingLayerManager];
     [self startSceneKeepAlive];
         return;
@@ -1337,7 +1391,8 @@
     self.scene = scene;
     self.lastCommittedSceneSize = CGSizeZero;
     if (self.nativeSceneSize.width < 2 || self.nativeSceneSize.height < 2) {
-        self.nativeSceneSize = [UIScreen mainScreen].bounds.size;
+        self.nativeSceneSize = self.view.bounds.size.width > 2
+            ? self.view.bounds.size : [UIScreen mainScreen].bounds.size;
     }
     hostView.autoresizingMask = UIViewAutoresizingNone;
     hostView.clipsToBounds = YES;
@@ -1349,22 +1404,25 @@
     self.snapshotView.hidden = YES;
     self.live = YES;
 
+    [self prepareForInput];
     [self commitHostedFrame];
     [self startObservingLayerManager];
     [self startSceneKeepAlive];
     [self acquireProcessAssertionIfNeeded];
-    NSLog(@"[InteractivePiP] LIVE attach %@ view=%@", self.bundleID, NSStringFromClass([hostView class]));
+    NSLog(@"[DualPane] LIVE attach %@ view=%@", self.bundleID, NSStringFromClass([hostView class]));
 }
 
 - (void)layoutHostView {
     if (!self.hostView) return;
+
     CGSize target = self.view.bounds.size;
-    if (target.width < 1 || target.height < 1) return;
+    CGSize canvas = self.nativeSceneSize;
+    if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
+    if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
+
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.frame = self.view.bounds;
+    self.hostView.frame = CGRectMake(0, 0, target.width, target.height);
     self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.hostView.backgroundColor = [UIColor systemBackgroundColor];
-    self.view.backgroundColor = [UIColor systemBackgroundColor];
 }
 
 - (void)applySnapshotFallback {
@@ -1504,12 +1562,13 @@
 }
 
 - (UIView *)keyboardRoutingView {
-    if (!self.live || !self.hostView) return nil;
+    if (!self.live || !self.hostView || !self.hostIsWrapper) return nil;
     Class wrapper = NSClassFromString(@"FBSceneHostWrapperView");
     if (wrapper && [self.hostView isKindOfClass:wrapper]) return self.hostView;
     if ([NSStringFromClass(self.hostView.class) containsString:@"FBSceneHostWrapperView"]) return self.hostView;
-    return nil; // Layer fallback renders pixels but cannot route text input.
+    return nil;
 }
+
 - (int)keyboardRoutingPID { return [self hostedApplicationPID]; }
 
 - (void)prepareForInput {
@@ -1563,6 +1622,8 @@
 
     [self enableInteractionInView:self.hostView];
     self.view.userInteractionEnabled = YES;
+    [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
+    [self prepareRemoteKeyboardSupport];
     [self startObservingLayerManager];
     [self scheduleExternalSceneRefresh];
 }
@@ -1580,13 +1641,7 @@
 
 - (void)commitHostedFrame {
     if (self.live && self.scene) {
-        CGSize size = self.view.bounds.size;
-        if (!CGSizeEqualToSize(size, self.lastCommittedSceneSize)) {
-            self.hostView.frame = self.view.bounds;
-            [self.hostView setNeedsLayout];
-            [self.hostView layoutIfNeeded];
-        }
-        [self updateSceneSettingsWithSize:size];
+        [self updateSceneSettingsWithSize:self.view.bounds.size];
     }
 }
 
@@ -1595,9 +1650,10 @@
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
     if ([self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES]) {
         self.lastCommittedSceneSize = size;
-        self.nativeSceneSize = size;
         [self layoutHostView];
-        NSLog(@"[InteractivePiP] client viewport %@ %.1fx%.1f", self.bundleID, size.width, size.height);
+        [self.hostView setNeedsLayout];
+        [self.hostView layoutIfNeeded];
+        NSLog(@"[InteractivePiP] viewport %@ %.0fx%.0f", self.bundleID, size.width, size.height);
     }
 }
 
@@ -1613,10 +1669,8 @@
 }
 
 - (void)retryAttach {
-    if (self.invalidated || self.attaching) return;
-    if (self.settingsScene && self.originalSettings) [self submitSettings:self.originalSettings toScene:self.settingsScene];
-    self.settingsScene = nil; self.originalSettings = nil;
-    NSLog(@"[InteractivePiP] retryAttach #%@ %@", @(self.attemptCount + 1), self.bundleID);
+    if (self.attaching) return;
+    NSLog(@"[DualPane] retryAttach #%@ %@", @(self.attemptCount + 1), self.bundleID);
     self.externalRefreshGeneration += 1;
     [self stopObservingLayerManager];
     [self clearExternalSceneHosts];
@@ -1636,17 +1690,15 @@
 }
 
 - (void)invalidate {
-    self.invalidated = YES;
     self.externalRefreshGeneration += 1;
     [self stopObservingLayerManager];
     [self clearExternalSceneHosts];
     [self stopSceneKeepAlive];
     [self stopReconnect];
     [self releaseProcessAssertion];
-    if (self.settingsScene && self.originalSettings) {
-        [self submitSettings:self.originalSettings toScene:self.settingsScene];
+    if (self.scene) {
+        [self applySceneForeground:NO backgrounded:YES size:CGSizeZero includeFrame:NO];
     }
-    self.settingsScene = nil; self.originalSettings = nil;
     if (self.scene) {
         id hostManager = [self hostManagerFromScene:self.scene];
         if (hostManager) {
@@ -1687,6 +1739,7 @@
     self.scene = nil;
     self.sceneHandle = nil;
     self.nativeSceneSize = CGSizeZero;
+    self.hostIsWrapper = NO;
     self.live = NO;
 }
 

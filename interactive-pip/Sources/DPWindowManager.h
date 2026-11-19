@@ -7,7 +7,6 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, DPPresentationMode) {
     DPPresentationModeNone = 0,
     DPPresentationModeFloating,
-    DPPresentationModeSplit,
 };
 
 /// 悬浮窗 / 分屏总控
@@ -32,13 +31,6 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;
 - (void)openFloatingWithBundleID:(NSString *)bundleID;
 - (void)prepareForHostedInput;
-- (void)prepareForTouchInView:(UIView *)view;
-- (void)handleUserHome;
-- (void)handleDeviceLock;
-- (void)handleDeviceUnlock;
-- (void)focusWindow:(DPFloatingWindow *)window;
-- (void)requestSplitForWindow:(DPFloatingWindow *)window;
-- (void)leaveSplit;
 - (void)dismissAllAnimated:(BOOL)animated;
 - (void)handleOrientationChange;
 

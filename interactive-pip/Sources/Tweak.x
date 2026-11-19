@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <notify.h>
 #import <objc/message.h>
 #import "DPSettings.h"
 #import "DPWindowManager.h"
@@ -79,6 +78,48 @@ static void DPHaptic(void) {
     [g impactOccurred];
 }
 
+static BOOL DPSceneIsHosted(id scene) {
+    if (!scene) return NO;
+    NSString *identifier = nil;
+    for (NSString *key in @[@"identifier", @"_identifier", @"sceneIdentifier"]) {
+        @try {
+            id value = [scene valueForKey:key];
+            if ([value isKindOfClass:[NSString class]]) {
+                identifier = value;
+                break;
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    if (!identifier.length) return NO;
+
+    for (NSString *bundleID in [DPWindowManager shared].hostedBundleIDs) {
+        if ([identifier containsString:bundleID]) return YES;
+    }
+    return NO;
+}
+
+static id DPSettingsByKeepingSceneForeground(id scene, id settings) {
+    if (!settings || !DPSceneIsHosted(scene)) return settings;
+    @try {
+        id mutableSettings = [settings respondsToSelector:@selector(mutableCopy)]
+            ? [settings mutableCopy] : settings;
+        SEL setForeground = NSSelectorFromString(@"setForeground:");
+        if ([mutableSettings respondsToSelector:setForeground]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(mutableSettings, setForeground, YES);
+        }
+        SEL setBackgrounded = NSSelectorFromString(@"setBackgrounded:");
+        if ([mutableSettings respondsToSelector:setBackgrounded]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(mutableSettings, setBackgrounded, NO);
+        }
+        SEL setReasons = NSSelectorFromString(@"setDeactivationReasons:");
+        if ([mutableSettings respondsToSelector:setReasons]) {
+            ((void (*)(id, SEL, unsigned long long))objc_msgSend)(mutableSettings, setReasons, 0);
+        }
+        return mutableSettings;
+    } @catch (__unused NSException *e) {
+        return settings;
+    }
+}
 
 // ── 图标上滑 ───────────────────────────────────────────────────────────────
 
@@ -260,14 +301,14 @@ static id DPMakeShortcutItem(NSString *type, NSString *title, NSString *subtitle
 
 static BOOL DPIsOurShortcutType(NSString *type) {
     if (![type isKindOfClass:[NSString class]]) return NO;
-    return [type isEqualToString:@"com.seagull.interactivepip.action.split"]
-        || [type isEqualToString:@"com.seagull.interactivepip.action.float"];
+    return [type isEqualToString:@"com.dualpane.action.split"]
+        || [type isEqualToString:@"com.dualpane.action.float"];
 }
 
 static BOOL DPHandleShortcutType(NSString *type, NSString *bundleID, id iconView) {
     if (!DPIsOurShortcutType(type)) return NO;
 
-    DPPresentationMode mode = [type hasSuffix:@".split"] ? DPPresentationModeSplit : DPPresentationModeFloating;
+    DPPresentationMode mode = DPPresentationModeFloating;
 
     NSString *bid = bundleID;
     if (!bid.length) bid = DPBundleIDFromIconView(iconView);
@@ -278,18 +319,29 @@ static BOOL DPHandleShortcutType(NSString *type, NSString *bundleID, id iconView
 }
 
 static NSArray *DPInjectedShortcutItems(void) {
-    id floatItem = DPMakeShortcutItem(@"com.seagull.interactivepip.action.float",
+    id floatItem = DPMakeShortcutItem(@"com.dualpane.action.float",
                                       @"悬浮窗打开",
                                       @"小窗叠在桌面上",
                                       @"rectangle.on.rectangle");
     NSMutableArray *out = [NSMutableArray array];
     if (floatItem) [out addObject:floatItem];
-    id splitItem = DPMakeShortcutItem(@"com.seagull.interactivepip.action.split", @"Duo 分屏", @"双应用各占半屏", @"rectangle.split.2x1");
-    if (splitItem) [out addObject:splitItem];
     return out;
 }
 
-// System owns foreground/deactivation transitions; never rewrite lock/background settings.
+// Preserve activation only for scenes currently owned by DualPane.
+%hook FBScene
+
+- (void)updateSettings:(id)settings withTransitionContext:(id)context completion:(id)completion {
+    id effectiveSettings = DPSettingsByKeepingSceneForeground(self, settings);
+    %orig(effectiveSettings, context, completion);
+}
+
+- (void)updateSettings:(id)settings withTransitionContext:(id)context {
+    id effectiveSettings = DPSettingsByKeepingSceneForeground(self, settings);
+    %orig(effectiveSettings, context);
+}
+
+%end
 
 // ── SpringBoard 启动：装独立顶层窗 ─────────────────────────────────────────
 
@@ -313,7 +365,7 @@ static NSArray *DPInjectedShortcutItems(void) {
         if (keyWindow) {
             [[DPGestureController shared] installOnView:keyWindow];
         }
-        NSLog(@"[InteractivePiP] install complete, keyWindow=%@", keyWindow);
+        NSLog(@"[DualPane] install complete, keyWindow=%@", keyWindow);
     });
 }
 
@@ -324,7 +376,7 @@ static NSArray *DPInjectedShortcutItems(void) {
 
     NSString *bid = DPBundleIDFromObject(arg);
     if ([[DPWindowManager shared] shouldSuppressFullscreenForBundleID:bid]) {
-        NSLog(@"[InteractivePiP] frontDisplay 补救回桌面: %@", bid);
+        NSLog(@"[DualPane] frontDisplay 补救回桌面: %@", bid);
         [[DPWindowManager shared] handlePotentialFullscreenActivationForBundleID:bid];
     } else {
         [[DPWindowManager shared] bringOverlayToFront];
@@ -359,7 +411,7 @@ static NSArray *DPInjectedShortcutItems(void) {
     BOOL shouldSuppress = [[DPWindowManager shared] shouldSuppressFullscreenForBundleID:bid];
     BOOL ok = %orig;
     if (shouldSuppress && bid.length) {
-        NSLog(@"[InteractivePiP] transition 后补救回桌面: %@", bid);
+        NSLog(@"[DualPane] transition 后补救回桌面: %@", bid);
         [[DPWindowManager shared] handlePotentialFullscreenActivationForBundleID:bid];
     }
     return ok;
@@ -374,10 +426,40 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 %end
 
+%hook UIApplication
 
+- (void)sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches) {
+        Class overlayClass = NSClassFromString(@"DPPassthroughWindow");
+        for (UITouch *touch in event.allTouches) {
+            if (touch.phase == UITouchPhaseBegan
+                && overlayClass
+                && [touch.window isKindOfClass:overlayClass]) {
+                [[DPWindowManager shared] prepareForHostedInput];
+                break;
+            }
+        }
+    }
+    %orig;
+}
 
-// Remote app responders do not live in SpringBoard. Route only actual host touches.
+%end
 
+// Hosted controls live inside the SpringBoard-owned overlay window. Make that
+// window key before UIKit asks the responder chain to present the keyboard.
+%hook UIResponder
+
+- (BOOL)becomeFirstResponder {
+    Class overlayClass = NSClassFromString(@"DPPassthroughWindow");
+    UIWindow *window = [self isKindOfClass:[UIView class]] ? ((UIView *)self).window : nil;
+    BOOL isHosted = overlayClass && [window isKindOfClass:overlayClass];
+    if (isHosted) {
+        [[DPWindowManager shared] prepareForHostedInput];
+    }
+    return %orig;
+}
+
+%end
 
 // 不再 hook SBWorkspaceTransaction.begin 硬 return —— 那是卡顿主因之一
 
@@ -494,53 +576,9 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 %end
 
-%hook SBUIController
-- (void)handleHomeButtonSinglePressUp {
-    [[DPWindowManager shared] handleUserHome];
-    %orig;
-}
-- (void)clickedMenuButton {
-    [[DPWindowManager shared] handleUserHome];
-    %orig;
-}
-%end
-
-%hook SpringBoard
-- (void)_lockButtonDown:(id)event {
-    [[DPWindowManager shared] handleDeviceLock];
-    %orig;
-}
-%end
-
-%hook SBLockScreenManager
-- (void)lockUIFromSource:(int)source withOptions:(id)options {
-    [[DPWindowManager shared] handleDeviceLock];
-    %orig;
-}
-- (void)unlockUIFromSource:(int)source withOptions:(id)options {
-    %orig;
-    [[DPWindowManager shared] handleDeviceUnlock];
-}
-%end
-
 %ctor {
     @autoreleasepool {
         [DPSettings shared];
-        static int displayToken;
-        notify_register_dispatch("com.apple.iokit.hid.displayStatus", &displayToken, dispatch_get_main_queue(), ^(int token) {
-            uint64_t state = 1;
-            if (notify_get_state(token, &state) == NOTIFY_STATUS_OK && state == 0) [[DPWindowManager shared] handleDeviceLock];
-        });
-        static int lockToken;
-        notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
-            uint64_t state = 0;
-            if (notify_get_state(token, &state) == NOTIFY_STATUS_OK) {
-                if (state) [[DPWindowManager shared] handleDeviceLock];
-                else [[DPWindowManager shared] handleDeviceUnlock];
-            }
-        });
-        uint64_t initialState = 0;
-        if (notify_get_state(lockToken, &initialState) == NOTIFY_STATUS_OK && initialState) [[DPWindowManager shared] handleDeviceLock];
-        NSLog(@"[InteractivePiP] 已加载 — 启用=%d", [DPSettings shared].isEnabled);
+        NSLog(@"[DualPane] 已加载 — 启用=%d", [DPSettings shared].isEnabled);
     }
 }

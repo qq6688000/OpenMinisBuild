@@ -1,22 +1,11 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleDevelopmentRegion</key>
-	<string>zh_CN</string>
-	<key>CFBundleExecutable</key>
-	<string>InteractivePiPPrefs</string>
-	<key>CFBundleIdentifier</key>
-	<string>com.seagull.interactivepip.prefs</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundlePackageType</key>
-	<string>BNDL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>0.2.2</string>
-	<key>CFBundleVersion</key>
-	<string>5</string>
-	<key>NSPrincipalClass</key>
-	<string>DPRootListController</string>
-</dict>
-</plist>
+{
+	CFBundleDevelopmentRegion = "English";
+	CFBundleExecutable = "DualPanePrefs";
+	CFBundleIdentifier = "com.dualpane.tweak.prefs";
+	CFBundleInfoDictionaryVersion = "6.0";
+	CFBundlePackageType = "BNDL";
+	CFBundleShortVersionString = "1.0.2";
+	CFBundleSignature = "????";
+	CFBundleVersion = "1.0.2";
+	NSPrincipalClass = "DPRootListController";
+}

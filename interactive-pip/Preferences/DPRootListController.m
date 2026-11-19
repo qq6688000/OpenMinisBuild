@@ -5,7 +5,7 @@
 #import <roothide.h>
 
 static BOOL DPValueForGestureKey(NSString *key, BOOL fallback) {
-    CFPropertyListRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.seagull.interactivepip"));
+    CFPropertyListRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.dualpane.tweak"));
     if (!val) return fallback;
     BOOL result = fallback;
     if (CFGetTypeID(val) == CFBooleanGetTypeID()) {
@@ -60,7 +60,7 @@ static BOOL DPValueForGestureKey(NSString *key, BOOL fallback) {
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"重置" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         (void)action;
-        NSString *domain = @"com.seagull.interactivepip";
+        NSString *domain = @"com.dualpane.tweak";
         CFArrayRef keys = CFPreferencesCopyKeyList((__bridge CFStringRef)domain,
                                                    kCFPreferencesCurrentUser,
                                                    kCFPreferencesAnyHost);
@@ -72,7 +72,7 @@ static BOOL DPValueForGestureKey(NSString *key, BOOL fallback) {
             CFRelease(keys);
         }
         CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
-        notify_post("com.seagull.interactivepip/settings.changed");
+        notify_post("com.dualpane.tweak/settings.changed");
         [self reloadSpecifiers];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -116,9 +116,9 @@ static BOOL DPValueForGestureKey(NSString *key, BOOL fallback) {
 
         CFPreferencesSetAppValue(CFSTR("enabledGestures"),
                                  (__bridge CFPropertyListRef)enabled,
-                                 CFSTR("com.seagull.interactivepip"));
-        CFPreferencesAppSynchronize(CFSTR("com.seagull.interactivepip"));
-        notify_post("com.seagull.interactivepip/settings.changed");
+                                 CFSTR("com.dualpane.tweak"));
+        CFPreferencesAppSynchronize(CFSTR("com.dualpane.tweak"));
+        notify_post("com.dualpane.tweak/settings.changed");
     }
 }
 
