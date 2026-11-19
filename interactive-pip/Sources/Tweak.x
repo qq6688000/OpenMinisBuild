@@ -325,7 +325,7 @@ static NSArray *DPInjectedShortcutItems(void) {
                                       @"rectangle.on.rectangle");
     NSMutableArray *out = [NSMutableArray array];
     if (floatItem) [out addObject:floatItem];
-    id splitItem = DPMakeShortcutItem(@"com.seagull.interactivepip.action.split", @"交互式分屏", @"选择另一个应用组成双窗口", @"rectangle.split.2x1");
+    id splitItem = DPMakeShortcutItem(@"com.seagull.interactivepip.action.split", @"Duo 分屏", @"双应用各占半屏", @"rectangle.split.2x1");
     if (splitItem) [out addObject:splitItem];
     return out;
 }

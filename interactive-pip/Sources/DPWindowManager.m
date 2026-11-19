@@ -24,6 +24,7 @@
 @property (nonatomic, strong) NSArray<DPFloatingWindow *> *splitWindows;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *savedFrames;
 @property (nonatomic, assign) CGFloat splitRatio;
+@property (nonatomic, assign) BOOL duoMode;
 @property (nonatomic, assign) BOOL creatingSplit;
 - (void)layoutSplit;
 - (void)pairWindow:(DPFloatingWindow *)first withBundleID:(NSString *)bundleID;
@@ -464,6 +465,11 @@
         self.overlayWindow.frame = bounds;
         self.overlayRoot.frame = self.overlayWindow.bounds;
     }
+    if (self.duoMode && self.splitWindows.count == 2) {
+        [self layoutSplit];
+        [self bringOverlayToFront];
+        return;
+    }
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         CGRect f = w.frame;
         CGRect bounds = self.overlayRoot.bounds;
@@ -527,57 +533,61 @@
         w.tiled = YES;
     }
     UIView *divider = [[UIView alloc] initWithFrame:CGRectZero];
-    divider.backgroundColor = [UIColor colorWithWhite:0.16 alpha:1];
-    divider.layer.cornerRadius = 8;
-    divider.accessibilityLabel = @"拖动调整分屏比例，双击退出分屏";
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(moveDivider:)];
-    [divider addGestureRecognizer:pan];
+    // Duo posture: fixed 50/50 panes separated by a hinge, not a draggable divider.
+    divider.backgroundColor = [UIColor colorWithWhite:0.04 alpha:1];
+    divider.layer.cornerRadius = 0;
+    divider.layer.shadowColor = [UIColor blackColor].CGColor;
+    divider.layer.shadowOpacity = 0.9;
+    divider.layer.shadowRadius = 8;
+    divider.accessibilityLabel = @"双击铰链退出 Duo 分屏";
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(leaveSplit)];
     tap.numberOfTapsRequired = 2;
     [divider addGestureRecognizer:tap];
     self.splitDivider = divider;
     [self.overlayRoot addSubview:divider];
     self.mode = DPPresentationModeSplit;
+    self.duoMode = YES;
+    self.splitRatio = 0.5;
     [self layoutSplit];
     [self focusWindow:second];
 }
 
 - (void)layoutSplit {
     if (self.splitWindows.count != 2) return;
-    CGRect b = self.overlayRoot.bounds;
+    CGRect full = self.overlayRoot.bounds;
     UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
-    b = UIEdgeInsetsInsetRect(b, UIEdgeInsetsMake(MAX(24,insets.top),MAX(4,insets.left),MAX(8,insets.bottom),MAX(4,insets.right)));
-    BOOL horizontal = b.size.width > b.size.height;
-    CGFloat total = horizontal ? b.size.width : b.size.height;
-    CGFloat first = floor((total - 24) * self.splitRatio);
-    CGRect a = b, c = b, d = b;
-    if (horizontal) {
+    // Duo: panels reach the physical screen edges; only keep the status-bar
+    // cutout clear at the top. Hinge is a narrow centered seam.
+    CGRect b = UIEdgeInsetsInsetRect(full, UIEdgeInsetsMake(MAX(0, insets.top), 0, 0, 0));
+    BOOL sideBySide = b.size.width >= b.size.height;
+    const CGFloat hinge = sideBySide ? 8.0 : 10.0;
+    CGFloat total = sideBySide ? b.size.width : b.size.height;
+    CGFloat first = floor((total - hinge) * 0.5);
+    CGRect a = b, c = b, h = b;
+    if (sideBySide) {
         a.size.width = first;
-        d.origin.x = CGRectGetMaxX(a); d.size.width = 24;
-        c.origin.x = CGRectGetMaxX(d); c.size.width = total-first-24;
+        h.origin.x = CGRectGetMaxX(a); h.size.width = hinge;
+        c.origin.x = CGRectGetMaxX(h); c.size.width = total - first - hinge;
     } else {
         a.size.height = first;
-        d.origin.y = CGRectGetMaxY(a); d.size.height = 24;
-        c.origin.y = CGRectGetMaxY(d); c.size.height = total-first-24;
+        h.origin.y = CGRectGetMaxY(a); h.size.height = hinge;
+        c.origin.y = CGRectGetMaxY(h); c.size.height = total - first - hinge;
+    }
+    for (DPFloatingWindow *w in self.splitWindows) {
+        [w.layer removeAllAnimations];
+        w.transform = CGAffineTransformIdentity;
     }
     self.splitWindows[0].frame = a;
     self.splitWindows[1].frame = c;
-    self.splitDivider.frame = d;
-    for (DPFloatingWindow *w in self.splitWindows) { [w layoutIfNeeded]; [w commitSceneLayout]; }
+    self.splitDivider.frame = h;
+    for (DPFloatingWindow *w in self.splitWindows) {
+        [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
+    }
     [self.overlayRoot bringSubviewToFront:self.splitDivider];
 }
 
-- (void)moveDivider:(UIPanGestureRecognizer *)pan {
-    CGRect b = self.overlayRoot.bounds;
-    UIEdgeInsets i = self.overlayRoot.safeAreaInsets;
-    b = UIEdgeInsetsInsetRect(b, UIEdgeInsetsMake(MAX(24,i.top),MAX(4,i.left),MAX(8,i.bottom),MAX(4,i.right)));
-    CGPoint p = [pan locationInView:self.overlayRoot];
-    BOOL horizontal = b.size.width > b.size.height;
-    CGFloat total = (horizontal ? b.size.width : b.size.height) - 24;
-    CGFloat pos = (horizontal ? p.x-b.origin.x : p.y-b.origin.y)-12;
-    if (total > 0) self.splitRatio = MIN(0.7, MAX(0.3, pos/total));
-    [self layoutSplit];
-}
+// Duo keeps the hinge fixed; drag gestures on the divider are intentionally
+// absent so the two panes behave like two physical displays.
 
 - (void)leaveSplit {
     for (DPFloatingWindow *w in self.splitWindows) {
@@ -587,7 +597,7 @@
         [w layoutIfNeeded]; [w commitSceneLayout];
     }
     [self.splitDivider removeFromSuperview]; self.splitDivider = nil;
-    self.splitWindows = nil; [self.savedFrames removeAllObjects];
+    self.splitWindows = nil; [self.savedFrames removeAllObjects]; self.duoMode = NO;
     self.mode = self.mutableFloatingWindows.count ? DPPresentationModeFloating : DPPresentationModeNone;
 }
 

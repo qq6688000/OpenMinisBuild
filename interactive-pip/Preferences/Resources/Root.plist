@@ -6,8 +6,8 @@
 	<array>
 		<dict>
 			<key>cell</key><string>PSGroupCell</string>
-			<key>label</key><string>DualPane</string>
-			<key>footerText</key><string>RootHide Bootstrap roothide arm64e. Floating windows only.</string>
+			<key>label</key><string>交互分屏 Duo</string>
+			<key>footerText</key><string>RootHide Bootstrap roothide arm64e. Duo split posture + floating windows.</string>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
@@ -21,7 +21,7 @@
 		<dict>
 			<key>cell</key><string>PSGroupCell</string>
 			<key>label</key><string>Activation</string>
-			<key>footerText</key><string>Swipe an icon up or long-press an icon to open a resizable floating window.</string>
+			<key>footerText</key><string>Swipe up for a floating window, or long-press for a 50/50 Duo split.</string>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
@@ -174,10 +174,10 @@
 		<dict>
 			<key>cell</key><string>PSGroupCell</string>
 			<key>label</key><string>About</string>
-			<key>footerText</key><string>DualPane 1.2.0. RootHide Bootstrap roothide arm64e.</string>
+			<key>footerText</key><string>InteractivePiP Duo 0.2.0. True arm64e RootHide.</string>
 		</dict>
 		<dict><key>cell</key><string>PSButtonCell</string><key>action</key><string>openGitHub</string><key>label</key><string>Open GitHub</string></dict>
 	</array>
-	<key>title</key><string>DualPane</string>
+	<key>title</key><string>交互分屏 Duo</string>
 </dict>
 </plist>

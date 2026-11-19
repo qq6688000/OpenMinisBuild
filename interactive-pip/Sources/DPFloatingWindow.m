@@ -25,6 +25,8 @@ static const CGFloat kDPMinHeight = 220.0;
 @property (nonatomic, assign) CGPoint resizeStartOrigin;
 @property (nonatomic, assign) BOOL isActive;
 @property (nonatomic, assign) BOOL maximized;
+@property (nonatomic, assign) CGFloat floatingCornerRadiusValue;
+@property (nonatomic, assign) BOOL floatingShowsBorder;
 @property (nonatomic, assign) CGRect restoreFrame;
 - (CGRect)clampFrame:(CGRect)frame inBounds:(CGRect)bounds;
 - (void)leaveMaximizedState;
@@ -370,9 +372,33 @@ static const CGFloat kDPMinHeight = 220.0;
 }
 
 - (void)setTiled:(BOOL)tiled {
+    if (_tiled == tiled) return;
+    if (tiled) {
+        // Duo posture: two full-bleed panes split by a hinge. No floating chrome.
+        self.floatingCornerRadiusValue = _cornerRadiusValue;
+        self.floatingShowsBorder = _showsBorder;
+        _cornerRadiusValue = 0;
+        _showsBorder = NO;
+    } else {
+        _cornerRadiusValue = self.floatingCornerRadiusValue;
+        _showsBorder = self.floatingShowsBorder;
+    }
     _tiled = tiled;
+    self.clipsToBounds = tiled;
+    self.chromeView.layer.cornerRadius = tiled ? 0 : _cornerRadiusValue;
+    self.titleBar.hidden = tiled;
+    self.blurView.hidden = tiled;
     self.resizeHandle.hidden = tiled;
+    self.layer.shadowOpacity = tiled ? 0 : (self.isActive ? 0.4 : 0.25);
+    self.layer.shadowRadius = tiled ? 0 : 16.0;
+    self.chromeView.layer.borderWidth = 0;
+    self.backgroundColor = tiled ? [UIColor blackColor] : [UIColor clearColor];
+    self.contentContainer.backgroundColor = tiled
+        ? [UIColor blackColor]
+        : [UIColor colorWithRed:0.10 green:0.11 blue:0.13 alpha:1.0];
     if (!tiled) self.maximized = NO;
+    [self setNeedsLayout];
+    [self layoutIfNeeded];
 }
 
 #pragma mark - Scene
@@ -415,9 +441,10 @@ static const CGFloat kDPMinHeight = 220.0;
     self.chromeView.frame = self.bounds;
     self.chromeView.layer.cornerRadius = self.cornerRadiusValue;
     self.titleBar.frame = CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight);
-    self.contentContainer.frame = CGRectMake(0, kDPTitleBarHeight,
+    CGFloat contentY = self.tiled ? 0 : kDPTitleBarHeight;
+    self.contentContainer.frame = CGRectMake(0, contentY,
                                              self.bounds.size.width,
-                                             MAX(0, self.bounds.size.height - kDPTitleBarHeight));
+                                             MAX(0, self.bounds.size.height - contentY));
     self.resizeHandle.frame = CGRectMake(self.bounds.size.width - kDPResizeHandle,
                                          self.bounds.size.height - kDPResizeHandle,
                                          kDPResizeHandle, kDPResizeHandle);
@@ -443,7 +470,7 @@ static const CGFloat kDPMinHeight = 220.0;
 }
 
 - (void)applyAppearance {
-    if (self.showsBorder) {
+    if (self.showsBorder && !self.tiled) {
         self.chromeView.layer.borderWidth = self.isActive ? 1.5 : 0.5;
         // 用浅白描边，不用 systemBlue（在深色底上容易整块发蓝）
         self.chromeView.layer.borderColor = self.isActive
@@ -452,7 +479,7 @@ static const CGFloat kDPMinHeight = 220.0;
     } else {
         self.chromeView.layer.borderWidth = 0;
     }
-    self.layer.shadowOpacity = self.isActive ? 0.4 : 0.25;
+    self.layer.shadowOpacity = self.tiled ? 0 : (self.isActive ? 0.4 : 0.25);
 }
 
 - (void)setActive:(BOOL)active animated:(BOOL)animated {
