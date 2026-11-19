@@ -32,6 +32,10 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;
 - (void)openFloatingWithBundleID:(NSString *)bundleID;
 - (void)prepareForHostedInput;
+- (void)prepareForTouchInView:(UIView *)view;
+- (void)handleUserHome;
+- (void)handleDeviceLock;
+- (void)handleDeviceUnlock;
 - (void)focusWindow:(DPFloatingWindow *)window;
 - (void)requestSplitForWindow:(DPFloatingWindow *)window;
 - (void)leaveSplit;

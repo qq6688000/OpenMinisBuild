@@ -19,12 +19,7 @@
     if (event.type == UIEventTypeTouches) {
         for (UITouch *touch in event.allTouches) {
             if (touch.phase == UITouchPhaseBegan && touch.window == self) {
-                // The text field lives in the hosted app process, so its
-                // becomeFirstResponder call never reaches SpringBoard.
-                UIView *v = touch.view;
-                while (v && ![v isKindOfClass:[DPFloatingWindow class]]) v = v.superview;
-                if (v) [[DPWindowManager shared] focusWindow:(DPFloatingWindow *)v];
-                else [[DPWindowManager shared] prepareForHostedInput];
+                [[DPWindowManager shared] prepareForTouchInView:touch.view];
                 break;
             }
         }

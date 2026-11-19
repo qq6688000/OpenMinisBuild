@@ -81,12 +81,12 @@ class MachO:
         require(not any(c in self.commands for c in (0x80000022,0x22)),
                 f'{self.path}: classic LC_DYLD_INFO present alongside chained')
         ifmt,fmts=self.fixup_formats()
-        # dyld_chained_ptr_arm64e = 1, dyld_chained_import format ARM64E = 1
+        # Pointer formats are independent of the imports table encoding.
         # Apple Xcode 16.x ld uses ARM64E_USERLAND24 (ptrformat 12) for
         # rebased pointers and ARM64E_USERLAND (9) on older linkers.
-        # dyld_chained_import format: 1=ARM64E, 2=ARM64E_USERLAND24.
-        require(ifmt in (1,2), f'{self.path}: imports format {ifmt}, expected ARM64E(1/2)')
-        require(all(f in (1,9,12) for f in fmts),
+        # imports_format: 1=DYLD_CHAINED_IMPORT, 2=DYLD_CHAINED_IMPORT_ADDEND.
+        require(ifmt in (1,2), f'{self.path}: imports format {ifmt}, expected DYLD_CHAINED_IMPORT[_ADDEND](1/2)')
+        require(bool(fmts) and all(f in (1,9,12) for f in fmts),
                 f'{self.path}: segment pointer formats {fmts}, expected ARM64E userland (1/9/12)')
 
 def main():
@@ -188,20 +188,24 @@ def main():
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'InteractivePiPPrefs',
             'CFBundleIdentifier':'com.seagull.interactivepip.prefs','CFBundleInfoDictionaryVersion':'6.0',
-            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.2.0','CFBundleVersion':'3',
+            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.2.1','CFBundleVersion':'4',
             'NSPrincipalClass':'DPRootListController'},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'Preferences/Resources/Root.plist',pb/'Root.plist')
         (pl/'InteractivePiP.plist').write_bytes(plistlib.dumps({
             'entry':{'bundle':'InteractivePiPPrefs','cell':'PSLinkCell','detail':'DPRootListController',
                      'isController':True,'label':'交互分屏 PiP'}},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'control',stage/'DEBIAN/control')
+        doc=stage/'usr/share/doc/com.seagull.interactivepip';doc.mkdir(parents=True)
+        for name in ('LICENSE','THIRD_PARTY_NOTICES.md','README.md'):
+            shutil.copyfile(ROOT/name,doc/name)
+        shutil.copytree(ROOT/'LICENSES',doc/'LICENSES')
         for cur,_,files in os.walk(stage):
             os.chmod(cur,0o755)
             for n in files:
                 p=Path(cur)/n
                 os.chmod(p,0o755 if p.name in ('InteractivePiP.dylib','InteractivePiPPrefs') else 0o644)
         out=ROOT/'dist-apple';out.mkdir(exist_ok=True)
-        deb=out/'InteractivePiP_Duo_0.2.0_iphoneos-arm64e.deb'
+        deb=out/'InteractivePiP_Duo_0.2.1_iphoneos-arm64e.deb'
         run([dpkg,'--root-owner-group','-Zgzip','--build',str(stage),str(deb)])
         print(f'Built {deb} ({deb.stat().st_size} bytes); NOT device-validated.')
 

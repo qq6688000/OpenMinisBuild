@@ -23,6 +23,9 @@
 @property (nonatomic, strong, nullable) NSString *requesterToken;
 @property (nonatomic, assign) NSInteger attemptCount;
 @property (nonatomic, assign) BOOL attaching;
+@property (nonatomic, assign) BOOL invalidated;
+@property (nonatomic, strong) id originalSettings;
+@property (nonatomic, strong) id settingsScene;
 @property (nonatomic, assign) BOOL snapshotAttempted;
 @property (nonatomic, assign) CGSize lastCommittedSceneSize;
 @property (nonatomic, assign) CGSize nativeSceneSize;
@@ -42,7 +45,6 @@
 - (nullable Class)externalSceneHostClass;
 - (nullable id)layerManagerFromScene:(id)scene;
 - (BOOL)layerHasExternalSceneID:(id)layer;
-- (void)prepareRemoteKeyboardSupport;
 @property (nonatomic, strong, nullable) id retainedSceneController; // 防止 VC 被释放
 - (void)layoutHostView;
 @end
@@ -714,12 +716,13 @@
                    includeFrame:(BOOL)includeFrame {
     id settings = [self settingsCopyForScene:self.scene];
     if (!settings) return NO;
+    if (self.settingsScene != self.scene) {
+        if (self.settingsScene && self.originalSettings) [self submitSettings:self.originalSettings toScene:self.settingsScene];
+        self.settingsScene = self.scene;
+        self.originalSettings = [self settingsCopyForScene:self.scene];
+    }
 
     @try {
-        SEL setContentState = NSSelectorFromString(@"_setContentState:");
-        if (foreground && [self.scene respondsToSelector:setContentState]) {
-            ((void (*)(id, SEL, NSInteger))objc_msgSend)(self.scene, setContentState, 2);
-        }
 
         SEL setForeground = NSSelectorFromString(@"setForeground:");
         if ([settings respondsToSelector:setForeground]) {
@@ -976,54 +979,6 @@
     [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
 }
 
-- (void)prepareRemoteKeyboardSupport {
-    Class remoteClass = NSClassFromString(@"_UIRemoteKeyboards");
-    if (!remoteClass) return;
-    id keyboards = nil;
-    SEL shared = NSSelectorFromString(@"sharedRemoteKeyboards");
-    @try {
-        if ([remoteClass respondsToSelector:shared]) {
-            keyboards = ((id (*)(id, SEL))objc_msgSend)(remoteClass, shared);
-        }
-    } @catch (__unused NSException *exception) {}
-    if (!keyboards) return;
-
-    @try {
-        SEL setSuppressing = NSSelectorFromString(@"setSuppressingKeyboard:");
-        if ([keyboards respondsToSelector:setSuppressing]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboards, setSuppressing, NO);
-        }
-    } @catch (__unused NSException *exception) {}
-
-    @try {
-        SEL setWindowEnabled = NSSelectorFromString(@"setWindowEnabled:");
-        if ([keyboards respondsToSelector:setWindowEnabled]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboards, setWindowEnabled, YES);
-        }
-    } @catch (__unused NSException *exception) {}
-
-    @try {
-        SEL setCurrentKeyboard = NSSelectorFromString(@"setCurrentKeyboard:");
-        if ([keyboards respondsToSelector:setCurrentKeyboard]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboards, setCurrentKeyboard, YES);
-        }
-    } @catch (__unused NSException *exception) {}
-
-    @try {
-        SEL prepareHosted = NSSelectorFromString(@"prepareForHostedWindow");
-        if ([keyboards respondsToSelector:prepareHosted]) {
-            ((id (*)(id, SEL))objc_msgSend)(keyboards, prepareHosted);
-        }
-    } @catch (__unused NSException *exception) {}
-
-    @try {
-        SEL clean = NSSelectorFromString(@"cleanSuppression");
-        if ([keyboards respondsToSelector:clean]) {
-            ((void (*)(id, SEL))objc_msgSend)(keyboards, clean);
-        }
-    } @catch (__unused NSException *exception) {}
-}
-
 - (void)scheduleExternalSceneRefresh {
     NSUInteger generation = ++self.externalRefreshGeneration;
     NSArray<NSNumber *> *delays = @[@0.0, @0.05, @0.12, @0.25, @0.5, @0.9, @1.5, @2.5];
@@ -1176,7 +1131,7 @@
 #pragma mark - Main attach
 
 - (void)attemptLiveSceneHost {
-    if (self.attaching || (self.live && self.hostView.superview == self.view)) return;
+    if (self.invalidated || self.attaching || (self.live && self.hostView.superview == self.view)) return;
     self.attaching = YES;
     self.attemptCount += 1;
 
@@ -1249,7 +1204,7 @@
 }
 
 - (void)scheduleReconnect {
-    if (self.reconnectTimer || self.live) return;
+    if (self.invalidated || self.reconnectTimer || self.live) return;
 
     self.reconnectAttempts = 0;
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -1370,7 +1325,6 @@
         self.placeholder.hidden = YES;
         self.snapshotView.hidden = YES;
         self.live = YES;
-        [self prepareForInput];
     [self startObservingLayerManager];
     [self startSceneKeepAlive];
         return;
@@ -1395,7 +1349,6 @@
     self.snapshotView.hidden = YES;
     self.live = YES;
 
-    [self prepareForInput];
     [self commitHostedFrame];
     [self startObservingLayerManager];
     [self startSceneKeepAlive];
@@ -1414,8 +1367,10 @@
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
     self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    self.hostView.transform = CGAffineTransformMakeScale(target.width / canvas.width,
-                                                         target.height / canvas.height);
+    // Preserve the native phone canvas: one scale on both axes, centered letterbox.
+    CGFloat scale = MIN(target.width / canvas.width, target.height / canvas.height);
+    self.view.backgroundColor = [UIColor blackColor];
+    self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
 - (void)applySnapshotFallback {
@@ -1606,7 +1561,6 @@
     [self enableInteractionInView:self.hostView];
     self.view.userInteractionEnabled = YES;
     [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
-    [self prepareRemoteKeyboardSupport];
     [self startObservingLayerManager];
     [self scheduleExternalSceneRefresh];
 }
@@ -1648,7 +1602,9 @@
 }
 
 - (void)retryAttach {
-    if (self.attaching) return;
+    if (self.invalidated || self.attaching) return;
+    if (self.settingsScene && self.originalSettings) [self submitSettings:self.originalSettings toScene:self.settingsScene];
+    self.settingsScene = nil; self.originalSettings = nil;
     NSLog(@"[InteractivePiP] retryAttach #%@ %@", @(self.attemptCount + 1), self.bundleID);
     self.externalRefreshGeneration += 1;
     [self stopObservingLayerManager];
@@ -1669,15 +1625,17 @@
 }
 
 - (void)invalidate {
+    self.invalidated = YES;
     self.externalRefreshGeneration += 1;
     [self stopObservingLayerManager];
     [self clearExternalSceneHosts];
     [self stopSceneKeepAlive];
     [self stopReconnect];
     [self releaseProcessAssertion];
-    if (self.scene) {
-        [self applySceneForeground:NO backgrounded:YES size:CGSizeZero includeFrame:NO];
+    if (self.settingsScene && self.originalSettings) {
+        [self submitSettings:self.originalSettings toScene:self.settingsScene];
     }
+    self.settingsScene = nil; self.originalSettings = nil;
     if (self.scene) {
         id hostManager = [self hostManagerFromScene:self.scene];
         if (hostManager) {

@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <notify.h>
 #import <objc/message.h>
 #import "DPSettings.h"
 #import "DPWindowManager.h"
@@ -428,40 +429,10 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 %end
 
-%hook UIApplication
 
-- (void)sendEvent:(UIEvent *)event {
-    if (event.type == UIEventTypeTouches) {
-        Class overlayClass = NSClassFromString(@"DPPassthroughWindow");
-        for (UITouch *touch in event.allTouches) {
-            if (touch.phase == UITouchPhaseBegan
-                && overlayClass
-                && [touch.window isKindOfClass:overlayClass]) {
-                [[DPWindowManager shared] prepareForHostedInput];
-                break;
-            }
-        }
-    }
-    %orig;
-}
 
-%end
+// Remote app responders do not live in SpringBoard. Route only actual host touches.
 
-// Hosted controls live inside the SpringBoard-owned overlay window. Make that
-// window key before UIKit asks the responder chain to present the keyboard.
-%hook UIResponder
-
-- (BOOL)becomeFirstResponder {
-    Class overlayClass = NSClassFromString(@"DPPassthroughWindow");
-    UIWindow *window = [self isKindOfClass:[UIView class]] ? ((UIView *)self).window : nil;
-    BOOL isHosted = overlayClass && [window isKindOfClass:overlayClass];
-    if (isHosted) {
-        [[DPWindowManager shared] prepareForHostedInput];
-    }
-    return %orig;
-}
-
-%end
 
 // 不再 hook SBWorkspaceTransaction.begin 硬 return —— 那是卡顿主因之一
 
@@ -578,9 +549,41 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 %end
 
+%hook SBUIController
+- (void)handleHomeButtonSinglePressUp {
+    [[DPWindowManager shared] handleUserHome];
+    %orig;
+}
+- (void)clickedMenuButton {
+    [[DPWindowManager shared] handleUserHome];
+    %orig;
+}
+%end
+
+%hook SBLockScreenManager
+- (void)lockUIFromSource:(int)source withOptions:(id)options {
+    [[DPWindowManager shared] handleDeviceLock];
+    %orig;
+}
+- (void)unlockUIFromSource:(int)source withOptions:(id)options {
+    %orig;
+    [[DPWindowManager shared] handleDeviceUnlock];
+}
+%end
+
 %ctor {
     @autoreleasepool {
         [DPSettings shared];
+        static int lockToken;
+        notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
+            uint64_t state = 0;
+            if (notify_get_state(token, &state) == NOTIFY_STATUS_OK) {
+                if (state) [[DPWindowManager shared] handleDeviceLock];
+                else [[DPWindowManager shared] handleDeviceUnlock];
+            }
+        });
+        uint64_t initialState = 0;
+        if (notify_get_state(lockToken, &initialState) == NOTIFY_STATUS_OK && initialState) [[DPWindowManager shared] handleDeviceLock];
         NSLog(@"[InteractivePiP] 已加载 — 启用=%d", [DPSettings shared].isEnabled);
     }
 }
