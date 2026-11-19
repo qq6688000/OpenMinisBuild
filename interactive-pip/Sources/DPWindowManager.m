@@ -147,12 +147,18 @@
 
 - (void)bringOverlayToFront {
     if (self.deviceLocked) return;
+    // Never resurrect a chrome-only overlay: it covers the home screen with
+    // nothing inside, which is exactly the "stuck on split screen" symptom.
+    if (self.mutableFloatingWindows.count == 0) {
+        self.overlayWindow.hidden = YES;
+        [self updateSessionControls];
+        return;
+    }
     [self updateSessionControls];
     if (!self.overlayWindow) {
         [self install];
         return;
     }
-    self.overlayWindow.hidden = NO;
     self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
     // 重新挂到当前 scene（切 App 后 scene 可能变）
     if (@available(iOS 13.0, *)) {
@@ -254,7 +260,8 @@
         }
     }
 
-    if (self.splitWindows.count) [self leaveSplit];
+    // Only leave the split when a third, unrelated app is opened.
+    if (self.splitWindows.count && !self.creatingSplit) [self leaveSplit];
 
     // 关键：先登记托管，再画 UI —— 阻止随后的全屏启动
     [self.mutableHostedBundleIDs addObject:bundleID];
