@@ -82,9 +82,12 @@ class MachO:
                 f'{self.path}: classic LC_DYLD_INFO present alongside chained')
         ifmt,fmts=self.fixup_formats()
         # dyld_chained_ptr_arm64e = 1, dyld_chained_import format ARM64E = 1
-        require(ifmt==1, f'{self.path}: imports format {ifmt}, expected ARM64E(1)')
-        require(all(f==1 for f in fmts),
-                f'{self.path}: segment pointer formats {fmts}, expected all ARM64E(1)')
+        # Apple Xcode 16.x ld uses ARM64E_USERLAND24 (ptrformat 12) for
+        # rebased pointers and ARM64E_USERLAND (9) on older linkers.
+        # dyld_chained_import format: 1=ARM64E, 2=ARM64E_USERLAND24.
+        require(ifmt in (1,2), f'{self.path}: imports format {ifmt}, expected ARM64E(1/2)')
+        require(all(f in (1,9,12) for f in fmts),
+                f'{self.path}: segment pointer formats {fmts}, expected ARM64E userland (1/9/12)')
 
 def main():
     args = argparse.ArgumentParser().parse_args()
