@@ -183,7 +183,7 @@ def main():
         link=[tools['ld'],'-dylib','-arch','arm64e','-platform_version','ios',DEPLOYMENT,sdkversion,
               '-syslibroot',str(sdk),'-fixup_chains',
               '-install_name','@loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/InteractivePiPKeyboard.dylib',
-              '-o',str(kb_dylib),kb_obj,'-L',str(ROOT/'vendor'),'-lsubstrate','-lSystem','-lobjc']
+              '-o',str(kb_dylib),kb_obj,'-L',str(ROOT/'vendor'),'-lsubstrate','-lSystem','-lobjc','-lc++']
         for fw in FRAMEWORKS: link.extend(['-framework',fw])
         run(link)
         MachO(kb_dylib,6).validate()
