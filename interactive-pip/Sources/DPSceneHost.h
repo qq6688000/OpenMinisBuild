@@ -17,6 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setHostedFrame:(CGRect)frame;
 - (void)commitHostedFrame;
 - (void)prepareForInput;
+- (nullable UIView *)keyboardRoutingView;
+- (int)keyboardRoutingPID;
 - (void)setSuspended:(BOOL)suspended;
 - (void)retryAttach;
 - (void)invalidate;

@@ -1,4 +1,4 @@
-# InteractivePiP Duo 0.2.1
+# InteractivePiP Duo 0.2.2
 
 实验性 iOS 16.1–16.x / RootHide / 原生 arm64e 插件。必须具备 SpringBoard 注入能力；仅有 Bootstrap 应用注入并不够。
 
@@ -14,7 +14,7 @@
 
 ## 构建
 
-在完整 Xcode 的 macOS 上运行 `python3 build-apple.py`，需 `dpkg-deb`。使用真实 Apple clang、Apple ld `-fixup_chains`、arm64e 和 codesign。禁止 LLD 或改 Mach-O header 冒充 arm64e。产物 `dist-apple/InteractivePiP_Duo_0.2.1_iphoneos-arm64e.deb`。
+在完整 Xcode 的 macOS 上运行 `python3 build-apple.py`，需 `dpkg-deb`。使用真实 Apple clang、Apple ld `-fixup_chains`、arm64e 和 codesign。禁止 LLD 或改 Mach-O header 冒充 arm64e。产物 `dist-apple/InteractivePiP_Duo_0.2.2_iphoneos-arm64e.deb`。
 
 对应工作流 `.github/workflows/interactive-pip.yml` 使用 macos-15；源码归档包含该文件及所有本工程 vendored 声明/Logos 源文件，不包含 Apple SDK（由 Xcode 提供）或系统运行库二进制。
 

@@ -26,6 +26,14 @@
 @property (nonatomic, assign) NSUInteger sessionGeneration;
 @property (nonatomic, assign) BOOL deviceLocked;
 @property (nonatomic, assign) BOOL internalHomeReturn;
+@property (nonatomic, strong) NSTimer *lockWatchdog;
+@property (nonatomic, strong) id hostedKeyboardToken;
+@property (nonatomic, assign) BOOL keyboardStateSaved;
+@property (nonatomic, assign) BOOL oldWindowEnabled;
+@property (nonatomic, assign) BOOL oldCurrentKeyboard;
+@property (nonatomic, weak) DPFloatingWindow *keyboardRoutedWindow;
+- (BOOL)systemReportsLocked;
+- (void)checkSessionLock;
 @property (nonatomic, strong) NSArray<DPFloatingWindow *> *splitWindows;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *savedFrames;
 @property (nonatomic, assign) CGFloat splitRatio;
@@ -97,8 +105,9 @@
 }
 
 - (void)install {
-    if (self.overlayWindow && self.overlayWindow.hidden == NO) {
-        [self bringOverlayToFront];
+    if (self.overlayWindow) {
+        self.overlayWindow.userInteractionEnabled = YES;
+        if (!self.deviceLocked) [self bringOverlayToFront];
         return;
     }
 
@@ -145,8 +154,8 @@
 }
 
 - (void)bringOverlayToFront {
+    if ([self systemReportsLocked]) { [self handleDeviceLock]; return; }
     if (self.deviceLocked) return;
-    [self updateSessionControls];
     if (!self.overlayWindow) {
         [self install];
         return;
@@ -162,8 +171,10 @@
             self.overlayRoot.frame = self.overlayWindow.bounds;
         }
     }
-    // 不抢 keyWindow，只确保可见
+    // Update AFTER the root exists and scene/frame have been updated.
+    self.overlayWindow.userInteractionEnabled = YES;
     self.overlayWindow.hidden = NO;
+    [self updateSessionControls];
 }
 
 - (UIView *)contentParent {
@@ -288,6 +299,10 @@
 
     [parent addSubview:window];
     [self.mutableFloatingWindows addObject:window];
+    if (!self.lockWatchdog) {
+        self.lockWatchdog = [NSTimer timerWithTimeInterval:0.35 target:self selector:@selector(checkSessionLock) userInfo:nil repeats:YES];
+        [[NSRunLoop mainRunLoop] addTimer:self.lockWatchdog forMode:NSRunLoopCommonModes];
+    }
     if (self.focusedWindow != window) [self restorePreviousKeyWindow];
     self.focusedWindow = window;
     self.mode = DPPresentationModeFloating;
@@ -336,6 +351,11 @@
 }
 
 - (void)dismissAllAnimated:(BOOL)animated {
+    self.overlayWindow.hidden = YES;
+    self.overlayWindow.userInteractionEnabled = NO;
+    self.sessionControls.hidden = YES;
+    [self.mutableHostedBundleIDs removeAllObjects];
+    self.suppressLaunch = NO;
     self.sessionGeneration += 1;
     self.pendingHomeBundleID = nil; self.homeReturnPending = NO;
     [self.launchAllowlist removeAllObjects];
@@ -364,24 +384,85 @@
     }
 }
 
-- (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled {
-    // prepare/finish is a balanced UIKit hosting lease, NOT a PID focus setter.
-    // Do not change global suppression/currentKeyboard/windowEnabled state.
-    if (enabled == self.hostedInputActive) return;
-    id keyboards = [self sharedRemoteKeyboards];
-    SEL selector = NSSelectorFromString(enabled ? @"prepareForHostedWindow" : @"finishWithHostedWindow");
-    if (![keyboards respondsToSelector:selector]) {
-        NSLog(@"[InteractivePiP] 远程键盘接口不可用，请使用键盘帮助中的全屏输入");
-        self.hostedInputActive = NO;
-        return;
-    }
-    @try {
-        if (enabled) ((id (*)(id, SEL))objc_msgSend)(keyboards, selector);
-        else ((void (*)(id, SEL))objc_msgSend)(keyboards, selector);
-        self.hostedInputActive = enabled;
-    } @catch (__unused NSException *exception) { self.hostedInputActive = NO; }
+- (BOOL)kbBool:(id)kb getter:(NSString *)name {
+    SEL sel = NSSelectorFromString(name);
+    if (![kb respondsToSelector:sel]) return NO;
+    @try { return ((BOOL (*)(id,SEL))objc_msgSend)(kb, sel); } @catch (__unused NSException *e) { return NO; }
 }
 
+- (void)kbBool:(id)kb setter:(NSString *)name value:(BOOL)value {
+    SEL sel = NSSelectorFromString(name);
+    if (![kb respondsToSelector:sel]) return;
+    @try { ((void (*)(id,SEL,BOOL))objc_msgSend)(kb, sel, value); } @catch (__unused NSException *e) {}
+}
+
+- (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled {
+    id kb = [self sharedRemoteKeyboards];
+    if (!kb) return;
+
+    if (!enabled) {
+        if (self.hostedInputActive) {
+            SEL fin = NSSelectorFromString(@"finishWithHostedWindow");
+            if ([kb respondsToSelector:fin]) {
+                @try { ((void (*)(id,SEL))objc_msgSend)(kb, fin); } @catch (__unused NSException *e) {}
+            }
+        }
+        if (self.keyboardStateSaved) {
+            [self kbBool:kb setter:@"setCurrentKeyboard:" value:self.oldCurrentKeyboard];
+            [self kbBool:kb setter:@"setWindowEnabled:" value:self.oldWindowEnabled];
+        }
+        self.hostedKeyboardToken = nil;
+        self.hostedInputActive = NO;
+        self.keyboardStateSaved = NO;
+        self.keyboardRoutedWindow = nil;
+        return;
+    }
+
+    DPFloatingWindow *target = self.focusedWindow;
+    if (!target || !target.sceneHost.isLive || self.deviceLocked) return;
+    if (self.hostedInputActive && self.keyboardRoutedWindow == target) return;
+
+    // Restore previous target before switching to a different one.
+    if (self.hostedInputActive) [self configureRemoteKeyboardsForHostedInput:NO];
+
+    UIView *host = [target.sceneHost keyboardRoutingView];
+    int pid = [target.sceneHost keyboardRoutingPID];
+    if (!host || pid <= 0) {
+        NSLog(@"[InteractivePiP] 无可用宿主视图用于键盘路由 %@ pid=%d",
+              target.bundleID, pid);
+        return;
+    }
+
+    self.oldCurrentKeyboard = [self kbBool:kb getter:@"currentKeyboard"];
+    self.oldWindowEnabled   = [self kbBool:kb getter:@"windowEnabled"];
+    self.keyboardStateSaved = YES;
+
+    @try {
+        SEL prep = NSSelectorFromString(@"prepareForHostedWindow");
+        if ([kb respondsToSelector:prep])
+            self.hostedKeyboardToken = ((id (*)(id,SEL))objc_msgSend)(kb, prep);
+
+        SEL add = NSSelectorFromString(@"addHostedWindowView:fromPID:");
+        if ([kb respondsToSelector:add])
+            ((void (*)(id,SEL,id,int))objc_msgSend)(kb, add, host, pid);
+
+        [self kbBool:kb setter:@"setWindowEnabled:" value:YES];
+        [self kbBool:kb setter:@"setCurrentKeyboard:" value:YES];
+
+        SEL clean = NSSelectorFromString(@"cleanSuppression");
+        if ([kb respondsToSelector:clean]) ((void (*)(id,SEL))objc_msgSend)(kb, clean);
+        SEL upd = NSSelectorFromString(@"sceneUpdated");
+        if ([kb respondsToSelector:upd]) ((void (*)(id,SEL))objc_msgSend)(kb, upd);
+
+        self.keyboardRoutedWindow = target;
+        self.hostedInputActive = YES;
+        NSLog(@"[InteractivePiP] 键盘宿主已登记 %@ pid=%d wrapper=%@",
+              target.bundleID, pid, NSStringFromClass(host.class));
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] 键盘宿主登记失败 %@: %@", target.bundleID, e);
+        [self configureRemoteKeyboardsForHostedInput:NO];
+    }
+}
 - (void)prepareForHostedInput {
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden || !self.focusedWindow) return;
     [self.focusedWindow.sceneHost prepareForInput];
@@ -434,20 +515,54 @@
         }
         [self.overlayRoot addSubview:self.sessionControls];
     }
+    if (!self.overlayRoot) return;
+    if (self.sessionControls.superview != self.overlayRoot) [self.overlayRoot addSubview:self.sessionControls];
     CGRect b = self.overlayRoot.bounds;
-    self.sessionControls.frame = CGRectMake(0, self.overlayRoot.safeAreaInsets.top, b.size.width, 44);
+    CGFloat top = self.overlayRoot.safeAreaInsets.top;
+    if (@available(iOS 13.0, *)) top = MAX(top, self.overlayWindow.windowScene.statusBarManager.statusBarFrame.size.height);
+    self.sessionControls.frame = CGRectMake(0, top, b.size.width, 44);
     self.sessionControls.hidden = self.mutableFloatingWindows.count == 0;
     self.leaveSplitButton.enabled = self.duoMode;
     [self.overlayRoot bringSubviewToFront:self.sessionControls];
 }
 
+- (BOOL)systemReportsLocked {
+    Class cls = NSClassFromString(@"SBLockScreenManager");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    if (!cls || ![cls respondsToSelector:shared]) return NO;
+    @try {
+        id manager = ((id (*)(id,SEL))objc_msgSend)(cls,shared);
+        for (NSString *name in @[@"isUILocked", @"isLockScreenVisible", @"isLocked"]) {
+            SEL sel = NSSelectorFromString(name);
+            if ([manager respondsToSelector:sel] && ((BOOL (*)(id,SEL))objc_msgSend)(manager, sel)) return YES;
+        }
+        Class sbCls = NSClassFromString(@"SpringBoard");
+        SEL sharedApp = NSSelectorFromString(@"sharedApplication");
+        SEL isLocked = NSSelectorFromString(@"isLocked");
+        if ([sbCls respondsToSelector:sharedApp]) {
+            id app = ((id (*)(id,SEL))objc_msgSend)(sbCls, sharedApp);
+            if ([app respondsToSelector:isLocked] && ((BOOL (*)(id,SEL))objc_msgSend)(app, isLocked)) return YES;
+        }
+    } @catch (__unused NSException *e) {}
+    return NO;
+}
+- (void)checkSessionLock {
+    if ([self systemReportsLocked]) { [self handleDeviceLock]; return; }
+    if (self.mutableFloatingWindows.count == 0) { [self.lockWatchdog invalidate]; self.lockWatchdog = nil; }
+}
 - (void)handleDeviceLock {
+    self.overlayWindow.hidden = YES;
+    self.overlayWindow.userInteractionEnabled = NO;
     self.deviceLocked = YES;
+    [self.lockWatchdog invalidate]; self.lockWatchdog = nil;
     [self dismissAllAnimated:NO];
     self.overlayWindow.hidden = YES;
 }
 
-- (void)handleDeviceUnlock { self.deviceLocked = NO; }
+- (void)handleDeviceUnlock {
+    self.deviceLocked = NO;
+    self.overlayWindow.hidden = YES; // unlock never resurrects the old session
+}
 
 - (void)ensureOverlayVisible {
     if (!self.overlayWindow || self.deviceLocked) return;
@@ -565,11 +680,8 @@
 
 - (void)layoutSplit {
     if (self.splitWindows.count != 2) return;
-    CGRect full = self.overlayRoot.bounds;
-    UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
-    // Duo: panels reach the physical screen edges; only keep the status-bar
-    // cutout clear at the top. Hinge is a narrow centered seam.
-    CGRect b = UIEdgeInsetsInsetRect(full, UIEdgeInsetsMake(MAX(0, insets.top) + 44.0, 0, MAX(0, insets.bottom), 0));
+    // Each client scene receives the full half-screen viewport; controls float above it.
+    CGRect b = self.overlayRoot.bounds;
     BOOL sideBySide = b.size.width >= b.size.height;
     const CGFloat hinge = sideBySide ? 8.0 : 10.0;
     CGFloat total = sideBySide ? b.size.width : b.size.height;

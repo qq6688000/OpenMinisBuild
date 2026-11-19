@@ -79,48 +79,6 @@ static void DPHaptic(void) {
     [g impactOccurred];
 }
 
-static BOOL DPSceneIsHosted(id scene) {
-    if (!scene) return NO;
-    NSString *identifier = nil;
-    for (NSString *key in @[@"identifier", @"_identifier", @"sceneIdentifier"]) {
-        @try {
-            id value = [scene valueForKey:key];
-            if ([value isKindOfClass:[NSString class]]) {
-                identifier = value;
-                break;
-            }
-        } @catch (__unused NSException *e) {}
-    }
-    if (!identifier.length) return NO;
-
-    for (NSString *bundleID in [DPWindowManager shared].hostedBundleIDs) {
-        if ([identifier containsString:bundleID]) return YES;
-    }
-    return NO;
-}
-
-static id DPSettingsByKeepingSceneForeground(id scene, id settings) {
-    if (!settings || !DPSceneIsHosted(scene)) return settings;
-    @try {
-        id mutableSettings = [settings respondsToSelector:@selector(mutableCopy)]
-            ? [settings mutableCopy] : settings;
-        SEL setForeground = NSSelectorFromString(@"setForeground:");
-        if ([mutableSettings respondsToSelector:setForeground]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(mutableSettings, setForeground, YES);
-        }
-        SEL setBackgrounded = NSSelectorFromString(@"setBackgrounded:");
-        if ([mutableSettings respondsToSelector:setBackgrounded]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(mutableSettings, setBackgrounded, NO);
-        }
-        SEL setReasons = NSSelectorFromString(@"setDeactivationReasons:");
-        if ([mutableSettings respondsToSelector:setReasons]) {
-            ((void (*)(id, SEL, unsigned long long))objc_msgSend)(mutableSettings, setReasons, 0);
-        }
-        return mutableSettings;
-    } @catch (__unused NSException *e) {
-        return settings;
-    }
-}
 
 // ── 图标上滑 ───────────────────────────────────────────────────────────────
 
@@ -331,20 +289,7 @@ static NSArray *DPInjectedShortcutItems(void) {
     return out;
 }
 
-// Preserve activation only for scenes currently owned by DualPane.
-%hook FBScene
-
-- (void)updateSettings:(id)settings withTransitionContext:(id)context completion:(id)completion {
-    id effectiveSettings = DPSettingsByKeepingSceneForeground(self, settings);
-    %orig(effectiveSettings, context, completion);
-}
-
-- (void)updateSettings:(id)settings withTransitionContext:(id)context {
-    id effectiveSettings = DPSettingsByKeepingSceneForeground(self, settings);
-    %orig(effectiveSettings, context);
-}
-
-%end
+// System owns foreground/deactivation transitions; never rewrite lock/background settings.
 
 // ── SpringBoard 启动：装独立顶层窗 ─────────────────────────────────────────
 
@@ -560,6 +505,13 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
+%hook SpringBoard
+- (void)_lockButtonDown:(id)event {
+    [[DPWindowManager shared] handleDeviceLock];
+    %orig;
+}
+%end
+
 %hook SBLockScreenManager
 - (void)lockUIFromSource:(int)source withOptions:(id)options {
     [[DPWindowManager shared] handleDeviceLock];
@@ -574,6 +526,11 @@ static NSArray *DPInjectedShortcutItems(void) {
 %ctor {
     @autoreleasepool {
         [DPSettings shared];
+        static int displayToken;
+        notify_register_dispatch("com.apple.iokit.hid.displayStatus", &displayToken, dispatch_get_main_queue(), ^(int token) {
+            uint64_t state = 1;
+            if (notify_get_state(token, &state) == NOTIFY_STATUS_OK && state == 0) [[DPWindowManager shared] handleDeviceLock];
+        });
         static int lockToken;
         notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
             uint64_t state = 0;

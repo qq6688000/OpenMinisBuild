@@ -346,7 +346,7 @@
 			<key>label</key>
 			<string>关于</string>
 			<key>footerText</key>
-			<string>交互分屏 Duo 0.2.1 · 原生 arm64e · RootHide。远程键盘兼容性需真机验证，失败时可从键盘帮助转全屏输入。</string>
+			<string>交互分屏 Duo 0.2.2 · 原生 arm64e · RootHide。远程键盘兼容性需真机验证，失败时可从键盘帮助转全屏输入。</string>
 		</dict>
 		<dict>
 			<key>cell</key>

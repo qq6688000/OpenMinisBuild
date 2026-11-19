@@ -1149,8 +1149,8 @@
         id scene = [self findFBScene];
         self.scene = scene;
         if (scene) {
-            CGSize size = [UIScreen mainScreen].bounds.size;
-            if (size.width < 2 || size.height < 2) size = CGSizeMake(390, 844);
+            CGSize size = self.view.bounds.size;
+            if (size.width < 2 || size.height < 2) size = [UIScreen mainScreen].bounds.size;
             self.nativeSceneSize = size;
             [self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES];
 
@@ -1189,7 +1189,7 @@
     dispatch_source_set_event_handler(timer, ^{
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2 || !self2.live || !self2.scene) return;
-        [self2 applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
+        // Keep the process assertion only; do not undo lock/background transitions.
         [self2 acquireProcessAssertionIfNeeded];
         [self2 refreshExternalSceneHosts];
     });
@@ -1358,19 +1358,13 @@
 
 - (void)layoutHostView {
     if (!self.hostView) return;
-
     CGSize target = self.view.bounds.size;
-    CGSize canvas = self.nativeSceneSize;
-    if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
-    if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
-
+    if (target.width < 1 || target.height < 1) return;
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
-    self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    // Preserve the native phone canvas: one scale on both axes, centered letterbox.
-    CGFloat scale = MIN(target.width / canvas.width, target.height / canvas.height);
-    self.view.backgroundColor = [UIColor blackColor];
-    self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
+    self.hostView.frame = self.view.bounds;
+    self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.hostView.backgroundColor = [UIColor systemBackgroundColor];
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
 }
 
 - (void)applySnapshotFallback {
@@ -1509,6 +1503,15 @@
     }
 }
 
+- (UIView *)keyboardRoutingView {
+    if (!self.live || !self.hostView) return nil;
+    Class wrapper = NSClassFromString(@"FBSceneHostWrapperView");
+    if (wrapper && [self.hostView isKindOfClass:wrapper]) return self.hostView;
+    if ([NSStringFromClass(self.hostView.class) containsString:@"FBSceneHostWrapperView"]) return self.hostView;
+    return nil; // Layer fallback renders pixels but cannot route text input.
+}
+- (int)keyboardRoutingPID { return [self hostedApplicationPID]; }
+
 - (void)prepareForInput {
     if (!self.scene || !self.live) return;
     id hostManager = [self hostManagerFromScene:self.scene];
@@ -1560,7 +1563,6 @@
 
     [self enableInteractionInView:self.hostView];
     self.view.userInteractionEnabled = YES;
-    [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
     [self startObservingLayerManager];
     [self scheduleExternalSceneRefresh];
 }
@@ -1578,15 +1580,24 @@
 
 - (void)commitHostedFrame {
     if (self.live && self.scene) {
-        [self updateSceneSettingsWithSize:self.view.bounds.size];
+        CGSize size = self.view.bounds.size;
+        if (!CGSizeEqualToSize(size, self.lastCommittedSceneSize)) {
+            self.hostView.frame = self.view.bounds;
+            [self.hostView setNeedsLayout];
+            [self.hostView layoutIfNeeded];
+        }
+        [self updateSceneSettingsWithSize:size];
     }
 }
 
 - (void)updateSceneSettingsWithSize:(CGSize)size {
     if (!self.scene || size.width < 1 || size.height < 1) return;
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
-    if ([self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO]) {
+    if ([self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES]) {
         self.lastCommittedSceneSize = size;
+        self.nativeSceneSize = size;
+        [self layoutHostView];
+        NSLog(@"[InteractivePiP] client viewport %@ %.1fx%.1f", self.bundleID, size.width, size.height);
     }
 }
 
