@@ -5,7 +5,6 @@
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
-#import <notify.h>
 
 @interface DPWindowManager ()
 @property (nonatomic, strong, nullable) DPPassthroughWindow *overlayWindow;
@@ -20,16 +19,22 @@
 @property (nonatomic, copy, nullable) NSString *pendingHomeBundleID;
 @property (nonatomic, weak, nullable) UIWindow *keyWindowBeforeHostedInput;
 @property (nonatomic, assign) BOOL hostedInputActive;
-@property (nonatomic, assign) BOOL keyboardStateSaved;
-@property (nonatomic, assign) BOOL oldCurrentKeyboard;
-@property (nonatomic, assign) BOOL oldWindowEnabled;
 @property (nonatomic, weak, nullable) DPFloatingWindow *keyboardRoutedWindow;
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
-@property (nonatomic, strong, nullable) NSValue *frameBeforeKeyboard;
-- (void)startKeyboardBridge;
-- (void)keyboardStateChanged;
-- (void)avoidKeyboardWithHeight:(CGFloat)height;
-- (void)syncOverlayVisibility;
+@property (nonatomic, assign) BOOL deviceLocked;
+@property (nonatomic, strong) UIView *splitDivider;
+@property (nonatomic, strong) UIStackView *sessionControls;
+@property (nonatomic, strong) UIButton *leaveSplitButton;
+@property (nonatomic, assign) NSUInteger sessionGeneration;
+@property (nonatomic, assign) BOOL internalHomeReturn;
+@property (nonatomic, strong) NSArray<DPFloatingWindow *> *splitWindows;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *savedFrames;
+@property (nonatomic, assign) CGFloat splitRatio;
+@property (nonatomic, assign) BOOL duoMode;
+@property (nonatomic, assign) BOOL creatingSplit;
+- (void)layoutSplit;
+- (void)pairWindow:(DPFloatingWindow *)first withBundleID:(NSString *)bundleID;
+
 - (void)openFloatingWithBundleID:(NSString *)bundleID reusingHost:(nullable DPSceneHost *)reusableHost;
 - (void)makeOverlayKeyWindow;
 - (void)ensureOverlayVisible;
@@ -37,15 +42,6 @@
 - (id)sharedRemoteKeyboards;
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
 @end
-
-static int sKBVisToken = 0;
-static int sKBHeightToken = 0;
-static BOOL sKBRegistered = NO;
-
-static CGFloat _kbHeightFromNotification(NSNotification *note) {
-    CGRect r = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
-    return r.size.height;
-}
 
 @implementation DPWindowManager
 
@@ -68,16 +64,18 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         _suppressLaunch = NO;
         _homeReturnPending = NO;
         _hostedInputActive = NO;
+        _splitRatio = 0.5;
+        _savedFrames = [NSMutableDictionary dictionary];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(settingsChanged)
                                                       name:kDPSettingsChangedNotification
                                                     object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillHide:)
+                                                   selector:@selector(hostedKeyboardWillHide)
                                                        name:UIKeyboardWillHideNotification
                                                      object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillShow:)
+                                                   selector:@selector(hostedKeyboardWillShow)
                                                        name:UIKeyboardWillShowNotification
                                                      object:nil];
     }
@@ -119,7 +117,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         win = [[DPPassthroughWindow alloc] initWithFrame:bounds];
     }
 
-    win.windowLevel = 2100.0; // above apps, below keyboard window pass-through
+    win.windowLevel = UIWindowLevelStatusBar + 120.0;
     win.backgroundColor = [UIColor clearColor];
     win.hidden = NO;
 
@@ -133,7 +131,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     self.overlayWindow = win;
     self.overlayRoot = root;
 
-    NSLog(@"[DualPane] 顶层窗口已安装 level=%.0f", win.windowLevel);
+    NSLog(@"[InteractivePiP] 顶层窗口已安装 level=%.0f", win.windowLevel);
 }
 
 - (UIWindowScene *)activeWindowScene API_AVAILABLE(ios(13.0)) {
@@ -148,12 +146,14 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 }
 
 - (void)bringOverlayToFront {
+    if (self.deviceLocked) return;
+    [self updateSessionControls];
     if (!self.overlayWindow) {
         [self install];
         return;
     }
     self.overlayWindow.hidden = NO;
-    self.overlayWindow.windowLevel = 2100.0;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
     // 重新挂到当前 scene（切 App 后 scene 可能变）
     if (@available(iOS 13.0, *)) {
         UIWindowScene *scene = [self activeWindowScene];
@@ -189,6 +189,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 }
 
 - (void)handleActivationForBundleID:(NSString *)bundleID preferredMode:(DPPresentationMode)mode {
+    if (self.deviceLocked) return;
     if (![DPSettings shared].isEnabled) return;
     if (!bundleID.length) {
         [self handleActivationRequest];
@@ -198,63 +199,18 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 
     [self install];
 
-    (void)mode;
-    [self openFloatingWithBundleID:bundleID];
-    return;
-    /*
-        // 分屏：左边尽量用当前前台 App；主屏触发时用「桌面占位 + 目标 App」
-        NSString *primary = [self foregroundBundleID];
-        if (!primary.length ||
-            [primary isEqualToString:bundleID] ||
-            [primary isEqualToString:@"com.apple.springboard"]) {
-            // 主屏触发：用目标 App 自己做主屏不合适，改为仅悬浮更直观
-            // 但用户要分屏：主侧显示桌面快照占位，右侧目标 App
-            primary = @"com.apple.springboard";
+    if (mode == DPPresentationModeSplit) {
+        DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
+        if (first && ![first.bundleID isEqualToString:bundleID]) {
+            [self pairWindow:first withBundleID:bundleID];
+        } else {
+            [self openFloatingWithBundleID:bundleID];
+            DPFloatingWindow *target = self.mutableFloatingWindows.lastObject;
+            if (target) [self requestSplitForWindow:target];
         }
-        [self openSplitWithPrimary:primary secondary:bundleID];
-        return;
+    } else {
+        [self openFloatingWithBundleID:bundleID];
     }
-
-    // 询问
-    if (self.modeChooser) {
-        [self.modeChooser dismiss];
-        self.modeChooser = nil;
-    }
-    UIView *parent = [self contentParent];
-    __weak typeof(self) weakSelf = self;
-    NSString *target = [bundleID copy];
-    self.modeChooser = [[DPOverlayController alloc] init];
-    [self.modeChooser presentModeChooserInView:parent
-                                    completion:^(DPPresentationMode chosen) {
-        weakSelf.modeChooser = nil;
-        if (chosen == DPPresentationModeNone) return;
-        [weakSelf handleActivationForBundleID:target preferredMode:chosen];
-    }];
-}
-
-- (void)presentModeChooser {
-    if (self.modeChooser) {
-        [self.modeChooser dismiss];
-        self.modeChooser = nil;
-    }
-    UIView *parent = [self contentParent];
-    __weak typeof(self) weakSelf = self;
-    self.modeChooser = [[DPOverlayController alloc] init];
-    [self.modeChooser presentModeChooserInView:parent
-                                    completion:^(DPPresentationMode chosen) {
-        weakSelf.modeChooser = nil;
-        if (chosen == DPPresentationModeNone) return;
-        [weakSelf presentAppPickerWithCompletion:^(NSString *bundleID) {
-            if (!bundleID) return;
-            if (chosen == DPPresentationModeFloating) {
-                [weakSelf openFloatingWithBundleID:bundleID];
-            } else if (chosen == DPPresentationModeSplit) {
-                [weakSelf handleActivationForBundleID:bundleID preferredMode:DPPresentationModeSplit];
-            }
-        }];
-    }];
-}
-*/
 }
 
 - (void)presentAppPickerWithCompletion:(void (^)(NSString * _Nullable))completion {
@@ -277,8 +233,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 #pragma mark - Open
 
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode {
-    (void)mode;
-    [self openFloatingWithBundleID:bundleID];
+    [self handleActivationForBundleID:bundleID preferredMode:mode];
 }
 
 - (void)openFloatingWithBundleID:(NSString *)bundleID {
@@ -299,11 +254,13 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         }
     }
 
+    if (self.splitWindows.count) [self leaveSplit];
+
     // 关键：先登记托管，再画 UI —— 阻止随后的全屏启动
     [self.mutableHostedBundleIDs addObject:bundleID];
     self.suppressLaunch = YES;
 
-    NSInteger max = [DPSettings shared].maxFloatingWindows;
+    NSInteger max = self.creatingSplit ? MAX(2, [DPSettings shared].maxFloatingWindows) : [DPSettings shared].maxFloatingWindows;
     while ((NSInteger)self.mutableFloatingWindows.count >= max) {
         DPFloatingWindow *oldest = self.mutableFloatingWindows.firstObject;
         [self closeFloatingWindow:oldest animated:YES];
@@ -322,13 +279,9 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         [weakSelf closeFloatingWindow:w animated:YES];
     };
     window.onFocus = ^(DPFloatingWindow *w) {
-        for (DPFloatingWindow *other in weakSelf.mutableFloatingWindows) {
-            [other setActive:(other == w) animated:YES];
-        }
-        weakSelf.focusedWindow = w;
-        [weakSelf prepareForHostedInput];
-        [weakSelf bringOverlayToFront];
+        [weakSelf focusWindow:w];
     };
+    window.onSplit = ^(DPFloatingWindow *w) { [weakSelf requestSplitForWindow:w]; };
     window.onFrameChanged = ^(DPFloatingWindow *w, CGRect f) {
         [[DPSettings shared] setLastFloatingFrame:f];
         (void)w;
@@ -336,8 +289,8 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 
     [parent addSubview:window];
     [self.mutableFloatingWindows addObject:window];
+    if (self.focusedWindow != window) [self restorePreviousKeyWindow];
     self.focusedWindow = window;
-    [self startKeyboardBridge];
     self.mode = DPPresentationModeFloating;
     [self bringOverlayToFront];
     [self makeOverlayKeyWindow];
@@ -361,153 +314,15 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         [weakSelf bringOverlayToFront];
     }];
 
-    NSLog(@"[DualPane] 打开悬浮窗 %@", bundleID);
+    NSLog(@"[InteractivePiP] 打开悬浮窗 %@", bundleID);
 }
 
-#if 0
-- (void)openSplitWithPrimary:(NSString *)primary secondary:(NSString *)secondary {
-    [self openSplitWithPrimary:primary
-                     secondary:secondary
-           reusingPrimaryHost:nil
-         reusingSecondaryHost:nil];
-}
 
-- (BOOL)handleAppLaunchInActiveSplit:(NSString *)bundleID {
-    if (!bundleID.length || !self.splitManager.isActive) return NO;
-    if ([bundleID isEqualToString:@"com.apple.springboard"]) return NO;
-    if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return NO;
-    if ([self.launchAllowlist containsObject:bundleID]) return NO;
-
-    NSString *primary = self.splitManager.primaryBundleID;
-    NSString *secondary = self.splitManager.secondaryBundleID;
-    if ([bundleID isEqualToString:primary] || [bundleID isEqualToString:secondary]) return NO;
-
-    [self openBundleInActiveSplit:bundleID];
-    return YES;
-}
-
-- (void)openBundleInActiveSplit:(NSString *)bundleID {
-    if (!bundleID.length || !self.splitManager.isActive) return;
-    NSString *primary = self.splitManager.primaryBundleID;
-    NSString *secondary = self.splitManager.secondaryBundleID;
-    if ([bundleID isEqualToString:primary] || [bundleID isEqualToString:secondary]) {
-        [self bringOverlayToFront];
-        return;
-    }
-
-    if ([primary isEqualToString:@"com.apple.springboard"] && secondary.length) {
-        DPSceneHost *promotedHost = [self.splitManager detachSecondaryHost];
-        [self.mutableHostedBundleIDs removeObject:primary];
-        [self.mutableHostedBundleIDs removeObject:secondary];
-        [self.splitManager dismissAnimated:NO completion:nil];
-        self.splitManager = nil;
-        [self openSplitWithPrimary:secondary
-                         secondary:bundleID
-               reusingPrimaryHost:promotedHost
-             reusingSecondaryHost:nil];
-        return;
-    }
-
-    [self openSplitWithPrimary:primary ?: @"com.apple.springboard"
-                     secondary:bundleID
-           reusingPrimaryHost:nil
-         reusingSecondaryHost:nil];
-}
-
-- (void)openSplitWithPrimary:(NSString *)primary
-                   secondary:(NSString *)secondary
-         reusingPrimaryHost:(DPSceneHost *)reusablePrimaryHost
-       reusingSecondaryHost:(DPSceneHost *)reusableSecondaryHost {
-    if (!secondary.length) return;
-    if ([[DPSettings shared] isBundleBlacklisted:secondary]) return;
-    if ([primary isEqualToString:secondary]) primary = @"com.apple.springboard";
-
-    [self.mutableHostedBundleIDs addObject:secondary];
-    if (primary.length && ![primary isEqualToString:@"com.apple.springboard"]) {
-        [self.mutableHostedBundleIDs addObject:primary];
-    }
-    self.suppressLaunch = YES;
-
-    NSArray *copy = [self.mutableFloatingWindows copy];
-    for (DPFloatingWindow *w in copy) {
-        [self closeFloatingWindow:w animated:NO];
-    }
-
-    UIView *parent = [self contentParent];
-
-    if (self.splitManager.isActive) {
-        NSString *oldPrimary = self.splitManager.primaryBundleID;
-        NSString *oldSecondary = self.splitManager.secondaryBundleID;
-        if (oldPrimary) [self.mutableHostedBundleIDs removeObject:oldPrimary];
-        if (oldSecondary) [self.mutableHostedBundleIDs removeObject:oldSecondary];
-        [self.splitManager dismissAnimated:NO completion:nil];
-        self.splitManager = nil;
-    }
-
-    self.splitManager = [[DPSplitManager alloc] init];
-    CGFloat ratio = [DPSettings shared].lastSplitRatio;
-
-    __weak typeof(self) weakSelf = self;
-    self.splitManager.onClose = ^{
-        NSString *p = weakSelf.splitManager.primaryBundleID;
-        NSString *s = weakSelf.splitManager.secondaryBundleID;
-        if (p) [weakSelf.mutableHostedBundleIDs removeObject:p];
-        if (s) [weakSelf.mutableHostedBundleIDs removeObject:s];
-        [weakSelf.splitManager dismissAnimated:YES completion:^{
-            weakSelf.splitManager = nil;
-            weakSelf.mode = DPPresentationModeNone;
-            weakSelf.suppressLaunch = NO;
-        }];
-    };
-    self.splitManager.onRatioChanged = ^(CGFloat r) {
-        [[DPSettings shared] setLastSplitRatio:r];
-    };
-    self.splitManager.onPromoteSecondaryToFloating = ^(NSString *bundleID) {
-        NSString *p = weakSelf.splitManager.primaryBundleID;
-        NSString *s = weakSelf.splitManager.secondaryBundleID;
-        if (p) [weakSelf.mutableHostedBundleIDs removeObject:p];
-        if (s) [weakSelf.mutableHostedBundleIDs removeObject:s];
-        DPSceneHost *reusedHost = [weakSelf.splitManager detachSecondaryHost];
-        [weakSelf.splitManager dismissAnimated:YES completion:^{
-            weakSelf.splitManager = nil;
-            [weakSelf openFloatingWithBundleID:bundleID reusingHost:reusedHost];
-        }];
-    };
-
-    [self.splitManager presentInView:parent
-                       primaryBundle:primary ?: @"com.apple.springboard"
-                     secondaryBundle:secondary
-                               ratio:ratio
-                            animated:YES];
-
-    // 先 layout 再挂 host，避免 0 尺寸
-    [self.splitManager layoutForBounds:parent.bounds];
-    BOOL primaryIsHome = !primary.length || [primary isEqualToString:@"com.apple.springboard"];
-    DPSceneHost *pHost = primaryIsHome ? nil : (reusablePrimaryHost ?: [[DPSceneHost alloc] initWithBundleID:primary]);
-    DPSceneHost *sHost = reusableSecondaryHost ?: [[DPSceneHost alloc] initWithBundleID:secondary];
-    if (pHost) [self.splitManager attachPrimaryHost:pHost];
-    [self.splitManager attachSecondaryHost:sHost];
-
-    self.mode = DPPresentationModeSplit;
-    [[DPSettings shared] setLastPrimaryBundleID:primary];
-    [[DPSettings shared] setLastSecondaryBundleID:secondary];
-    [self bringOverlayToFront];
-
-    [self ensureSceneThenAttach:secondary host:sHost onAttached:^{
-        [weakSelf bringOverlayToFront];
-    }];
-    if (pHost) {
-        [self ensureSceneThenAttach:primary host:pHost onAttached:^{
-            [weakSelf bringOverlayToFront];
-        }];
-    }
-
-    NSLog(@"[DualPane] 打开分屏 primary=%@ secondary=%@", primary, secondary);
-}
-#endif
 
 - (void)closeFloatingWindow:(DPFloatingWindow *)window animated:(BOOL)animated {
     if (!window) return;
+    if ([self.splitWindows containsObject:window]) [self leaveSplit];
+    if (self.focusedWindow == window) { [self restorePreviousKeyWindow]; self.focusedWindow = nil; }
     if (window.bundleID) {
         [self.mutableHostedBundleIDs removeObject:window.bundleID];
     }
@@ -518,10 +333,14 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         self.suppressLaunch = NO;
         [self restorePreviousKeyWindow];
     }
-    [self syncOverlayVisibility];
+    [self updateSessionControls];
 }
 
 - (void)dismissAllAnimated:(BOOL)animated {
+    self.sessionGeneration += 1;
+    self.pendingHomeBundleID = nil; self.homeReturnPending = NO;
+    [self.launchAllowlist removeAllObjects];
+    [self leaveSplit];
     NSArray *copy = [self.mutableFloatingWindows copy];
     for (DPFloatingWindow *w in copy) {
         [self closeFloatingWindow:w animated:animated];
@@ -530,7 +349,8 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     self.suppressLaunch = NO;
     [self.mutableHostedBundleIDs removeAllObjects];
     [self restorePreviousKeyWindow];
-    [self syncOverlayVisibility];
+    [self updateSessionControls];
+    self.overlayWindow.hidden = YES;
 }
 
 - (id)sharedRemoteKeyboards {
@@ -546,73 +366,135 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 }
 
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled {
-    // This system exposes no "give keyboard to a hosted window" entry point
-    // (_UIRemoteKeyboards lacks addHostedWindowView:fromPID: / prepareForHostedWindow).
-    // Keyboard geometry arrives from the kbd module instead.
-    (void)enabled;
-}
+    id kb = [self sharedRemoteKeyboards];
+    if (!kb) return;
 
-- (void)prepareForHostedInput {
-    if (!self.overlayWindow || self.overlayWindow.hidden) return;
-    // Keep DualPane chrome above SpringBoard, but do not permanently steal the
-    // keyboard arbiter from third-party IMEs such as WeChat Keyboard.
-    [self ensureOverlayVisible];
-    [self configureRemoteKeyboardsForHostedInput:YES];
-    for (DPFloatingWindow *window in self.mutableFloatingWindows) {
-        [window.sceneHost prepareForInput];
+    if (!enabled) {
+        SEL fin = NSSelectorFromString(@"finishWithHostedWindow");
+        if ([kb respondsToSelector:fin]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(kb, fin); } @catch (__unused NSException *e) {}
+        }
+        self.hostedInputActive = NO;
+        self.keyboardRoutedWindow = nil;
+        return;
+    }
+
+    DPFloatingWindow *target = self.focusedWindow;
+    if (!target || self.deviceLocked) return;
+    if (self.hostedInputActive && self.keyboardRoutedWindow == target) return;
+
+    UIView *host = [target.sceneHost keyboardRoutingView];
+    id scene = [target.sceneHost keyboardRoutingScene];
+    int pid = [target.sceneHost keyboardRoutingPID];
+    if (!host || !scene || pid <= 0) {
+        NSLog(@"[InteractivePiP] 无场景宿主，跳过键盘登记 %@", target.bundleID);
+        self.hostedInputActive = NO;
+        return;
+    }
+
+    @try {
+        // This system exposes the scene-aware variants.
+        SEL prep = NSSelectorFromString(@"prepareForHostedWindowWithScene:");
+        if ([kb respondsToSelector:prep]) ((id (*)(id, SEL, id))objc_msgSend)(kb, prep, scene);
+
+        SEL add = NSSelectorFromString(@"addHostedWindowView:fromPID:forScene:");
+        if ([kb respondsToSelector:add])
+            ((void (*)(id, SEL, id, int, id))objc_msgSend)(kb, add, host, pid, scene);
+
+        SEL enable = NSSelectorFromString(@"setWindowEnabled:");
+        if ([kb respondsToSelector:enable]) ((void (*)(id, SEL, BOOL))objc_msgSend)(kb, enable, YES);
+
+        self.hostedInputActive = YES;
+        self.keyboardRoutedWindow = target;
+        NSLog(@"[InteractivePiP] 键盘登记 %@ pid=%d scene=%@", target.bundleID, pid, scene);
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] 键盘登记异常 %@: %@", target.bundleID, e);
+        self.hostedInputActive = NO;
     }
 }
 
+- (void)prepareForHostedInput {
+    if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden || !self.focusedWindow) return;
+    [self.focusedWindow.sceneHost prepareForInput];
+    [self configureRemoteKeyboardsForHostedInput:YES];
+}
+
+- (void)prepareForTouchInView:(UIView *)view {
+    for (UIView *v = view; v; v = v.superview) {
+        if ([v isKindOfClass:[DPFloatingWindow class]] && [self.mutableFloatingWindows containsObject:(id)v]) {
+            [self focusWindow:(DPFloatingWindow *)v];
+            return;
+        }
+    }
+    [self restorePreviousKeyWindow];
+}
+
+- (void)showKeyboardHelp {
+    if (!self.focusedWindow) return;
+    NSString *bundleID = self.focusedWindow.bundleID;
+    BOOL supported = [[self sharedRemoteKeyboards] respondsToSelector:NSSelectorFromString(@"prepareForHostedWindow")];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"键盘诊断"
+        message:[NSString stringWithFormat:@"焦点应用：%@\n远程宿主接口：%@\n接口存在不代表键盘已路由。若点输入框仍无键盘，可结束悬浮会话后全屏输入。", bundleID, supported ? @"存在（需真机验证）" : @"不可用"]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"结束会话并全屏输入" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self dismissAllAnimated:NO];
+        [self openApplicationForeground:bundleID];
+    }]];
+    [self.overlayWindow.rootViewController presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)closeSession { [self dismissAllAnimated:YES]; }
+
+- (void)updateSessionControls {
+    if (!self.sessionControls) {
+        self.sessionControls = [[UIStackView alloc] init];
+        self.sessionControls.axis = UILayoutConstraintAxisHorizontal;
+        self.sessionControls.distribution = UIStackViewDistributionFillEqually;
+        self.sessionControls.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.97];
+        NSArray *titles = @[@"退出分屏", @"键盘帮助", @"关闭全部"];
+        NSArray *actions = @[@"leaveSplit", @"showKeyboardHelp", @"closeSession"];
+        for (NSUInteger i = 0; i < titles.count; i++) {
+            UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+            [button setTitle:titles[i] forState:UIControlStateNormal];
+            button.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+            button.tintColor = [UIColor whiteColor];
+            [button addTarget:self action:NSSelectorFromString(actions[i]) forControlEvents:UIControlEventTouchUpInside];
+            [self.sessionControls addArrangedSubview:button];
+            if (i == 0) self.leaveSplitButton = button;
+        }
+        [self.overlayRoot addSubview:self.sessionControls];
+    }
+    CGRect b = self.overlayRoot.bounds;
+    self.sessionControls.frame = CGRectMake(0, self.overlayRoot.safeAreaInsets.top, b.size.width, 44);
+    self.sessionControls.hidden = self.mutableFloatingWindows.count == 0;
+    self.leaveSplitButton.enabled = self.duoMode;
+    [self.overlayRoot bringSubviewToFront:self.sessionControls];
+}
+
+- (void)handleDeviceLock {
+    self.deviceLocked = YES;
+    [self dismissAllAnimated:NO];
+    self.overlayWindow.hidden = YES;
+}
+
+- (void)handleDeviceUnlock { self.deviceLocked = NO; }
+
 - (void)ensureOverlayVisible {
-    if (!self.overlayWindow) return;
+    if (!self.overlayWindow || self.deviceLocked) return;
     self.overlayWindow.hidden = NO;
     [self bringOverlayToFront];
 }
 
-- (void)makeOverlayKeyWindow {
-    if (!self.overlayWindow || self.overlayWindow.hidden) return;
-    if (!self.hostedInputActive) {
-        UIWindow *current = [UIApplication sharedApplication].keyWindow;
-        if (current != self.overlayWindow) self.keyWindowBeforeHostedInput = current;
-        self.hostedInputActive = YES;
-    }
-    // Prefer visibility over becoming the exclusive key window. Third-party
-    // keyboards often need SpringBoard/remote keyboard ownership intact.
-    [self ensureOverlayVisible];
-}
+- (void)makeOverlayKeyWindow { [self ensureOverlayVisible]; }
 
 - (void)restorePreviousKeyWindow {
     [self configureRemoteKeyboardsForHostedInput:NO];
-    if (!self.hostedInputActive) return;
-    self.hostedInputActive = NO;
-    UIWindow *target = self.keyWindowBeforeHostedInput;
     self.keyWindowBeforeHostedInput = nil;
-    if (target && target != self.overlayWindow && !target.hidden) {
-        [target makeKeyWindow];
-    } else if (self.overlayWindow.isKeyWindow) {
-        [self.overlayWindow resignKeyWindow];
-    }
 }
 
-- (void)hostedKeyboardWillShow:(NSNotification *)note {
-    if (self.mode != DPPresentationModeNone) {
-        [self prepareForHostedInput];
-    }
-    [self avoidKeyboardWithHeight:_kbHeightFromNotification(note)];
-}
-
-
-
-- (void)hostedKeyboardWillHide:(NSNotification *)note {
-    [self avoidKeyboardWithHeight:0];
-    // Keep remote keyboard support armed while a hosted app is open. UIKit
-    // sends hide notifications while changing text fields.
-    if (self.mutableFloatingWindows.count > 0) {
-        [self configureRemoteKeyboardsForHostedInput:YES];
-        return;
-    }
-    [self restorePreviousKeyWindow];
-}
+- (void)hostedKeyboardWillShow { /* Never steal keyboard focus on a notification. */ }
+- (void)hostedKeyboardWillHide { [self restorePreviousKeyWindow]; }
 
 - (void)handleOrientationChange {
     if (self.overlayWindow) {
@@ -624,6 +506,11 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         self.overlayWindow.frame = bounds;
         self.overlayRoot.frame = self.overlayWindow.bounds;
     }
+    if (self.duoMode && self.splitWindows.count == 2) {
+        [self layoutSplit];
+        [self bringOverlayToFront];
+        return;
+    }
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         CGRect f = w.frame;
         CGRect bounds = self.overlayRoot.bounds;
@@ -634,7 +521,128 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         w.frame = f;
         [w commitSceneLayout];
     }
+    if (self.splitWindows.count == 2) [self layoutSplit];
     [self bringOverlayToFront];
+}
+
+
+#pragma mark - Interactive split
+
+- (void)focusWindow:(DPFloatingWindow *)window {
+    if (![self.mutableFloatingWindows containsObject:window]) return;
+    if (self.focusedWindow != window) [self restorePreviousKeyWindow];
+    self.focusedWindow = window;
+    for (DPFloatingWindow *other in self.mutableFloatingWindows) {
+        [other setActive:(other == window) animated:NO];
+    }
+    [self prepareForHostedInput];
+    [self bringOverlayToFront];
+    if (self.splitDivider) [self.overlayRoot bringSubviewToFront:self.splitDivider];
+}
+
+- (void)requestSplitForWindow:(DPFloatingWindow *)window {
+    if (self.splitWindows.count) { [self leaveSplit]; return; }
+    if (![self.mutableFloatingWindows containsObject:window]) return;
+    __weak typeof(self) weakSelf = self;
+    [self presentAppPickerWithCompletion:^(NSString *bundleID) {
+        if (bundleID.length && ![bundleID isEqualToString:window.bundleID])
+            [weakSelf pairWindow:window withBundleID:bundleID];
+    }];
+}
+
+- (void)pairWindow:(DPFloatingWindow *)first withBundleID:(NSString *)bundleID {
+    if (!first || !bundleID.length || [first.bundleID isEqualToString:bundleID]) return;
+    if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return;
+    [self leaveSplit];
+    // Make room without evicting the chosen first app when max windows is 1.
+    for (DPFloatingWindow *w in [self.mutableFloatingWindows copy]) {
+        if (w != first && ![w.bundleID isEqualToString:bundleID])
+            [self closeFloatingWindow:w animated:NO];
+    }
+    self.creatingSplit = YES;
+    [self openFloatingWithBundleID:bundleID];
+    self.creatingSplit = NO;
+    DPFloatingWindow *second = nil;
+    for (DPFloatingWindow *w in self.mutableFloatingWindows)
+        if ([w.bundleID isEqualToString:bundleID]) second = w;
+    if (!second || ![self.mutableFloatingWindows containsObject:first]) return;
+    self.splitWindows = @[first, second];
+    for (DPFloatingWindow *w in self.splitWindows) {
+        [w.layer removeAllAnimations];
+        w.alpha = 1;
+        w.transform = CGAffineTransformIdentity;
+        self.savedFrames[w.bundleID] = [NSValue valueWithCGRect:w.frame];
+        w.tiled = YES;
+    }
+    UIView *divider = [[UIView alloc] initWithFrame:CGRectZero];
+    // Duo posture: fixed 50/50 panes separated by a hinge, not a draggable divider.
+    divider.backgroundColor = [UIColor colorWithWhite:0.04 alpha:1];
+    divider.layer.cornerRadius = 0;
+    divider.layer.shadowColor = [UIColor blackColor].CGColor;
+    divider.layer.shadowOpacity = 0.9;
+    divider.layer.shadowRadius = 8;
+    divider.accessibilityLabel = @"双击铰链退出 Duo 分屏";
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(leaveSplit)];
+    tap.numberOfTapsRequired = 2;
+    [divider addGestureRecognizer:tap];
+    self.splitDivider = divider;
+    [self.overlayRoot addSubview:divider];
+    self.mode = DPPresentationModeSplit;
+    self.duoMode = YES;
+    self.splitRatio = 0.5;
+    [self layoutSplit];
+    [self focusWindow:second];
+}
+
+- (void)layoutSplit {
+    if (self.splitWindows.count != 2) return;
+    CGRect full = self.overlayRoot.bounds;
+    UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
+    // Duo: panels reach the physical screen edges; only keep the status-bar
+    // cutout clear at the top. Hinge is a narrow centered seam.
+    CGRect b = UIEdgeInsetsInsetRect(full, UIEdgeInsetsMake(MAX(0, insets.top) + 44.0, 0, MAX(0, insets.bottom), 0));
+    BOOL sideBySide = b.size.width >= b.size.height;
+    const CGFloat hinge = sideBySide ? 8.0 : 10.0;
+    CGFloat total = sideBySide ? b.size.width : b.size.height;
+    CGFloat first = floor((total - hinge) * 0.5);
+    CGRect a = b, c = b, h = b;
+    if (sideBySide) {
+        a.size.width = first;
+        h.origin.x = CGRectGetMaxX(a); h.size.width = hinge;
+        c.origin.x = CGRectGetMaxX(h); c.size.width = total - first - hinge;
+    } else {
+        a.size.height = first;
+        h.origin.y = CGRectGetMaxY(a); h.size.height = hinge;
+        c.origin.y = CGRectGetMaxY(h); c.size.height = total - first - hinge;
+    }
+    for (DPFloatingWindow *w in self.splitWindows) {
+        [w.layer removeAllAnimations];
+        w.transform = CGAffineTransformIdentity;
+    }
+    self.splitWindows[0].frame = a;
+    self.splitWindows[1].frame = c;
+    self.splitDivider.frame = h;
+    for (DPFloatingWindow *w in self.splitWindows) {
+        [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
+    }
+    [self.overlayRoot bringSubviewToFront:self.splitDivider];
+    [self updateSessionControls];
+}
+
+// Duo keeps the hinge fixed; drag gestures on the divider are intentionally
+// absent so the two panes behave like two physical displays.
+
+- (void)leaveSplit {
+    for (DPFloatingWindow *w in self.splitWindows) {
+        w.tiled = NO;
+        NSValue *v = self.savedFrames[w.bundleID];
+        if (v) w.frame = v.CGRectValue;
+        [w layoutIfNeeded]; [w commitSceneLayout];
+    }
+    [self.splitDivider removeFromSuperview]; self.splitDivider = nil;
+    self.splitWindows = nil; [self.savedFrames removeAllObjects]; self.duoMode = NO;
+    self.mode = self.mutableFloatingWindows.count ? DPPresentationModeFloating : DPPresentationModeNone;
+    [self updateSessionControls];
 }
 
 #pragma mark - Launch suppress
@@ -669,11 +677,12 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     self.pendingHomeBundleID = [bundleID copy];
     if (self.homeReturnPending) return;
     self.homeReturnPending = YES;
+    NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) self2 = weakSelf;
-        if (!self2) return;
+        if (!self2 || generation != self2.sessionGeneration || self2.deviceLocked) return;
         NSString *target = self2.pendingHomeBundleID;
         self2.pendingHomeBundleID = nil;
         self2.homeReturnPending = NO;
@@ -682,6 +691,8 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
             [self2 bringOverlayToFront];
             return;
         }
+        // A completed Home transition must not trigger another Home cycle.
+        if (![[self2 foregroundBundleID] isEqualToString:target]) return;
         [self2 goHome];
     });
 }
@@ -691,11 +702,12 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
 - (void)ensureSceneThenAttach:(NSString *)bundleID
                          host:(DPSceneHost *)host
                    onAttached:(void (^)(void))onAttached {
-    if (!bundleID.length || !host) return;
+    if (self.deviceLocked || !bundleID.length || !host) return;
     if ([bundleID isEqualToString:@"com.apple.springboard"]) return;
 
     __weak typeof(self) weakSelf = self;
     __weak DPSceneHost *weakHost = host;
+    NSUInteger generation = self.sessionGeneration;
 
     if (host.isLive) {
         if (onAttached) onAttached();
@@ -716,7 +728,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         [self.launchAllowlist addObject:bundleID];
         [self openApplicationForeground:bundleID];
     }
-    NSLog(@"[DualPane] scene launch %@ suspended=%d", bundleID, launchedSuspended);
+    NSLog(@"[InteractivePiP] scene launch %@ suspended=%d", bundleID, launchedSuspended);
 
     __block dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                                               dispatch_get_main_queue());
@@ -731,7 +743,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         }
 
         __strong typeof(weakSelf) self2 = weakSelf;
-        if (self2) {
+        if (self2 && generation == self2.sessionGeneration && !self2.deviceLocked) {
             [self2.launchAllowlist removeObject:bundleID];
             self2.suppressLaunch = NO;
             if (usedForegroundFallback && self2.mode != DPPresentationModeNone) {
@@ -739,8 +751,8 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
             }
             [self2 bringOverlayToFront];
         }
-        if (onAttached) onAttached();
-        NSLog(@"[DualPane] scene attach %@ success=%d attempts=%@",
+        if (onAttached && self2 && generation == self2.sessionGeneration && !self2.deviceLocked) onAttached();
+        NSLog(@"[InteractivePiP] scene attach %@ success=%d attempts=%@",
               bundleID, success, @(attempts));
     };
 
@@ -751,7 +763,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         if (finished) return;
         attempts += 1;
         __strong DPSceneHost *host2 = weakHost;
-        if (!host2) {
+        if (!host2 || !weakSelf || generation != weakSelf.sessionGeneration || weakSelf.deviceLocked || ![weakSelf.mutableHostedBundleIDs containsObject:bundleID]) {
             finish(NO);
             return;
         }
@@ -790,7 +802,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         }
         return YES;
     } @catch (NSException *e) {
-        NSLog(@"[DualPane] suspended launch failed %@: %@", bundleID, e);
+        NSLog(@"[InteractivePiP] suspended launch failed %@: %@", bundleID, e);
         return NO;
     }
 }
@@ -805,7 +817,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         SEL sel = NSSelectorFromString(@"openApplicationWithBundleID:");
         if ([workspace respondsToSelector:sel]) {
             ((void (*)(id, SEL, id))objc_msgSend)(workspace, sel, bundleID);
-            NSLog(@"[DualPane] openApplicationWithBundleID: %@", bundleID);
+            NSLog(@"[InteractivePiP] openApplicationWithBundleID: %@", bundleID);
             return;
         }
     }
@@ -824,9 +836,13 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         SEL act = NSSelectorFromString(@"activateApplication:");
         if (app && [ui respondsToSelector:act]) {
             ((void (*)(id, SEL, id))objc_msgSend)(ui, act, app);
-            NSLog(@"[DualPane] activateApplication: %@", bundleID);
+            NSLog(@"[InteractivePiP] activateApplication: %@", bundleID);
         }
     }
+}
+
+- (void)handleUserHome {
+    if (!self.internalHomeReturn) [self dismissAllAnimated:NO];
 }
 
 - (void)goHome {
@@ -836,8 +852,10 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     for (NSString *name in @[@"handleHomeButtonSinglePressUp", @"clickedMenuButton"]) {
         SEL sel = NSSelectorFromString(name);
         if ([ui respondsToSelector:sel]) {
+            self.internalHomeReturn = YES;
             ((void (*)(id, SEL))objc_msgSend)(ui, sel);
-            NSLog(@"[DualPane] 回桌面 via %@", name);
+            self.internalHomeReturn = NO;
+            NSLog(@"[InteractivePiP] 回桌面 via %@", name);
             break;
         }
     }
@@ -896,82 +914,6 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
         w.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
         w.showsBorder = [DPSettings shared].showBorder;
     }
-}
-
-#pragma mark - Overlay consistency
-
-// A live overlay with zero sessions is what left the home screen covered.
-- (void)syncOverlayVisibility {
-    if (!self.overlayWindow) return;
-    BOOL hasSession = self.mutableFloatingWindows.count > 0;
-    self.overlayWindow.hidden = !hasSession;
-    self.overlayWindow.userInteractionEnabled = hasSession;
-    if (!hasSession) {
-        [self restorePreviousKeyWindow];
-        [self.mutableHostedBundleIDs removeAllObjects];
-        self.suppressLaunch = NO;
-    }
-}
-
-
-#pragma mark - Keyboard avoidance
-
-- (void)avoidKeyboardWithHeight:(CGFloat)height {
-    DPFloatingWindow *w = self.focusedWindow;
-    if (!w) return;
-    CGRect screen = self.overlayRoot.bounds;
-    if (height <= 1.0) {
-        NSValue *v = self.frameBeforeKeyboard;
-        self.frameBeforeKeyboard = nil;
-        if (v) {
-            w.frame = v.CGRectValue;
-            [w layoutIfNeeded];
-            [w commitSceneLayout];
-        }
-        return;
-    }
-    if (!self.frameBeforeKeyboard) self.frameBeforeKeyboard = [NSValue valueWithCGRect:w.frame];
-    CGRect base = self.frameBeforeKeyboard.CGRectValue;
-    CGFloat limit = screen.size.height - height - 8.0;
-    CGRect f = base;
-    // Keep the window fully above the keyboard; scale, not distort.
-    if (f.size.height > limit) {
-        CGFloat ratio = MAX(0.35, limit / f.size.height);
-        CGFloat nw = f.size.width * ratio;
-        f = CGRectMake(f.origin.x, f.origin.y, nw, f.size.height * ratio);
-    }
-    if (CGRectGetMaxY(f) > limit) f.origin.y = MAX(0.0, limit - f.size.height);
-    if (f.origin.x + f.size.width > screen.size.width) f.origin.x = MAX(0.0, screen.size.width - f.size.width);
-    w.frame = f;
-    [w layoutIfNeeded];
-    [w commitSceneLayout];
-    NSLog(@"[InteractivePiP] keyboard %.0f -> %@", height, NSStringFromCGRect(f));
-}
-
-
-#pragma mark - Keyboard bridge
-
-// Receives visible/height broadcasts from the kbd-process module. Tokens are
-// file-static so they outlive this method; locals here crashed the app before.
-- (void)startKeyboardBridge {
-    if (sKBRegistered) return;
-    sKBRegistered = YES;
-    notify_register_check("com.seagull.interactivepip.kb.visible", &sKBVisToken);
-    notify_register_check("com.seagull.interactivepip.kb.height", &sKBHeightToken);
-    __weak typeof(self) weakSelf = self;
-    static int dispatchTokenA = 0;
-    notify_register_dispatch("com.seagull.interactivepip.kb.visible", &dispatchTokenA,
-                             dispatch_get_main_queue(), ^(int token) {
-        [weakSelf keyboardStateChanged];
-    });
-}
-
-- (void)keyboardStateChanged {
-    uint64_t visible = 0, tenths = 0;
-    notify_get_state(sKBVisToken, &visible);
-    notify_get_state(sKBHeightToken, &tenths);
-    CGFloat h = visible ? (CGFloat)tenths / 10.0 : 0.0;
-    [self avoidKeyboardWithHeight:h];
 }
 
 @end

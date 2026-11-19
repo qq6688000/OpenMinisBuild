@@ -2,12 +2,12 @@
 #import <notify.h>
 #import <roothide.h>
 
-NSString * const kDPSettingsChangedNotification = @"com.dualpane.tweak/settings.changed";
+NSString * const kDPSettingsChangedNotification = @"com.seagull.interactivepip/settings.changed";
 
-static NSString * const kPrefsDomain = @"com.dualpane.tweak";
+static NSString * const kPrefsDomain = @"com.seagull.interactivepip";
 
 static NSString *DPPreferencesPath(void) {
-    return jbroot(@"/var/mobile/Library/Preferences/com.dualpane.tweak.plist");
+    return jbroot(@"/var/mobile/Library/Preferences/com.seagull.interactivepip.plist");
 }
 
 @interface DPSettings ()
@@ -32,7 +32,7 @@ static NSString *DPPreferencesPath(void) {
     if (self) {
         [self reload];
         __weak typeof(self) weakSelf = self;
-        notify_register_dispatch("com.dualpane.tweak/settings.changed",
+        notify_register_dispatch("com.seagull.interactivepip/settings.changed",
                                  &_token,
                                  dispatch_get_main_queue(),
                                  ^(int token) {
