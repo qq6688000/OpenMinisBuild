@@ -5,6 +5,7 @@
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
+#import <notify.h>
 
 @interface DPWindowManager ()
 @property (nonatomic, strong, nullable) DPPassthroughWindow *overlayWindow;
@@ -28,8 +29,6 @@
 - (void)startKeyboardBridge;
 - (void)keyboardStateChanged;
 - (void)avoidKeyboardWithHeight:(CGFloat)height;
-- (BOOL)kbBool:(id)kb name:(NSString *)n;
-- (void)kbBool:(id)kb name:(NSString *)n value:(BOOL)v;
 - (void)syncOverlayVisibility;
 - (void)openFloatingWithBundleID:(NSString *)bundleID reusingHost:(nullable DPSceneHost *)reusableHost;
 - (void)makeOverlayKeyWindow;
@@ -41,6 +40,7 @@
 
 static int sKBVisToken = 0;
 static int sKBHeightToken = 0;
+static BOOL sKBRegistered = NO;
 
 static CGFloat _kbHeightFromNotification(NSNotification *note) {
     CGRect r = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
@@ -948,5 +948,30 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     NSLog(@"[InteractivePiP] keyboard %.0f -> %@", height, NSStringFromCGRect(f));
 }
 
+
+#pragma mark - Keyboard bridge
+
+// Receives visible/height broadcasts from the kbd-process module. Tokens are
+// file-static so they outlive this method; locals here crashed the app before.
+- (void)startKeyboardBridge {
+    if (sKBRegistered) return;
+    sKBRegistered = YES;
+    notify_register_check("com.seagull.interactivepip.kb.visible", &sKBVisToken);
+    notify_register_check("com.seagull.interactivepip.kb.height", &sKBHeightToken);
+    __weak typeof(self) weakSelf = self;
+    static int dispatchTokenA = 0;
+    notify_register_dispatch("com.seagull.interactivepip.kb.visible", &dispatchTokenA,
+                             dispatch_get_main_queue(), ^(int token) {
+        [weakSelf keyboardStateChanged];
+    });
+}
+
+- (void)keyboardStateChanged {
+    uint64_t visible = 0, tenths = 0;
+    notify_get_state(sKBVisToken, &visible);
+    notify_get_state(sKBHeightToken, &tenths);
+    CGFloat h = visible ? (CGFloat)tenths / 10.0 : 0.0;
+    [self avoidKeyboardWithHeight:h];
+}
 
 @end

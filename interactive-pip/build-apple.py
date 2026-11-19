@@ -170,27 +170,8 @@ def main():
         MachO(prefs_bin,8).validate()
         print('prefs bundle: arm64e + ARM64E chained fixups OK')
 
-        # 3b) keyboard module: injected into kbd (com.apple.UIKit)
-        kb_src = ROOT/'Sources/Keyboard/InteractivePiPKeyboard.xm'
-        kb_mm = work/'Keyboard.mm'
-        with kb_mm.open('w') as f:
-            subprocess.run(['perl',str(logos),'-c','generator=MobileSubstrate',str(kb_src)],
-                           stdout=f, check=True)
-        kb_obj = work/'Keyboard.o'
-        run([*xcrun,'clang',*common,'-x','objective-c++','-c',str(kb_mm),'-o',str(kb_obj)])
-        MachO(kb_obj,1)
-        kb_dylib = work/'InteractivePiPKeyboard.dylib'
-        link=[tools['ld'],'-dylib','-arch','arm64e','-platform_version','ios',DEPLOYMENT,sdkversion,
-              '-syslibroot',str(sdk),'-fixup_chains',
-              '-install_name','@loader_path/.jbroot/Library/MobileSubstrate/DynamicLibraries/InteractivePiPKeyboard.dylib',
-              '-o',str(kb_dylib),kb_obj,'-L',str(ROOT/'vendor'),'-lsubstrate','-lSystem','-lobjc','-lc++']
-        for fw in FRAMEWORKS: link.extend(['-framework',fw])
-        run(link)
-        MachO(kb_dylib,6).validate()
-        print('keyboard dylib: arm64e + ARM64E chained fixups OK')
-
         # 4) codesign all
-        for f in (dylib,prefs_bin,kb_dylib):
+        for f in (dylib,prefs_bin):
             run([signer,'--force','--sign','-','--timestamp=none',str(f)])
             run([signer,'--verify','--strict','--verbose=2',str(f)])
 
@@ -203,14 +184,11 @@ def main():
         shutil.copyfile(dylib,dl/dylib.name)
         (dl/'InteractivePiP.plist').write_bytes(plistlib.dumps(
             {'Filter':{'Bundles':['com.apple.springboard'],'Executables':['SpringBoard']}},fmt=plistlib.FMT_XML))
-        shutil.copyfile(kb_dylib, dl/'InteractivePiPKeyboard.dylib')
-        (dl/'InteractivePiPKeyboard.plist').write_bytes(plistlib.dumps(
-            {'Filter':{'Bundles':['com.apple.UIKit'],'Executables':['kbd']}},fmt=plistlib.FMT_XML))
         shutil.copyfile(prefs_bin,pb/prefs_bin.name)
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'InteractivePiPPrefs',
             'CFBundleIdentifier':'com.seagull.interactivepip.prefs','CFBundleInfoDictionaryVersion':'6.0',
-            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.4.0','CFBundleVersion':'9',
+            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.4.2','CFBundleVersion':'9',
             'NSPrincipalClass':'DPRootListController'},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'Preferences/Resources/Root.plist',pb/'Root.plist')
         (pl/'InteractivePiP.plist').write_bytes(plistlib.dumps({
@@ -225,9 +203,9 @@ def main():
             os.chmod(cur,0o755)
             for n in files:
                 p=Path(cur)/n
-                os.chmod(p,0o755 if p.name in ('InteractivePiP.dylib','InteractivePiPKeyboard.dylib','InteractivePiPPrefs') else 0o644)
+                os.chmod(p,0o755 if p.name in ('InteractivePiP.dylib','InteractivePiPPrefs') else 0o644)
         out=ROOT/'dist-apple';out.mkdir(exist_ok=True)
-        deb=out/'InteractivePiP_Duo_0.4.0_iphoneos-arm64e.deb'
+        deb=out/'InteractivePiP_Duo_0.4.2_iphoneos-arm64e.deb'
         run([dpkg,'--root-owner-group','-Zgzip','--build',str(stage),str(deb)])
         print(f'Built {deb} ({deb.stat().st_size} bytes); NOT device-validated.')
 
