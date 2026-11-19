@@ -25,8 +25,8 @@
 @property (nonatomic, weak, nullable) DPFloatingWindow *keyboardRoutedWindow;
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
 @property (nonatomic, strong, nullable) NSValue *frameBeforeKeyboard;
-@property (nonatomic, strong, nullable) NSTimer *kbWatchdog;
-- (CGFloat)currentKeyboardHeight;
+- (void)startKeyboardBridge;
+- (void)keyboardStateChanged;
 - (void)avoidKeyboardWithHeight:(CGFloat)height;
 - (BOOL)kbBool:(id)kb name:(NSString *)n;
 - (void)kbBool:(id)kb name:(NSString *)n value:(BOOL)v;
@@ -38,6 +38,9 @@
 - (id)sharedRemoteKeyboards;
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
 @end
+
+static int sKBVisToken = 0;
+static int sKBHeightToken = 0;
 
 static CGFloat _kbHeightFromNotification(NSNotification *note) {
     CGRect r = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
@@ -334,12 +337,7 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     [parent addSubview:window];
     [self.mutableFloatingWindows addObject:window];
     self.focusedWindow = window;
-    if (!self.kbWatchdog) {
-        self.kbWatchdog = [NSTimer timerWithTimeInterval:0.4 target:self
-                                                   selector:@selector(tickKeyboardWatchdog)
-                                                   userInfo:nil repeats:YES];
-        [[NSRunLoop mainRunLoop] addTimer:self.kbWatchdog forMode:NSRunLoopCommonModes];
-    }
+    [self startKeyboardBridge];
     self.mode = DPPresentationModeFloating;
     [self bringOverlayToFront];
     [self makeOverlayKeyWindow];
@@ -547,77 +545,11 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     }
 }
 
-- (BOOL)kbBool:(id)kb name:(NSString *)n {
-    SEL sel = NSSelectorFromString(n);
-    if (![kb respondsToSelector:sel]) return NO;
-    @try { return ((BOOL (*)(id, SEL))objc_msgSend)(kb, sel); } @catch (__unused NSException *e) { return NO; }
-}
-- (void)kbBool:(id)kb name:(NSString *)n value:(BOOL)v {
-    SEL sel = NSSelectorFromString(n);
-    if (![kb respondsToSelector:sel]) return;
-    @try { ((void (*)(id, SEL, BOOL))objc_msgSend)(kb, sel, v); } @catch (__unused NSException *e) {}
-}
-
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled {
-    id kb = [self sharedRemoteKeyboards];
-    if (!kb) return;
-
-    if (!enabled) {
-        SEL fin = NSSelectorFromString(@"finishWithHostedWindow");
-        if ([kb respondsToSelector:fin]) {
-            @try { ((void (*)(id, SEL))objc_msgSend)(kb, fin); } @catch (__unused NSException *e) {}
-        }
-        if (self.keyboardStateSaved) {
-            [self kbBool:kb name:@"setCurrentKeyboard:" value:self.oldCurrentKeyboard];
-            [self kbBool:kb name:@"setWindowEnabled:" value:self.oldWindowEnabled];
-        }
-        self.keyboardStateSaved = NO;
-        self.hostedInputActive = NO;
-        self.keyboardRoutedWindow = nil;
-        return;
-    }
-
-    DPFloatingWindow *target = self.focusedWindow;
-    if (!target) return;
-    if (self.hostedInputActive && self.keyboardRoutedWindow == target) return;
-
-    UIView *host = [target.sceneHost keyboardRoutingView];
-    int pid = [target.sceneHost keyboardRoutingPID];
-    if (!host || pid <= 0) {
-        // No real FBSceneHostWrapperView: pixels only, keyboard cannot be routed.
-        NSLog(@"[InteractivePiP] %@ 非 wrapper 宿主，跳过键盘登记", target.bundleID);
-        self.hostedInputActive = NO;
-        self.keyboardRoutedWindow = nil;
-        return;
-    }
-
-    self.oldCurrentKeyboard = [self kbBool:kb name:@"currentKeyboard"];
-    self.oldWindowEnabled = [self kbBool:kb name:@"windowEnabled"];
-    self.keyboardStateSaved = YES;
-
-    @try {
-        SEL prep = NSSelectorFromString(@"prepareForHostedWindow");
-        if ([kb respondsToSelector:prep]) ((id (*)(id, SEL))objc_msgSend)(kb, prep);
-
-        SEL add = NSSelectorFromString(@"addHostedWindowView:fromPID:");
-        if ([kb respondsToSelector:add]) ((void (*)(id, SEL, id, int))objc_msgSend)(kb, add, host, pid);
-
-        [self kbBool:kb name:@"setWindowEnabled:" value:YES];
-        [self kbBool:kb name:@"setCurrentKeyboard:" value:YES];
-
-        SEL clean = NSSelectorFromString(@"cleanSuppression");
-        if ([kb respondsToSelector:clean]) ((void (*)(id, SEL))objc_msgSend)(kb, clean);
-        SEL upd = NSSelectorFromString(@"sceneUpdated");
-        if ([kb respondsToSelector:upd]) ((void (*)(id, SEL))objc_msgSend)(kb, upd);
-
-        self.hostedInputActive = YES;
-        self.keyboardRoutedWindow = target;
-        NSLog(@"[InteractivePiP] 键盘登记 %@ pid=%d", target.bundleID, pid);
-    } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] 键盘登记失败 %@: %@", target.bundleID, e);
-        self.keyboardStateSaved = NO;
-        self.hostedInputActive = NO;
-    }
+    // This system exposes no "give keyboard to a hosted window" entry point
+    // (_UIRemoteKeyboards lacks addHostedWindowView:fromPID: / prepareForHostedWindow).
+    // Keyboard geometry arrives from the kbd module instead.
+    (void)enabled;
 }
 
 - (void)prepareForHostedInput {
@@ -1016,40 +948,5 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     NSLog(@"[InteractivePiP] keyboard %.0f -> %@", height, NSStringFromCGRect(f));
 }
 
-#pragma mark - Keyboard geometry
-
-// The hosted app owns its own text field, so this process may never receive
-// UIKeyboardWillShow. Ask the keyboard arbiter for the live keyboard window.
-- (CGFloat)currentKeyboardHeight {
-    id kb = [self sharedRemoteKeyboards];
-    if (!kb) return 0;
-    @try {
-        SEL vis = NSSelectorFromString(@"keyboardVisible");
-        if ([kb respondsToSelector:vis] && !((BOOL (*)(id, SEL))objc_msgSend)(kb, vis)) return 0;
-        SEL winSel = NSSelectorFromString(@"keyboardWindow");
-        if (![kb respondsToSelector:winSel]) return 0;
-        UIWindow *kw = ((id (*)(id, SEL))objc_msgSend)(kb, winSel);
-        if (!kw || kw.hidden) return 0;
-        CGFloat h = kw.frame.size.height;
-        BOOL tall = kw.frame.size.height > self.overlayRoot.bounds.size.height * 0.5;
-        CGFloat screenH = tall ? kw.frame.size.width : kw.frame.size.height;
-        CGFloat inset = kw.safeAreaInsets.bottom;
-        h = screenH - inset;
-        return MAX(0, h);
-    } @catch (__unused NSException *e) { return 0; }
-}
-
-- (void)tickKeyboardWatchdog {
-    if (self.mutableFloatingWindows.count == 0) {
-        [self.kbWatchdog invalidate];
-        self.kbWatchdog = nil;
-        return;
-    }
-    CGFloat h = [self currentKeyboardHeight];
-    static CGFloat last = -1;
-    if (fabs(h - last) < 1.0) return;
-    last = h;
-    [self avoidKeyboardWithHeight:h];
-}
 
 @end
