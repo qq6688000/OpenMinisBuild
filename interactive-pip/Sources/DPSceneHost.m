@@ -1424,7 +1424,9 @@
     self.hostView.autoresizingMask = UIViewAutoresizingNone;
     self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
     self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    CGFloat k = MIN(target.width / canvas.width, target.height / canvas.height);
+    // Cover, not contain: scale up until the pane is fully filled, both axes
+    // share one factor so the UI keeps its true proportions.
+    CGFloat k = MAX(target.width / canvas.width, target.height / canvas.height);
     self.hostView.transform = CGAffineTransformMakeScale(k, k);
     self.view.backgroundColor = [UIColor blackColor];
 }

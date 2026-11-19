@@ -25,6 +25,8 @@
 @property (nonatomic, weak, nullable) DPFloatingWindow *keyboardRoutedWindow;
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
 @property (nonatomic, strong, nullable) NSValue *frameBeforeKeyboard;
+@property (nonatomic, strong, nullable) NSTimer *kbWatchdog;
+- (CGFloat)currentKeyboardHeight;
 - (void)avoidKeyboardWithHeight:(CGFloat)height;
 - (BOOL)kbBool:(id)kb name:(NSString *)n;
 - (void)kbBool:(id)kb name:(NSString *)n value:(BOOL)v;
@@ -332,6 +334,12 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     [parent addSubview:window];
     [self.mutableFloatingWindows addObject:window];
     self.focusedWindow = window;
+    if (!self.kbWatchdog) {
+        self.kbWatchdog = [NSTimer timerWithTimeInterval:0.4 target:self
+                                                   selector:@selector(tickKeyboardWatchdog)
+                                                   userInfo:nil repeats:YES];
+        [[NSRunLoop mainRunLoop] addTimer:self.kbWatchdog forMode:NSRunLoopCommonModes];
+    }
     self.mode = DPPresentationModeFloating;
     [self bringOverlayToFront];
     [self makeOverlayKeyWindow];
@@ -994,12 +1002,54 @@ static CGFloat _kbHeightFromNotification(NSNotification *note) {
     CGRect base = self.frameBeforeKeyboard.CGRectValue;
     CGFloat limit = screen.size.height - height - 8.0;
     CGRect f = base;
-    if (f.size.height > limit) f.size.height = MAX(160.0, limit);
+    // Keep the window fully above the keyboard; scale, not distort.
+    if (f.size.height > limit) {
+        CGFloat ratio = MAX(0.35, limit / f.size.height);
+        CGFloat nw = f.size.width * ratio;
+        f = CGRectMake(f.origin.x, f.origin.y, nw, f.size.height * ratio);
+    }
     if (CGRectGetMaxY(f) > limit) f.origin.y = MAX(0.0, limit - f.size.height);
+    if (f.origin.x + f.size.width > screen.size.width) f.origin.x = MAX(0.0, screen.size.width - f.size.width);
     w.frame = f;
     [w layoutIfNeeded];
     [w commitSceneLayout];
     NSLog(@"[InteractivePiP] keyboard %.0f -> %@", height, NSStringFromCGRect(f));
+}
+
+#pragma mark - Keyboard geometry
+
+// The hosted app owns its own text field, so this process may never receive
+// UIKeyboardWillShow. Ask the keyboard arbiter for the live keyboard window.
+- (CGFloat)currentKeyboardHeight {
+    id kb = [self sharedRemoteKeyboards];
+    if (!kb) return 0;
+    @try {
+        SEL vis = NSSelectorFromString(@"keyboardVisible");
+        if ([kb respondsToSelector:vis] && !((BOOL (*)(id, SEL))objc_msgSend)(kb, vis)) return 0;
+        SEL winSel = NSSelectorFromString(@"keyboardWindow");
+        if (![kb respondsToSelector:winSel]) return 0;
+        UIWindow *kw = ((id (*)(id, SEL))objc_msgSend)(kb, winSel);
+        if (!kw || kw.hidden) return 0;
+        CGFloat h = kw.frame.size.height;
+        BOOL tall = kw.frame.size.height > self.overlayRoot.bounds.size.height * 0.5;
+        CGFloat screenH = tall ? kw.frame.size.width : kw.frame.size.height;
+        CGFloat inset = kw.safeAreaInsets.bottom;
+        h = screenH - inset;
+        return MAX(0, h);
+    } @catch (__unused NSException *e) { return 0; }
+}
+
+- (void)tickKeyboardWatchdog {
+    if (self.mutableFloatingWindows.count == 0) {
+        [self.kbWatchdog invalidate];
+        self.kbWatchdog = nil;
+        return;
+    }
+    CGFloat h = [self currentKeyboardHeight];
+    static CGFloat last = -1;
+    if (fabs(h - last) < 1.0) return;
+    last = h;
+    [self avoidKeyboardWithHeight:h];
 }
 
 @end
