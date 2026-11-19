@@ -119,7 +119,8 @@
 
     win.windowLevel = UIWindowLevelStatusBar + 120.0;
     win.backgroundColor = [UIColor clearColor];
-    win.hidden = NO;
+    // Start hidden: an empty overlay must never cover home or lock screen.
+    win.hidden = YES;
 
     UIViewController *rootVC = [[UIViewController alloc] init];
     DPPassthroughView *root = [[DPPassthroughView alloc] initWithFrame:win.bounds];
@@ -482,14 +483,20 @@
 - (void)handleDeviceLock {
     self.deviceLocked = YES;
     [self dismissAllAnimated:NO];
+    // Full removal: a merely hidden overlay still shipped pixels to the lock screen.
+    self.overlayWindow.hidden = YES;
+    self.overlayWindow.windowScene = nil;
+}
+
+- (void)handleDeviceUnlock {
+    self.deviceLocked = NO;
+    // old session is gone; the window is rebuilt on next activation
     self.overlayWindow.hidden = YES;
 }
 
-- (void)handleDeviceUnlock { self.deviceLocked = NO; }
-
 - (void)ensureOverlayVisible {
     if (!self.overlayWindow || self.deviceLocked) return;
-    self.overlayWindow.hidden = NO;
+    if (self.mutableFloatingWindows.count == 0) { self.overlayWindow.hidden = YES; return; }
     [self bringOverlayToFront];
 }
 
@@ -592,11 +599,22 @@
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(leaveSplit)];
     tap.numberOfTapsRequired = 2;
     [divider addGestureRecognizer:tap];
+    UIView *seam = [[UIView alloc] initWithFrame:CGRectZero];
+    seam.tag = 0x5D1;
+    seam.backgroundColor = [UIColor colorWithWhite:0.10 alpha:1.0];
+    seam.userInteractionEnabled = NO;
+    [divider addSubview:seam];
+    divider.backgroundColor = [UIColor clearColor];
+
+    UIPanGestureRecognizer *drag = [[UIPanGestureRecognizer alloc]
+        initWithTarget:self action:@selector(handleSplitDrag:)];
+    [divider addGestureRecognizer:drag];
     self.splitDivider = divider;
     [self.overlayRoot addSubview:divider];
     self.mode = DPPresentationModeSplit;
     self.duoMode = YES;
-    self.splitRatio = 0.5;
+    CGFloat saved = [[NSUserDefaults standardUserDefaults] doubleForKey:@"sg.split.lastRatio"];
+    self.splitRatio = (saved > 0.15 && saved < 0.85) ? saved : 0.5;
     [self layoutSplit];
     [self focusWindow:second];
 }
@@ -609,18 +627,21 @@
     // cutout clear at the top. Hinge is a narrow centered seam.
     CGRect b = UIEdgeInsetsInsetRect(full, UIEdgeInsetsMake(MAX(0, insets.top) + 44.0, 0, MAX(0, insets.bottom), 0));
     BOOL sideBySide = b.size.width >= b.size.height;
-    const CGFloat hinge = sideBySide ? 8.0 : 10.0;
+    const CGFloat gap = sideBySide ? 8.0 : 10.0;   // visual seam
+    const CGFloat touch = 26.0;                    // draggable strip
     CGFloat total = sideBySide ? b.size.width : b.size.height;
-    CGFloat first = floor((total - hinge) * 0.5);
+    CGFloat ratio = MIN(0.8, MAX(0.2, self.splitRatio));
+    CGFloat first = floor((total - touch) * ratio);
     CGRect a = b, c = b, h = b;
     if (sideBySide) {
         a.size.width = first;
-        h.origin.x = CGRectGetMaxX(a); h.size.width = hinge;
-        c.origin.x = CGRectGetMaxX(h); c.size.width = total - first - hinge;
+        h.origin.x = CGRectGetMaxX(a); h.size.width = touch;
+        c.origin.x = CGRectGetMaxX(h); c.size.width = total - first - touch;
+        (void)gap;
     } else {
         a.size.height = first;
-        h.origin.y = CGRectGetMaxY(a); h.size.height = hinge;
-        c.origin.y = CGRectGetMaxY(h); c.size.height = total - first - hinge;
+        h.origin.y = CGRectGetMaxY(a); h.size.height = touch;
+        c.origin.y = CGRectGetMaxY(h); c.size.height = total - first - touch;
     }
     for (DPFloatingWindow *w in self.splitWindows) {
         [w.layer removeAllAnimations];
@@ -631,6 +652,12 @@
     self.splitDivider.frame = h;
     for (DPFloatingWindow *w in self.splitWindows) {
         [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
+    }
+    // draw only the seam, keep the strip itself transparent for touches
+    UIView *line = [self.splitDivider viewWithTag:0x5D1];
+    if (line) {
+        if (sideBySide) line.frame = CGRectMake((touch - gap) / 2.0, 0, gap, h.size.height);
+        else line.frame = CGRectMake(0, (touch - gap) / 2.0, h.size.width, gap);
     }
     [self.overlayRoot bringSubviewToFront:self.splitDivider];
     [self updateSessionControls];
@@ -921,6 +948,25 @@
         w.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
         w.showsBorder = [DPSettings shared].showBorder;
     }
+}
+
+#pragma mark - Split ratio drag
+
+- (void)handleSplitDrag:(UIPanGestureRecognizer *)gr {
+    if (self.splitWindows.count != 2 || !self.overlayRoot) return;
+    CGRect full = self.overlayRoot.bounds;
+    UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
+    CGFloat topInset = MAX(0, insets.top) + 44.0;
+    BOOL sideBySide = (full.size.width >= full.size.height);
+    CGFloat hinge = sideBySide ? 8.0 : 10.0;
+    CGFloat available = (sideBySide ? full.size.width : full.size.height) - 26.0;
+    if (available <= 1) return;
+
+    CGPoint p = [gr locationInView:self.overlayRoot];
+    CGFloat pos = (sideBySide ? p.x : (p.y - topInset)) - 13.0;
+    self.splitRatio = MIN(0.8, MAX(0.2, pos / available));
+    [self layoutSplit];
+    [[NSUserDefaults standardUserDefaults] setDouble:self.splitRatio forKey:@"sg.split.lastRatio"];
 }
 
 @end
