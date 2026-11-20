@@ -22,6 +22,7 @@
 @property (nonatomic, weak, nullable) DPFloatingWindow *keyboardRoutedWindow;
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
 @property (nonatomic, assign) BOOL deviceLocked;
+@property (nonatomic, assign) BOOL sessionParked;
 @property (nonatomic, strong) UIView *splitDivider;
 @property (nonatomic, strong) UIStackView *sessionControls;
 @property (nonatomic, strong) UIButton *leaveSplitButton;
@@ -150,6 +151,9 @@
 
 - (void)bringOverlayToFront {
     if (self.deviceLocked) return;
+    // While parked in the app switcher, passive foreground callbacks must not
+    // yank the session back. Only an explicit activation restores it.
+    if (self.sessionParked) return;
     // Never resurrect a chrome-only overlay: it covers the home screen with
     // nothing inside, which is exactly the "stuck on split screen" symptom.
     if (self.mutableFloatingWindows.count == 0) {
@@ -206,6 +210,7 @@
     }
     if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return;
 
+    if (self.sessionParked) [self restoreParkedSession];
     [self install];
 
     if (mode == DPPresentationModeSplit) {
@@ -349,6 +354,9 @@
 
 - (void)dismissAllAnimated:(BOOL)animated {
     self.sessionGeneration += 1;
+    self.sessionParked = NO;
+    self.overlayRoot.transform = CGAffineTransformIdentity;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
     self.pendingHomeBundleID = nil; self.homeReturnPending = NO;
     [self.launchAllowlist removeAllObjects];
     [self leaveSplit];
@@ -906,29 +914,40 @@
         NSString *fg = [self2 foregroundBundleID];
         // If a hosted app is still foreground, this was an app switch / open — keep the session.
         if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
-        NSLog(@"[InteractivePiP] 上滑回桌面 -> 轻量退出 (fg=%@)", fg ?: @"(none)");
-        // Do NOT invalidate scene hosts here: doing that inside the switcher-home
-        // transaction crashes _UISceneLayerHostContainerView dealloc (safe mode).
-        // Instead end the session the cheap way: suspend every host, take the
-        // windows out of the overlay and clear the bookkeeping, so the next
-        // activation starts clean and can build a new split.
-        [self2 leaveSplit];
-        NSArray *all = [self2.mutableFloatingWindows copy];
-        for (DPFloatingWindow *w in all) {
-            [w.sceneHost setSuspended:YES];
-            [w removeFromSuperview];
-        }
-        [self2.mutableFloatingWindows removeAllObjects];
-        [self2.mutableHostedBundleIDs removeAllObjects];
-        [self2.savedFrames removeAllObjects];
-        self2.focusedWindow = nil;
-        self2.splitWindows = nil;
-        self2.duoMode = NO;
-        self2.overlayWindow.hidden = YES;
-        self2.mode = DPPresentationModeNone;
-        self2.suppressLaunch = NO;
-        [self2 updateSessionControls];
+        NSLog(@"[InteractivePiP] 上滑回桌面 -> 挂到后台任务列表 (fg=%@)", fg ?: @"(none)");
+        [self2 parkSessionInAppSwitcher];
     });
+}
+
+- (void)parkSessionInAppSwitcher {
+    // Keep the whole session alive and let it sit in the app switcher:
+    // drop the overlay below the switcher UI, shrink it to a card, and stop
+    // the per-scene timers. Nothing is torn down, so tapping it restores
+    // instantly without rebuilding scenes (and without dealloc crashes).
+    self.sessionParked = YES;
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        [w.sceneHost setSuspended:YES];
+    }
+    self.overlayWindow.windowLevel = UIWindowLevelNormal;   // below switcher chrome
+    self.overlayWindow.hidden = NO;                          // visible in switcher
+    self.overlayRoot.transform = CGAffineTransformMakeScale(0.86, 0.86);
+    self.overlayRoot.alpha = 1.0;
+    [self updateSessionControls];
+    NSLog(@"[InteractivePiP] 会话已停靠后台任务列表，窗口数=%lu",
+          (unsigned long)self.mutableFloatingWindows.count);
+}
+
+- (void)restoreParkedSession {
+    if (!self.sessionParked) return;
+    self.sessionParked = NO;
+    self.overlayRoot.transform = CGAffineTransformIdentity;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        [w.sceneHost setSuspended:NO];
+    }
+    if (self.duoMode) [self layoutSplit];
+    [self bringOverlayToFront];
+    NSLog(@"[InteractivePiP] 从后台任务列表恢复会话");
 }
 
 - (void)handleUserHome {
