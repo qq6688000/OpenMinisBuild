@@ -518,7 +518,7 @@
         SEL sel = method_getName(methods[i]);
         const char *types = method_getTypeEncoding(methods[i]);
         if (!types || types[0] != 'v') continue;
-        NSString *args = [NSString stringWithUTF8String:types].substringFromIndex:3;
+        NSString *args = [NSString stringWithUTF8String:types + 3];
         if ([args rangeOfString:@"Q"].location == NSNotFound) continue;
         if ([args componentsSeparatedByString:@""].count != 2) continue;
         @try {
@@ -541,7 +541,7 @@
     [s appendFormat:@"focus=%@\nhost=%@\n", f.bundleID ?: @"-",
        hv ? NSStringFromClass(hv.class) : @"nil"];
     [s appendFormat:@"scene=%@\npid=%d level=%.0f\n",
-       sc ? NSStringFromClass(sc.class) : @"nil",
+       sc ? NSStringFromClass([sc class]) : @"nil",
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
     [s appendFormat:@"wkscene=%@\n_UIRemoteKeyboards=%d\n",
        NSStringFromClass(self.overlayWindow.windowScene.class) ?: @"nil", kb ? 1 : 0];
