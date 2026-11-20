@@ -1072,7 +1072,11 @@ static id DPDynamicGet(id obj, NSString *key) {
     // 1) FBSceneManager: 遍历已激活场景，找 bundleID 匹配的 scene 实体 → displayItem
     Class FBSceneManagerCls = NSClassFromString(@"FBSceneManager");
     id sceneManager = nil;
-    @try { sceneManager = [FBSceneManagerCls sharedManager]; } @catch (__unused NSException *e) {}
+    if (FBSceneManagerCls && [FBSceneManagerCls respondsToSelector:NSSelectorFromString(@"sharedManager")]) {
+        @try {
+            sceneManager = ((id(*)(id, SEL))objc_msgSend)(FBSceneManagerCls, NSSelectorFromString(@"sharedManager"));
+        } @catch (__unused NSException *e) {}
+    }
     if (sceneManager) {
         id scenes = DPDynamicGet(sceneManager, @"scenes");
         if ([scenes isKindOfClass:[NSArray class]]) {
@@ -1096,11 +1100,12 @@ static id DPDynamicGet(id obj, NSString *key) {
     // 2) SBApplicationController: applicationWithBundleIdentifier → displayItem
     Class SBAppCtrl = NSClassFromString(@"SBApplicationController");
     id appCtrl = nil;
-    @try { appCtrl = [SBAppCtrl sharedInstance]; } @catch (__unused NSException *e) {}
-    if (appCtrl) {
+    if (SBAppCtrl && [SBAppCtrl respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
         @try {
-            id app = [appCtrl valueForKey:@"applicationWithBundleIdentifier:"];
+            appCtrl = ((id(*)(id, SEL))objc_msgSend)(SBAppCtrl, NSSelectorFromString(@"sharedInstance"));
         } @catch (__unused NSException *e) {}
+    }
+    if (appCtrl) {
         if ([appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")]) {
             @try {
                 id app = ((id(*)(id, SEL, id))objc_msgSend)(appCtrl, NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundleID);
