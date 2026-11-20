@@ -31,6 +31,7 @@
 @interface DPWindowManager ()
 @property (nonatomic, strong, nullable) DPPassthroughWindow *overlayWindow;
 @property (nonatomic, strong) DPPassthroughView *overlayRoot;
+@property (nonatomic, strong, nullable) UILabel *diagLabel;
 @property (nonatomic, strong, readwrite) NSMutableArray<DPFloatingWindow *> *mutableFloatingWindows;
 @property (nonatomic, assign, readwrite) DPPresentationMode mode;
 @property (nonatomic, strong, nullable) DPAppPicker *picker;
@@ -502,13 +503,94 @@
     }
 }
 
+- (void)attemptRemoteKeyboardsRegistration:(id)kb host:(UIView *)host pid:(int)pid scene:(id)scene {
+    // `_UIRemoteKeyboards` renames between iOS builds. Trusting one guessed
+    // selector means a silent no-op, and the remote keyboard content layer then
+    // has nowhere to draw — the keyboard window takes its space but stays blank,
+    // which is exactly the symptom we saw. So scan the real method list and
+    // invoke any void setter whose encoding says (object, pid, object): that is
+    // the call which tells the keyboard content where to render.
+    Class c = [kb class];
+    unsigned count = 0;
+    Method *methods = class_copyMethodList(c, &count);
+    if (!methods) return;
+    for (unsigned i = 0; i < count; i++) {
+        SEL sel = method_getName(methods[i]);
+        const char *types = method_getTypeEncoding(methods[i]);
+        if (!types || types[0] != 'v') continue;
+        NSString *args = [NSString stringWithUTF8String:types].substringFromIndex:3;
+        if ([args rangeOfString:@"Q"].location == NSNotFound) continue;
+        if ([args componentsSeparatedByString:@""].count != 2) continue;
+        @try {
+            ((void (*)(id, SEL, id, int, id))objc_msgSend)(kb, sel, host, pid, scene);
+            NSLog(@"[InteractivePiP] 远程键盘登记已调用 %s (%s)", sel_getName(sel), types);
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    free(methods);
+}
+
+- (void)showKeyboardDiagnostics {
+    if (!self.overlayRoot) return;
+    DPFloatingWindow *f = self.focusedWindow;
+    id sh = f.sceneHost;
+    id kb = [self sharedRemoteKeyboards];
+    NSMutableString *s = [NSMutableString string];
+    UIView *hv = [sh keyboardRoutingView];
+    id sc = [sh keyboardRoutingScene];
+    [s appendFormat:@"focus=%@\nhost=%@\n", f.bundleID ?: @"-",
+       hv ? NSStringFromClass(hv.class) : @"nil"];
+    [s appendFormat:@"scene=%@\npid=%d level=%.0f\n",
+       sc ? NSStringFromClass(sc.class) : @"nil",
+       [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
+    [s appendFormat:@"wkscene=%@\n_UIRemoteKeyboards=%d\n",
+       NSStringFromClass(self.overlayWindow.windowScene.class) ?: @"nil", kb ? 1 : 0];
+    if (kb) {
+        unsigned n = 0;
+        Method *ms = class_copyMethodList([kb class], &n);
+        if (ms) {
+            for (unsigned i = 0; i < n; i++) {
+                NSString *nm = [NSString stringWithUTF8String:sel_getName(method_getName(ms[i]))];
+                const char *t = method_getTypeEncoding(ms[i]);
+                BOOL hit = [nm rangeOfString:@"Hosted" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                           [nm rangeOfString:@"Window" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                           [nm rangeOfString:@"Scene" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                           [nm rangeOfString:@"Pair" options:NSCaseInsensitiveSearch].location != NSNotFound;
+                if (!hit) continue;
+                [s appendFormat:@" %@ %s\n", nm, t ? t : "-"];
+            }
+            free(ms);
+        }
+    }
+    if (!self.diagLabel) {
+        UILabel *l = [[UILabel alloc] init];
+        l.tag = 0x445044;
+        l.font = [UIFont monospacedSystemFontOfSize:8 weight:UIFontWeightRegular];
+        l.textColor = [UIColor yellowColor];
+        l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.8];
+        l.numberOfLines = 0;
+        l.layer.cornerRadius = 6;
+        self.diagLabel = l;
+        [self.overlayRoot addSubview:l];
+    }
+    self.diagLabel.text = s;
+    CGFloat w = self.overlayRoot.bounds.size.width;
+    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 214);
+    self.diagLabel.hidden = NO;
+}
+
 - (void)prepareForHostedInput {
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden || !self.focusedWindow) return;
     [self.focusedWindow.sceneHost prepareForInput];
     [self configureRemoteKeyboardsForHostedInput:YES];
     UIView *host = [self.focusedWindow.sceneHost keyboardRoutingView];
     id scene = [self.focusedWindow.sceneHost keyboardRoutingScene];
+    id kb = [self sharedRemoteKeyboards];
+    if (kb && host && scene) {
+        [self attemptRemoteKeyboardsRegistration:kb host:host pid:[self.focusedWindow.sceneHost keyboardRoutingPID] scene:scene];
+    }
     [self attemptKeyboardScenePairingWithScene:scene host:host];
+    [self showKeyboardDiagnostics];
 }
 
 - (void)prepareForTouchInView:(UIView *)view {
