@@ -920,18 +920,26 @@
 }
 
 - (void)parkSessionInAppSwitcher {
-    // Keep the whole session alive and let it sit in the app switcher:
-    // drop the overlay below the switcher UI, shrink it to a card, and stop
-    // the per-scene timers. Nothing is torn down, so tapping it restores
-    // instantly without rebuilding scenes (and without dealloc crashes).
+    // Keep the whole session alive but take it off screen entirely, so the home
+    // screen and the app switcher stay visually clean. Nothing is torn down:
+    // scenes stay hosted and resume instantly on the next activation.
     self.sessionParked = YES;
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         [w.sceneHost setSuspended:YES];
     }
-    self.overlayWindow.windowLevel = UIWindowLevelNormal;   // below switcher chrome
-    self.overlayWindow.hidden = NO;                          // visible in switcher
-    self.overlayRoot.transform = CGAffineTransformMakeScale(0.86, 0.86);
-    self.overlayRoot.alpha = 1.0;
+    // Hide the overlay completely. Lowering the level and keeping it visible
+    // left a solid black rectangle (tiled panes use a black background) sitting
+    // on top of the home screen. The session itself stays alive in memory, so
+    // nothing has to be rebuilt when the user comes back.
+    self.overlayRoot.transform = CGAffineTransformIdentity;
+    self.overlayWindow.hidden = YES;
+    self.overlayWindow.windowLevel = UIWindowLevelNormal;
+    // Drop the black tile backdrop too, just in case the window is shown by
+    // anything else before we restore it properly.
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        [w setTiled:NO];
+        w.alpha = 0.0;
+    }
     [self updateSessionControls];
     NSLog(@"[InteractivePiP] 会话已停靠后台任务列表，窗口数=%lu",
           (unsigned long)self.mutableFloatingWindows.count);
@@ -942,10 +950,15 @@
     self.sessionParked = NO;
     self.overlayRoot.transform = CGAffineTransformIdentity;
     self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
+    self.overlayWindow.hidden = NO;
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        w.alpha = 1.0;
         [w.sceneHost setSuspended:NO];
     }
-    if (self.duoMode) [self layoutSplit];
+    if (self.duoMode) {
+        for (DPFloatingWindow *w in self.splitWindows) { w.tiled = YES; }
+        [self layoutSplit];
+    }
     [self bringOverlayToFront];
     NSLog(@"[InteractivePiP] 从后台任务列表恢复会话");
 }
