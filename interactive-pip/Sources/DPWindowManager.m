@@ -6,6 +6,27 @@
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
 
+// ============ DPGroupPageView ============
+// Switcher 卡内容视图。SpringBoard 对 pageContentViewForAppLayout: 的返回对象
+// 会发 setActive:/appLayout 等协议消息；继承 UIView 保证 addSubview 可用，
+// 消息转发兜底保证任何未知协议消息都不崩（0.7.2 安全模式根因）。
+@interface DPGroupPageView : UIView
+@property (nonatomic, strong, nullable) id appLayout;
+@end
+
+@implementation DPGroupPageView
+- (void)setActive:(BOOL)active { }
+- (void)setAppLayout:(id)layout { _appLayout = layout; }
+- (void)prepareForReuse { }
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)sel {
+    NSMethodSignature *s = [super methodSignatureForSelector:sel];
+    if (s) return s;
+    // 返回一个通用的 "@@:" 签名（id, self, _cmd），让未知消息不崩
+    return [NSMethodSignature signatureWithObjCTypes:"@@:"];
+}
+- (void)forwardInvocation:(NSInvocation *)invocation { }
+@end
+
 @interface DPWindowManager ()
 @property (nonatomic, strong, nullable) DPPassthroughWindow *overlayWindow;
 @property (nonatomic, strong) DPPassthroughView *overlayRoot;
@@ -1186,6 +1207,81 @@ static id DPDynamicGet(id obj, NSString *key) {
     NSLog(@"[InteractivePiP] Switcher 卡被点击 -> 恢复分屏会话");
     self.activeSwitcherCard = nil;
     [self restoreParkedSession];
+}
+
+- (UIView *)contentViewForSwitcherLayout:(id)layout {
+    if (self.splitWindows.count < 2) return nil;
+    DPFloatingWindow *w0 = self.splitWindows[0];
+    DPFloatingWindow *w1 = self.splitWindows[1];
+    UIView *v0 = w0.sceneHost.view;
+    UIView *v1 = w1.sceneHost.view;
+    if (!v0 || !v1) return nil;
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
+    container.backgroundColor = [UIColor blackColor];
+    container.clipsToBounds = YES;
+
+    BOOL sideBySide = (container.bounds.size.width > container.bounds.size.height);
+    CGRect r0, r1;
+    if (sideBySide) {
+        CGFloat w = container.bounds.size.width * 0.5;
+        r0 = CGRectMake(0, 0, w, container.bounds.size.height);
+        r1 = CGRectMake(w, 0, container.bounds.size.width - w, container.bounds.size.height);
+    } else {
+        CGFloat h = container.bounds.size.height * 0.5;
+        r0 = CGRectMake(0, 0, container.bounds.size.width, h);
+        r1 = CGRectMake(0, h, container.bounds.size.width, container.bounds.size.height - h);
+    }
+
+    // 快照方式：把每个 pane 的画面截图成 UIImageView，不移动原视图
+    // （若直接 addSubview sceneHost.view 会把它从分屏父视图移除，破坏分屏）
+    @try {
+        UIGraphicsImageRenderer *ren = [[UIGraphicsImageRenderer alloc] initWithSize:r0.size];
+        UIImage *img0 = [ren imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            BOOL ok = [v0 drawViewHierarchyInRect:CGRectMake(0, 0, r0.size.width, r0.size.height) afterScreenUpdates:NO];
+            if (!ok) {
+                [[UIColor darkGrayColor] setFill];
+                UIRectFill(CGRectMake(0, 0, r0.size.width, r0.size.height));
+            }
+        }];
+        UIImage *img1 = [ren imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            BOOL ok = [v1 drawViewHierarchyInRect:CGRectMake(0, 0, r1.size.width, r1.size.height) afterScreenUpdates:NO];
+            if (!ok) {
+                [[UIColor darkGrayColor] setFill];
+                UIRectFill(CGRectMake(0, 0, r1.size.width, r1.size.height));
+            }
+        }];
+        UIImageView *iv0 = [[UIImageView alloc] initWithImage:img0];
+        iv0.frame = r0;
+        UIImageView *iv1 = [[UIImageView alloc] initWithImage:img1];
+        iv1.frame = r1;
+        [container addSubview:iv0];
+        [container addSubview:iv1];
+    } @catch (__unused NSException *e) {
+        // 截图失败：至少放两个标签示意
+        UILabel *la = [[UILabel alloc] initWithFrame:r0];
+        la.text = w0.bundleID ?: @"App1";
+        la.textColor = [UIColor whiteColor];
+        la.textAlignment = NSTextAlignmentCenter;
+        UILabel *lb = [[UILabel alloc] initWithFrame:r1];
+        lb.text = w1.bundleID ?: @"App2";
+        lb.textColor = [UIColor whiteColor];
+        lb.textAlignment = NSTextAlignmentCenter;
+        [container addSubview:la];
+        [container addSubview:lb];
+    }
+    return container;
+}
+
+- (UIView *)makeSwitcherPageView:(id)layout {
+    DPGroupPageView *pv = [[DPGroupPageView alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
+    pv.appLayout = layout;
+    UIView *content = [self contentViewForSwitcherLayout:layout];
+    if (content) {
+        content.frame = pv.bounds;
+        [pv addSubview:content];
+    }
+    return pv;
 }
 
 @end

@@ -55,6 +55,10 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)isSwitcherCard:(nullable id)layout;
 /// Switcher 卡被点击：恢复分屏会话
 - (void)activateSwitcherCard:(nullable id)layout;
+/// 从两个分屏 pane 截图拼出 Switcher 卡内容（快照方式，不移动原视图）
+- (nullable UIView *)contentViewForSwitcherLayout:(nullable id)layout;
+/// 构造 Switcher 卡 page content 视图（类型安全的 DPGroupPageView，塞快照）
+- (nullable UIView *)makeSwitcherPageView:(nullable id)layout;
 
 
 /// 允许下一次该 bundle 全屏启动（用于先拉起进程再回桌面挂画面）

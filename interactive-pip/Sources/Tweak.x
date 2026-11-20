@@ -619,6 +619,24 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
+// 给我们的分屏卡提供类型安全的 page content view（DPGroupPageView，消息转发兜底）
+%hook SBFluidSwitcherPageContentViewProvider
+- (id)pageContentViewForAppLayout:(id)appLayout setActive:(BOOL)active {
+    if ([[DPWindowManager shared] isSwitcherCard:appLayout]) {
+        @try {
+            UIView *pv = [[DPWindowManager shared] makeSwitcherPageView:appLayout];
+            if (pv) {
+                NSLog(@"[InteractivePiP] pageContentViewForAppLayout: 返回 DPGroupPageView");
+                return pv;
+            }
+        } @catch (__unused NSException *e) {
+            NSLog(@"[InteractivePiP] pageContentViewForAppLayout: 构造失败 -> %orig");
+        }
+    }
+    return %orig;
+}
+%end
+
 %ctor {
     @autoreleasepool {
         [DPSettings shared];
