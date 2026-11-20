@@ -32,7 +32,6 @@
 @property (nonatomic, assign) CGSize nativeSceneSize;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
-@property (nonatomic, copy, readwrite, nullable) NSString *refSizeDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
@@ -1767,41 +1766,8 @@
     self.placeholder.frame = self.view.bounds;
     self.snapshotView.frame = self.view.bounds;
 
-    // PV 正解: 用 setContentReferenceSize 让 App 自己按窗口尺寸重新布局(实时分辨率)。
-    // 与 0.7.24 的 setFrame 不同 —— 那是场景在屏幕上的位置(半屏→非法→黑屏),
-    // 这个是场景内容的参考尺寸, UIKit 收到会重跑 layout。全程 @try + respondsToSelector
-    // 保护, 探测不到就什么都不做, 退回 0.7.23 铺满, 不会更差。
-    [self applySceneReferenceSize:self.view.bounds.size];
 }
 
-- (void)applySceneReferenceSize:(CGSize)refSize {
-    if (!self.scene || refSize.width < 40 || refSize.height < 40) return;
-    @try {
-        SEL sel3 = NSSelectorFromString(@"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
-        SEL sel2 = NSSelectorFromString(@"setContentReferenceSize:withInterfaceOrientation:");
-        BOOL ok = NO;
-        if ([self.scene respondsToSelector:sel3]) {
-            NSInteger co = 0, to = 0;
-            @try { id v = [self.scene valueForKey:@"contentOrientation"]; if (v) co = [v integerValue]; } @catch (__unused NSException *e) {}
-            @try { id v = [self.scene valueForKey:@"containerOrientation"]; if (v) to = [v integerValue]; } @catch (__unused NSException *e) {}
-            ((void (*)(id, SEL, CGSize, NSInteger, NSInteger))objc_msgSend)(
-                self.scene, sel3, refSize, co, to);
-            ok = YES;
-        } else if ([self.scene respondsToSelector:sel2]) {
-            NSInteger io = 0;
-            @try { id v = [self.scene valueForKey:@"contentInterfaceOrientation"]; if (v) io = [v integerValue]; } @catch (__unused NSException *e) {}
-            ((void (*)(id, SEL, CGSize, NSInteger))objc_msgSend)(self.scene, sel2, refSize, io);
-            ok = YES;
-        }
-        self.refSizeDiag = [NSString stringWithFormat:@"ref=%@ %@",
-                            NSStringFromCGSize(refSize), ok ? @"OK" : @"no-sel"];
-        NSLog(@"[InteractivePiP] setContentReferenceSize %@ -> %@ (%@)",
-              self.bundleID, NSStringFromCGSize(refSize), ok ? @"OK" : @"no-sel");
-    } @catch (NSException *e) {
-        self.refSizeDiag = [NSString stringWithFormat:@"ref=%@ throw", NSStringFromCGSize(refSize)];
-        NSLog(@"[InteractivePiP] setContentReferenceSize threw %@", e);
-    }
-}
 
 - (void)commitHostedFrame {
     if (self.live && self.scene) {
@@ -1812,14 +1778,21 @@
 - (void)updateSceneSettingsWithSize:(CGSize)size {
     if (!self.scene || size.width < 1 || size.height < 1) return;
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
-    // NB: do NOT pass the pane size here. FBSceneSettings' frame is the scene's
-    // position on screen, and on iOS 16 it must stay full screen — committing a
-    // half-screen frame makes the scene invalid (hosted pid dropped to 0 and the
-    // pane goes black). The app therefore always renders the full canvas.
-    if ([self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO]) {
+    // 0.2.2 "real half-screen scene relayout" 三件套(用户确认过的老版本):
+    // 1) 把 pane 真实尺寸提交给场景 setFrame; 2) 更新 nativeSceneSize; 3) 重新 layout。
+    // 0.7.24 当年只做了第 1 步就黑屏, 这次三件套齐全照抄 0.2.2。
+    if ([self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES]) {
         self.lastCommittedSceneSize = size;
-        self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
-                           NSStringFromCGSize(self.view.bounds.size), self.scene ? 1 : 0];
+        self.nativeSceneSize = size;
+        [self layoutHostView];
+        self.layoutDiag = [NSString stringWithFormat:@"view=%@ committed=%@ set=%d pid=%d",
+                           NSStringFromCGSize(self.view.bounds.size),
+                           NSStringFromCGSize(size), 1,
+                           (int)[self keyboardRoutingPID]];
+        NSLog(@"[InteractivePiP] 0.2.2-relayout %@ -> %@ pid=%d", self.bundleID,
+              NSStringFromCGSize(size), (int)[self keyboardRoutingPID]);
+    } else {
+        self.layoutDiag = [NSString stringWithFormat:@"view=%@ commit-fail", NSStringFromCGSize(self.view.bounds.size)];
     }
 }
 

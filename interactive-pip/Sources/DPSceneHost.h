@@ -22,7 +22,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (int)keyboardRoutingPID;
 @property (nonatomic, assign, readonly) BOOL keyboardHostIsSceneView;
 @property (nonatomic, copy, readonly, nullable) NSString *hostViewDiag;
-@property (nonatomic, copy, readonly, nullable) NSString *refSizeDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;
