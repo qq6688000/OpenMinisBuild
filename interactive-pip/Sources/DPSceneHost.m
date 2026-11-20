@@ -31,6 +31,7 @@
 @property (nonatomic, assign) CGSize nativeSceneSize;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t reconnectTimer;
 @property (nonatomic, assign) NSUInteger reconnectAttempts;
@@ -849,6 +850,9 @@
             }
         }
 
+        self.layerDiag = [NSString stringWithFormat:@"layers=%lu created=%lu lm=%d sc=%d",
+                           (unsigned long)[[self arrayFromCollection:layers] count],
+                           (unsigned long)created, layerManager ? 1 : 0, containerScene ? 1 : 0];
         if (created > 0) {
             NSLog(@"[InteractivePiP] layer container attached %@ layers=%@", self.bundleID, @(created));
             return containerView;

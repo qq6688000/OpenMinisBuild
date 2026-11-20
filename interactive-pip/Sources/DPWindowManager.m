@@ -671,6 +671,14 @@
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
     NSString *hvd = [sh hostViewDiag];
     [s appendFormat:@"hostDiag=%@\n", hvd ?: @"-"];
+    [s appendFormat:@"layer=%@\n", [sh layerDiag] ?: @"-"];
+    if (hv) {
+        [s appendFormat:@"hvInfo=%@ sub=%lu alpha=%.2f hid=%d win=%d\n",
+           NSStringFromCGRect(hv.frame), (unsigned long)[hv subviews].count, hv.alpha,
+           hv.hidden ? 1 : 0, hv.window ? 1 : 0];
+    } else {
+        [s appendFormat:@"hvInfo=nil\n"];
+    }
     [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d inst=%d factory=%s\n",
        self.hostedInputActive ? 1 : 0, kb ? 1 : 0, self.remoteKeyboardsInstance ? 1 : 0,
        self.remoteKeyboardsFactory ? sel_getName(self.remoteKeyboardsFactory) : "-"];
