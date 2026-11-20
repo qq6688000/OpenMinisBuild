@@ -183,12 +183,12 @@ def main():
         (stage/'DEBIAN').mkdir()
         shutil.copyfile(dylib,dl/dylib.name)
         (dl/'InteractivePiP.plist').write_bytes(plistlib.dumps(
-            {'Filter':{'Bundles':['com.apple.springboard'],'Executables':['SpringBoard']}},fmt=plistlib.FMT_XML))
+            {'Filter':{'Bundles':['com.apple.springboard','com.apple.UIKit']}},fmt=plistlib.FMT_XML))
         shutil.copyfile(prefs_bin,pb/prefs_bin.name)
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'InteractivePiPPrefs',
             'CFBundleIdentifier':'com.seagull.interactivepip.prefs','CFBundleInfoDictionaryVersion':'6.0',
-            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.6.9','CFBundleVersion':'9',
+            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.7.0','CFBundleVersion':'9',
             'NSPrincipalClass':'DPRootListController'},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'Preferences/Resources/Root.plist',pb/'Root.plist')
         (pl/'InteractivePiP.plist').write_bytes(plistlib.dumps({
@@ -205,7 +205,7 @@ def main():
                 p=Path(cur)/n
                 os.chmod(p,0o755 if p.name in ('InteractivePiP.dylib','InteractivePiPPrefs') else 0o644)
         out=ROOT/'dist-apple';out.mkdir(exist_ok=True)
-        deb=out/'InteractivePiP_Duo_0.6.9_iphoneos-arm64e.deb'
+        deb=out/'InteractivePiP_Duo_0.7.0_iphoneos-arm64e.deb'
         run([dpkg,'--root-owner-group','-Zgzip','--build',str(stage),str(deb)])
         print(f'Built {deb} ({deb.stat().st_size} bytes); NOT device-validated.')
 
