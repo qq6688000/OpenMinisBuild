@@ -605,8 +605,9 @@
         w.tiled = YES;
     }
     UIView *divider = [[UIView alloc] initWithFrame:CGRectZero];
-    // Duo posture: fixed 50/50 panes separated by a hinge, not a draggable divider.
-    divider.backgroundColor = [UIColor colorWithWhite:0.04 alpha:1];
+    // Transparent touch strip; only the thin seam subview is visible, so the
+    // two panes appear to fill the screen with just one dark line between.
+    divider.backgroundColor = [UIColor clearColor];
     divider.layer.cornerRadius = 0;
     divider.layer.shadowColor = [UIColor blackColor].CGColor;
     divider.layer.shadowOpacity = 0.9;
@@ -630,7 +631,7 @@
     self.mode = DPPresentationModeSplit;
     self.duoMode = YES;
     CGFloat saved = [[NSUserDefaults standardUserDefaults] doubleForKey:@"sg.split.lastRatio"];
-    self.splitRatio = (saved > 0.08 && saved < 0.92) ? saved : 0.5;
+    self.splitRatio = (saved > 0.03 && saved < 0.97) ? saved : 0.5;
     [self layoutSplit];
     [self focusWindow:second];
 }
@@ -641,21 +642,20 @@
     // Duo: panels fill the entire screen edge to edge (no status/home inset).
     CGRect b = full;
     BOOL sideBySide = b.size.width >= b.size.height;
-    const CGFloat gap = sideBySide ? 8.0 : 10.0;   // visual seam
-    const CGFloat touch = 26.0;                    // draggable strip
+    const CGFloat seamW = 3.0;                     // single thin divider line
+    const CGFloat touch = 20.0;                    // invisible draggable strip over the seam
     CGFloat total = sideBySide ? b.size.width : b.size.height;
-    CGFloat ratio = MIN(0.9, MAX(0.1, self.splitRatio));
-    CGFloat first = floor((total - touch) * ratio);
+    CGFloat ratio = MIN(0.95, MAX(0.05, self.splitRatio));
+    CGFloat first = floor(total * ratio);          // panes meet at the seam: no gap
     CGRect a = b, c = b, h = b;
     if (sideBySide) {
         a.size.width = first;
-        h.origin.x = CGRectGetMaxX(a); h.size.width = touch;
-        c.origin.x = CGRectGetMaxX(h); c.size.width = total - first - touch;
-        (void)gap;
+        c.origin.x = b.origin.x + first; c.size.width = total - first;   // second pane fills rest
+        h.origin.x = b.origin.x + first - touch / 2.0; h.size.width = touch;
     } else {
         a.size.height = first;
-        h.origin.y = CGRectGetMaxY(a); h.size.height = touch;
-        c.origin.y = CGRectGetMaxY(h); c.size.height = total - first - touch;
+        c.origin.y = b.origin.y + first; c.size.height = total - first;
+        h.origin.y = b.origin.y + first - touch / 2.0; h.size.height = touch;
     }
     for (DPFloatingWindow *w in self.splitWindows) {
         [w.layer removeAllAnimations];
@@ -667,11 +667,11 @@
     for (DPFloatingWindow *w in self.splitWindows) {
         [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
     }
-    // draw only the seam, keep the strip itself transparent for touches
+    // one thin dark line, centered in the transparent touch strip
     UIView *line = [self.splitDivider viewWithTag:0x5D1];
     if (line) {
-        if (sideBySide) line.frame = CGRectMake((touch - gap) / 2.0, 0, gap, h.size.height);
-        else line.frame = CGRectMake(0, (touch - gap) / 2.0, h.size.width, gap);
+        if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, 0, seamW, h.size.height);
+        else line.frame = CGRectMake(0, (touch - seamW) / 2.0, h.size.width, seamW);
     }
     [self.overlayRoot bringSubviewToFront:self.splitDivider];
     [self updateSessionControls];
@@ -1001,14 +1001,13 @@
 - (void)handleSplitDrag:(UIPanGestureRecognizer *)gr {
     if (self.splitWindows.count != 2 || !self.overlayRoot) return;
     CGRect full = self.overlayRoot.bounds;
-    CGFloat topInset = 0;  // panels are edge-to-edge
     BOOL sideBySide = (full.size.width >= full.size.height);
-    CGFloat available = (sideBySide ? full.size.width : full.size.height) - 26.0;
+    CGFloat available = sideBySide ? full.size.width : full.size.height;
     if (available <= 1) return;
 
     CGPoint p = [gr locationInView:self.overlayRoot];
-    CGFloat pos = (sideBySide ? p.x : (p.y - topInset)) - 13.0;
-    self.splitRatio = MIN(0.9, MAX(0.1, pos / available));
+    CGFloat pos = sideBySide ? p.x : p.y;
+    self.splitRatio = MIN(0.95, MAX(0.05, pos / available));
     [self layoutSplit];
     [[NSUserDefaults standardUserDefaults] setDouble:self.splitRatio forKey:@"sg.split.lastRatio"];
 }
