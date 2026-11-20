@@ -55,6 +55,10 @@
 @property (nonatomic, assign) BOOL sessionParked;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
 @property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
+@property (nonatomic, weak, nullable) id switcherContentController;
+@property (nonatomic) BOOL switcherRefreshScheduled;
+- (void)createSwitcherGroupCard;
+- (void)requestSwitcherGroupRefresh;
 @property (nonatomic, strong) UIView *splitDivider;
 @property (nonatomic, strong) UIStackView *sessionControls;
 @property (nonatomic, strong) UIButton *leaveSplitButton;
@@ -1000,6 +1004,7 @@
     CGFloat saved = [[NSUserDefaults standardUserDefaults] doubleForKey:@"sg.split.lastRatio"];
     self.splitRatio = (saved > 0.03 && saved < 0.97) ? saved : 0.5;
     [self layoutSplit];
+    [self createSwitcherGroupCard];
     [self focusWindow:second];
 }
 
@@ -1048,7 +1053,9 @@
 // absent so the two panes behave like two physical displays.
 
 - (void)leaveSplit {
+    BOOL hadCard = self.activeSwitcherCard != nil;
     self.activeSwitcherCard = nil;
+    if (hadCard) [self requestSwitcherGroupRefresh];
     self.switcherBuildStatus = nil;
     for (DPFloatingWindow *w in self.splitWindows) {
         w.tiled = NO;
@@ -1481,18 +1488,27 @@ static id DPDynamicGet(id obj, NSString *key) {
 
 #pragma mark - Switcher card (Stage B: build SBAppLayout)
 
-- (nullable id)switcherLayoutForBundleIDs:(NSArray<NSString *> *)bundleIDs {
-    if (bundleIDs.count != 2) return nil;
-    id first = [self displayItemForBundleID:bundleIDs[0]];
-    id second = [self displayItemForBundleID:bundleIDs[1]];
-    if (!first || !second || [first isEqual:second]) {
-        self.switcherBuildStatus = [NSString stringWithFormat:@"items-%d%d", first != nil, second != nil];
+- (nullable id)switcherLayoutForGroupIdentifier:(NSString *)identifier {
+    Class itemClass = NSClassFromString(@"SBDisplayItem");
+    SEL makeItem = NSSelectorFromString(@"initWithType:bundleIdentifier:uniqueIdentifier:");
+    NSMethodSignature *itemSig = [itemClass instanceMethodSignatureForSelector:makeItem];
+    self.switcherBuildStatus = @"proxy-no-ABI";
+    if (!itemSig || itemSig.numberOfArguments != 5 || itemSig.methodReturnType[0] != '@' ||
+        strcmp([itemSig getArgumentTypeAtIndex:2], @encode(NSInteger)) != 0 ||
+        [itemSig getArgumentTypeAtIndex:3][0] != '@' || [itemSig getArgumentTypeAtIndex:4][0] != '@') return nil;
+    id proxy = nil;
+    @try {
+        proxy = ((id (*)(id, SEL, NSInteger, id, id))objc_msgSend)([itemClass alloc], makeItem, 2, identifier, identifier);
+    } @catch (__unused NSException *e) {
+        self.switcherBuildStatus = @"proxy-ex";
+        return nil;
+    }
+    if (!proxy || ![proxy isKindOfClass:itemClass]) {
+        self.switcherBuildStatus = @"proxy-nil";
         return nil;
     }
     Class cls = NSClassFromString(@"SBAppLayout");
-    // PV passes a dictionary keyed by layout role. Roles 1/2 for two real
-    // members are Duo's experimental mapping, not a claim about PV's group item.
-    NSDictionary *roles = @{@1:first, @2:second};
+    NSDictionary *roles = @{@1:proxy};
     NSArray<NSString *> *names = @[
         @"initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:",
         @"initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:",
@@ -1529,23 +1545,36 @@ static id DPDynamicGet(id obj, NSString *key) {
 
 #pragma mark - Switcher card (Stage C: current layout for data source)
 
+- (void)observeSwitcherContentController:(id)controller {
+    if (![NSThread isMainThread] || !controller) return;
+    SEL sel = NSSelectorFromString(@"noteAppLayoutsDidChange");
+    if ([controller respondsToSelector:sel]) self.switcherContentController = controller;
+}
+
+- (void)requestSwitcherGroupRefresh {
+    if (!self.switcherContentController || self.switcherRefreshScheduled) return;
+    self.switcherRefreshScheduled = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.switcherRefreshScheduled = NO;
+        id controller = self.switcherContentController;
+        SEL sel = NSSelectorFromString(@"noteAppLayoutsDidChange");
+        NSMethodSignature *sig = [controller methodSignatureForSelector:sel];
+        if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != 'v') return;
+        @try { ((void (*)(id, SEL))objc_msgSend)(controller, sel); }
+        @catch (NSException *e) { NSLog(@"[InteractivePiP] group refresh: %@", e.name); }
+    });
+}
+
+- (void)createSwitcherGroupCard {
+    if (self.splitWindows.count != 2 || self.activeSwitcherCard) return;
+    NSString *identifier = [@"com.seagull.interactivepip.group." stringByAppendingString:[NSUUID UUID].UUIDString];
+    self.activeSwitcherCard = [self switcherLayoutForGroupIdentifier:identifier];
+    NSLog(@"[InteractivePiP] group layout %@", self.switcherBuildStatus);
+    if (self.activeSwitcherCard) [self requestSwitcherGroupRefresh];
+}
+
 - (nullable id)currentSwitcherLayout {
-    if (self.mode != DPPresentationModeSplit || self.splitWindows.count < 2) {
-        NSLog(@"[InteractivePiP] currentSwitcherLayout nil: mode=%ld count=%lu", (long)self.mode, (unsigned long)self.splitWindows.count);
-        return nil;
-    }
-    // Cache the same SBAppLayout instance so the switcher data source and the
-    // bring-to-front hook see one identical object.
-    if (self.activeSwitcherCard) return self.activeSwitcherCard;
-    NSMutableArray *bids = [NSMutableArray array];
-    for (DPFloatingWindow *w in self.splitWindows) {
-        if (w.bundleID) [bids addObject:w.bundleID];
-    }
-    if (bids.count < 2) return nil;
-    id layout = [self switcherLayoutForBundleIDs:bids];
-    NSLog(@"[InteractivePiP] currentSwitcherLayout built=%@ bids=%@", layout?@"YES":@"NO", bids);
-    if (layout) self.activeSwitcherCard = layout;
-    return layout;
+    return self.activeSwitcherCard;
 }
 - (BOOL)isSwitcherCard:(id)layout {
     return (layout && layout == self.activeSwitcherCard);

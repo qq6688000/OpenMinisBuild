@@ -51,6 +51,7 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (nullable id)displayItemForBundleID:(NSString *)bundleID;
 /// 当前分屏对应的 SBAppLayout（分屏态才有值，否则 nil）。Switcher 数据源 hook 用。
 - (nullable id)currentSwitcherLayout;
+- (void)observeSwitcherContentController:(nullable id)controller;
 @property (nonatomic) NSUInteger switcherSourceCalls;
 @property (nonatomic) NSUInteger switcherAppendCalls;
 @property (nonatomic) NSUInteger switcherCacheCalls;

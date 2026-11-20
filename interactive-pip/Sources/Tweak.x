@@ -594,10 +594,11 @@ static NSArray *DPInjectedShortcutItems(void) {
     NSArray *arr = [layouts isKindOfClass:[NSArray class]] ? layouts : nil;
     DPWindowManager *wm = [DPWindowManager shared];
     wm.switcherSourceCalls++;
-    if (arr && wm.mode == DPPresentationModeSplit) {
-        id ourLayout = [[DPWindowManager shared] currentSwitcherLayout];
+    [wm observeSwitcherContentController:controller];
+    if (arr) {
+        id ourLayout = [wm currentSwitcherLayout];
         if (ourLayout && ![arr containsObject:ourLayout]) {
-            NSMutableArray *m = arr ? [arr mutableCopy] : [NSMutableArray array];
+            NSMutableArray *m = [arr mutableCopy];
             [m addObject:ourLayout];
             layouts = m;
             wm.switcherAppendCalls++;
@@ -653,7 +654,7 @@ static NSArray *DPInjectedShortcutItems(void) {
     [DPWindowManager shared].switcherCacheCalls++;
     @try {
         id ourLayout = [[DPWindowManager shared] currentSwitcherLayout];
-        if (ourLayout && in && ![in containsObject:ourLayout]) {
+        if (ourLayout && [in isKindOfClass:[NSArray class]] && ![in containsObject:ourLayout]) {
             NSMutableArray *m = [in mutableCopy];
             [m addObject:ourLayout];
             in = m;
