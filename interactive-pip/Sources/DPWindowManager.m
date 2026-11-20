@@ -5,6 +5,7 @@
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
+#import <objc/runtime.h>
 
 // ============ DPGroupPageView ============
 // Switcher 卡内容视图。SpringBoard 对 pageContentViewForAppLayout: 的返回对象
@@ -142,7 +143,7 @@
         win = [[DPPassthroughWindow alloc] initWithFrame:bounds];
     }
 
-    win.windowLevel = UIWindowLevelStatusBar + 120.0;
+    win.windowLevel = UIWindowLevelStatusBar + 90.0;
     win.backgroundColor = [UIColor clearColor];
     // Start hidden: an empty overlay must never cover home or lock screen.
     win.hidden = YES;
@@ -188,7 +189,7 @@
         [self install];
         return;
     }
-    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
     // 重新挂到当前 scene（切 App 后 scene 可能变）
     if (@available(iOS 13.0, *)) {
         UIWindowScene *scene = [self activeWindowScene];
@@ -378,7 +379,7 @@
     self.sessionGeneration += 1;
     self.sessionParked = NO;
     self.overlayRoot.transform = CGAffineTransformIdentity;
-    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
     self.pendingHomeBundleID = nil; self.homeReturnPending = NO;
     [self.launchAllowlist removeAllObjects];
     [self leaveSplit];
@@ -454,10 +455,60 @@
     }
 }
 
+- (void)attemptKeyboardScenePairingWithScene:(id)scene host:(UIView *)host {
+    // A hosted input view lives inside OUR overlay window, so the system never
+    // pairs the keyboard input scene with it on its own. PanoramicView leases one
+    // via `ui_inputScenePairing`. Probe the candidate receivers and only invoke
+    // a pairing method whose type encoding proves it is a void setter — a wrong
+    // signature can therefore never crash us. Read-only probes also log the
+    // pairing methods each candidate actually exposes, which tells us the real
+    // spelling on this iOS build.
+    NSSet *candidates = [NSSet setWithArray:@[
+        (id)self.overlayWindow ?: (id)[NSNull null],
+        (id)self.overlayWindow.windowScene ?: (id)[NSNull null],
+        (id)self.overlayRoot ?: (id)[NSNull null],
+        (id)host ?: (id)[NSNull null],
+        (id)scene ?: (id)[NSNull null],
+    ]];
+    for (id obj in candidates) {
+        if (!obj || [obj isKindOfClass:[NSNull class]]) continue;
+        Class c = [obj class];
+        unsigned count = 0;
+        Method *methods = class_copyMethodList(c, &count);
+        if (!methods) continue;
+        for (unsigned i = 0; i < count; i++) {
+            SEL sel = method_getName(methods[i]);
+            const char *name = sel_getName(sel);
+            if (!name) continue;
+            NSString *ns = [NSString stringWithUTF8String:name];
+            BOOL interesting = [ns containsString:@"airing"] ||
+                               [ns containsString:@"nputScene"] ||
+                               [ns containsString:@"Keyboards"];
+            if (!interesting) continue;
+            const char *types = method_getTypeEncoding(methods[i]);
+            NSLog(@"[InteractivePiP] 配对候选 %@ -> %s (%s)", NSStringFromClass(c), name, types ? types : "-");
+            // Only touch void-returning setters; a getter invocation has no
+            // side effect, and a non-void setter with the wrong arity would be
+            // unsafe to guess.
+            if (!types || types[0] != 'v') continue;
+            if (![obj respondsToSelector:sel]) continue;
+            @try {
+                ((void (*)(id, SEL, id))objc_msgSend)(obj, sel, scene);
+                NSLog(@"[InteractivePiP] 键盘 scene 配对已调用 %@.%s", NSStringFromClass(c), name);
+            } @catch (__unused NSException *exception) {
+            }
+        }
+        free(methods);
+    }
+}
+
 - (void)prepareForHostedInput {
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden || !self.focusedWindow) return;
     [self.focusedWindow.sceneHost prepareForInput];
     [self configureRemoteKeyboardsForHostedInput:YES];
+    UIView *host = [self.focusedWindow.sceneHost keyboardRoutingView];
+    id scene = [self.focusedWindow.sceneHost keyboardRoutingScene];
+    [self attemptKeyboardScenePairingWithScene:scene host:host];
 }
 
 - (void)prepareForTouchInView:(UIView *)view {
@@ -971,7 +1022,7 @@
     if (!self.sessionParked) return;
     self.sessionParked = NO;
     self.overlayRoot.transform = CGAffineTransformIdentity;
-    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 120.0;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
     self.overlayWindow.hidden = NO;
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         w.alpha = 1.0;
