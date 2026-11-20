@@ -57,6 +57,11 @@
 @property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
 @property (nonatomic, weak, nullable) id switcherContentController;
 @property (nonatomic) BOOL switcherRefreshScheduled;
+@property (nonatomic) NSUInteger switcherGestureEpoch;
+@property (nonatomic) BOOL switcherRestorePending;
+@property (nonatomic, copy, nullable) NSString *switcherTapStatus;
+@property (nonatomic, copy, nullable) NSArray *switcherPaneImages;
+- (void)captureSwitcherPaneImages;
 @property (nonatomic, copy, nullable) NSString *switcherRefreshStatus;
 - (void)createSwitcherGroupCard;
 - (void)requestSwitcherGroupRefresh;
@@ -669,11 +674,11 @@
     UIView *hv = [sh keyboardRoutingView];
     id sc = [sh keyboardRoutingScene];
     NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"SW mode=%ld panes=%lu parked=%d build=%@ refresh=%@\nsrc=%lu add=%lu cache=%lu page=%lu\n",
+    [s appendFormat:@"SW mode=%ld panes=%lu parked=%d build=%@ refresh=%@\nsrc=%lu add=%lu cache=%lu page=%lu tap=%@\n",
         (long)self.mode, (unsigned long)self.splitWindows.count, self.sessionParked,
         self.switcherBuildStatus ?: @"-", self.switcherRefreshStatus ?: @"-", (unsigned long)self.switcherSourceCalls,
         (unsigned long)self.switcherAppendCalls, (unsigned long)self.switcherCacheCalls,
-        (unsigned long)self.switcherPageCalls];
+        (unsigned long)self.switcherPageCalls, self.switcherTapStatus ?: @"-"];
     [s appendFormat:@"focus=%@\nhost=%@\n", f.bundleID ?: @"-",
        hv ? NSStringFromClass([hv class]) : @"nil"];
     [s appendFormat:@"scene=%@\n", sc ? NSStringFromClass([sc class]) : @"nil"];
@@ -1055,6 +1060,9 @@
 
 - (void)leaveSplit {
     BOOL hadCard = self.activeSwitcherCard != nil;
+    self.switcherPaneImages = nil;
+    self.switcherRestorePending = NO;
+    self.switcherGestureEpoch++;
     self.activeSwitcherCard = nil;
     if (hadCard) [self requestSwitcherGroupRefresh];
     self.switcherBuildStatus = nil;
@@ -1270,14 +1278,15 @@
     // Called when a FluidSwitcher pan gesture ends. Decide asynchronously
     // whether it was a "swipe to Home": session still alive AND the foreground
     // app is no longer one we host (nil / SpringBoard / another app) => Home.
-    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn) return;
+    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn || self.switcherRestorePending) return;
+    NSUInteger epoch = self.switcherGestureEpoch;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2 || generation != self2.sessionGeneration || self2.deviceLocked) return;
-        if (self2.mode == DPPresentationModeNone) return;
+        if (self2.mode == DPPresentationModeNone || self2.switcherRestorePending || self2.switcherGestureEpoch != epoch) return;
         NSString *fg = [self2 foregroundBundleID];
         // If a hosted app is still foreground, this was an app switch / open — keep the session.
         if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
@@ -1287,7 +1296,8 @@
 }
 
 - (void)parkSessionInAppSwitcher {
-    if (self.sessionParked) return;
+    if (self.sessionParked || self.switcherRestorePending) return;
+    [self captureSwitcherPaneImages];
     // Keep the whole session alive but take it off screen entirely, so the home
     // screen and the app switcher stay visually clean. Nothing is torn down:
     // scenes stay hosted and resume instantly on the next activation.
@@ -1333,7 +1343,7 @@
 }
 
 - (void)handleUserHome {
-    if (self.internalHomeReturn) return;
+    if (self.internalHomeReturn || self.switcherRestorePending) return;
     if (self.mode == DPPresentationModeSplit && self.splitWindows.count == 2) {
         [self parkSessionInAppSwitcher];
     } else {
@@ -1604,74 +1614,108 @@ static id DPDynamicGet(id obj, NSString *key) {
     return self.activeSwitcherCard;
 }
 - (BOOL)isSwitcherCard:(id)layout {
-    return (layout && layout == self.activeSwitcherCard);
+    id card = self.activeSwitcherCard;
+    if (!layout || !card) return NO;
+    return layout == card || ([layout isKindOfClass:[card class]] && [card isEqual:layout]);
 }
+
 - (void)activateSwitcherCard:(id)layout {
-    if (![self isSwitcherCard:layout]) return;
-    NSLog(@"[InteractivePiP] Switcher 卡被点击 -> 恢复分屏会话");
-    [self restoreParkedSession];
+    if (![self isSwitcherCard:layout] || self.deviceLocked || self.switcherRestorePending) return;
+    self.switcherRestorePending = YES;
+    self.switcherTapStatus = @"received";
+    NSUInteger epoch = ++self.switcherGestureEpoch;
+    id card = self.activeSwitcherCard;
+    // Let the switcher finish its dismissal before reattaching the overlay.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (epoch != self.switcherGestureEpoch) return;
+        self.switcherRestorePending = NO;
+        if (self.activeSwitcherCard != card || self.deviceLocked || self.splitWindows.count != 2) return;
+        if (self.sessionParked) [self restoreParkedSession];
+        else [self bringOverlayToFront];
+        self.switcherTapStatus = self.overlayWindow.hidden ? @"hidden" : @"shown";
+        NSLog(@"[InteractivePiP] group tap %@", self.switcherTapStatus);
+    });
+}
+
+static BOOL DPHasPreviewDetail(UIImage *image) {
+    CGImageRef cg = image.CGImage;
+    if (!cg) return NO;
+    uint8_t pixels[8 * 8 * 4] = {0};
+    CGColorSpaceRef color = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = color ? CGBitmapContextCreate(pixels, 8, 8, 8, 32, color, kCGImageAlphaPremultipliedLast) : NULL;
+    if (color) CGColorSpaceRelease(color);
+    if (!ctx) return NO;
+    CGContextDrawImage(ctx, CGRectMake(0, 0, 8, 8), cg);
+    CGContextRelease(ctx);
+    for (NSUInteger i = 4; i < sizeof(pixels); i += 4) {
+        for (NSUInteger j = 0; j < 3; j++) {
+            if (abs((int)pixels[i+j] - (int)pixels[j]) > 12) return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)captureSwitcherPaneImages {
+    if (!self.activeSwitcherCard || self.sessionParked || self.splitWindows.count != 2) return;
+    NSMutableArray *images = [NSMutableArray arrayWithCapacity:2];
+    for (DPFloatingWindow *window in self.splitWindows) {
+        UIView *view = window.sceneHost.view;
+        __block BOOL drawn = NO;
+        UIImage *image = nil;
+        if (view.window && !view.window.hidden && view.bounds.size.width >= 2 && view.bounds.size.height >= 2) {
+            @try {
+                CGFloat scale = MIN(1.0, 400.0 / MAX(view.bounds.size.width, view.bounds.size.height));
+                CGSize size = CGSizeMake(view.bounds.size.width * scale, view.bounds.size.height * scale);
+                UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+                format.scale = 1;
+                UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+                image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+                    drawn = [view drawViewHierarchyInRect:(CGRect){CGPointZero, size} afterScreenUpdates:NO];
+                }];
+            } @catch (__unused NSException *e) { }
+        }
+        [images addObject:(drawn && DPHasPreviewDetail(image)) ? (id)image : [NSNull null]];
+    }
+    self.switcherPaneImages = images;
 }
 
 - (UIView *)contentViewForSwitcherLayout:(id)layout {
-    if (self.splitWindows.count < 2) return nil;
-    DPFloatingWindow *w0 = self.splitWindows[0];
-    DPFloatingWindow *w1 = self.splitWindows[1];
-    UIView *v0 = w0.sceneHost.view;
-    UIView *v1 = w1.sceneHost.view;
-    if (!v0 || !v1) return nil;
-
+    if (![self isSwitcherCard:layout] || self.splitWindows.count != 2) return nil;
+    if (!self.switcherPaneImages) [self captureSwitcherPaneImages];
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
-    container.backgroundColor = [UIColor blackColor];
+    container.backgroundColor = [UIColor colorWithWhite:0.16 alpha:1];
+    container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     container.clipsToBounds = YES;
-
-    BOOL sideBySide = (container.bounds.size.width > container.bounds.size.height);
-    CGRect r0, r1;
-    if (sideBySide) {
-        CGFloat w = container.bounds.size.width * 0.5;
-        r0 = CGRectMake(0, 0, w, container.bounds.size.height);
-        r1 = CGRectMake(w, 0, container.bounds.size.width - w, container.bounds.size.height);
-    } else {
-        CGFloat h = container.bounds.size.height * 0.5;
-        r0 = CGRectMake(0, 0, container.bounds.size.width, h);
-        r1 = CGRectMake(0, h, container.bounds.size.width, container.bounds.size.height - h);
-    }
-
-    // 快照方式：把每个 pane 的画面截图成 UIImageView，不移动原视图
-    // （若直接 addSubview sceneHost.view 会把它从分屏父视图移除，破坏分屏）
-    @try {
-        UIGraphicsImageRenderer *ren = [[UIGraphicsImageRenderer alloc] initWithSize:r0.size];
-        UIImage *img0 = [ren imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-            BOOL ok = [v0 drawViewHierarchyInRect:CGRectMake(0, 0, r0.size.width, r0.size.height) afterScreenUpdates:NO];
-            if (!ok) {
-                [[UIColor darkGrayColor] setFill];
-                UIRectFill(CGRectMake(0, 0, r0.size.width, r0.size.height));
-            }
-        }];
-        UIImage *img1 = [ren imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-            BOOL ok = [v1 drawViewHierarchyInRect:CGRectMake(0, 0, r1.size.width, r1.size.height) afterScreenUpdates:NO];
-            if (!ok) {
-                [[UIColor darkGrayColor] setFill];
-                UIRectFill(CGRectMake(0, 0, r1.size.width, r1.size.height));
-            }
-        }];
-        UIImageView *iv0 = [[UIImageView alloc] initWithImage:img0];
-        iv0.frame = r0;
-        UIImageView *iv1 = [[UIImageView alloc] initWithImage:img1];
-        iv1.frame = r1;
-        [container addSubview:iv0];
-        [container addSubview:iv1];
-    } @catch (__unused NSException *e) {
-        // 截图失败：至少放两个标签示意
-        UILabel *la = [[UILabel alloc] initWithFrame:r0];
-        la.text = w0.bundleID ?: @"App1";
-        la.textColor = [UIColor whiteColor];
-        la.textAlignment = NSTextAlignmentCenter;
-        UILabel *lb = [[UILabel alloc] initWithFrame:r1];
-        lb.text = w1.bundleID ?: @"App2";
-        lb.textColor = [UIColor whiteColor];
-        lb.textAlignment = NSTextAlignmentCenter;
-        [container addSubview:la];
-        [container addSubview:lb];
+    for (NSUInteger i = 0; i < 2; i++) {
+        UIView *pane = [UIView new];
+        pane.translatesAutoresizingMaskIntoConstraints = NO;
+        pane.backgroundColor = i ? [UIColor colorWithRed:0.15 green:0.25 blue:0.37 alpha:1] : [UIColor colorWithRed:0.22 green:0.32 blue:0.43 alpha:1];
+        pane.clipsToBounds = YES;
+        [container addSubview:pane];
+        [NSLayoutConstraint activateConstraints:@[
+            [pane.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+            [pane.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+            [pane.heightAnchor constraintEqualToAnchor:container.heightAnchor multiplier:0.5 constant:-1],
+            i ? [pane.bottomAnchor constraintEqualToAnchor:container.bottomAnchor] : [pane.topAnchor constraintEqualToAnchor:container.topAnchor]
+        ]];
+        id image = self.switcherPaneImages[i];
+        if ([image isKindOfClass:[UIImage class]]) {
+            UIImageView *preview = [[UIImageView alloc] initWithImage:image];
+            preview.translatesAutoresizingMaskIntoConstraints = NO;
+            preview.contentMode = UIViewContentModeScaleAspectFill;
+            [pane addSubview:preview];
+            [NSLayoutConstraint activateConstraints:@[
+                [preview.leadingAnchor constraintEqualToAnchor:pane.leadingAnchor], [preview.trailingAnchor constraintEqualToAnchor:pane.trailingAnchor],
+                [preview.topAnchor constraintEqualToAnchor:pane.topAnchor], [preview.bottomAnchor constraintEqualToAnchor:pane.bottomAnchor]]];
+        } else {
+            UILabel *name = [UILabel new];
+            name.translatesAutoresizingMaskIntoConstraints = NO;
+            name.text = self.splitWindows[i].bundleID;
+            name.textColor = UIColor.whiteColor;
+            name.font = [UIFont systemFontOfSize:23 weight:UIFontWeightSemibold];
+            [pane addSubview:name];
+            [NSLayoutConstraint activateConstraints:@[[name.centerXAnchor constraintEqualToAnchor:pane.centerXAnchor], [name.centerYAnchor constraintEqualToAnchor:pane.centerYAnchor]]];
+        }
     }
     return container;
 }
