@@ -1533,18 +1533,27 @@
 
     CGSize target = self.view.bounds.size;
     if (target.width < 1 || target.height < 1) return;
-    // Fill the pane straight — no transform, no centering, no letterbox.
-    // The host canvas (393x852) and the pane share the phone's aspect ratio, so
-    // covering the pane bounds IS an equal-ratio fit. The old transform+center
-    // path measured self.view.bounds BEFORE the pane reached its final size,
-    // which pushed hostView's top ~91pt outside the pane and left the pane's
-    // own dark background showing (the reported "black window").
-    self.hostView.transform = CGAffineTransformIdentity;
+    CGSize canvas = self.nativeSceneSize;
+    if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
+    // Keep the host canvas as the content coordinate system and squeeze it into
+    // the pane with a (possibly non-uniform) transform. The remote pixel layer
+    // draws for the canvas, so merely shrinking the view frame only shows its
+    // top-left corner and leaves the pane blank on the right/bottom; scaling
+    // the transform makes the app content actually follow the window size.
+    // center is set BEFORE the transform and the scale is derived from the
+    // target, so the scaled frame is exactly the pane and origin is (0,0) —
+    // no letterbox, no offset, nothing pushed outside the pane.
     self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.hostView.frame = CGRectMake(0, 0, target.width, target.height);
+    self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
+    self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    self.hostView.transform = CGAffineTransformIdentity;
+    self.hostView.transform = CGAffineTransformMakeScale(target.width / canvas.width,
+                                                          target.height / canvas.height);
     self.view.clipsToBounds = YES;
-    self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
-                        NSStringFromCGSize(target), self.view.superview ? 1 : 0];
+    self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f/%.3f pane=%d",
+                        NSStringFromCGSize(target), NSStringFromCGSize(canvas),
+                        target.width / canvas.width, target.height / canvas.height,
+                        self.view.superview ? 1 : 0];
 }
 
 - (void)applySnapshotFallback {
