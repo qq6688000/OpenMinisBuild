@@ -1388,6 +1388,31 @@
     }
 }
 
+- (void)dealloc {
+    // RBSAssertion raises if it is deallocated while still valid. Any release
+    // path (ARC teardown from the window hierarchy, home exit, reload) must
+    // invalidate it first, otherwise SpringBoard dies in .cxx_destruct.
+    // Do everything inline: calling helpers here can touch already-released
+    // weak refs.
+    if (_keepAliveTimer) { dispatch_source_cancel(_keepAliveTimer); _keepAliveTimer = nil; }
+    if (_reconnectTimer) { dispatch_source_cancel(_reconnectTimer); _reconnectTimer = nil; }
+    if (_observingLayerManager && _observedLayerManager) {
+        @try { [_observedLayerManager removeObserver:self forKeyPath:@"layers"]; }
+        @catch (__unused NSException *e) {}
+        _observingLayerManager = NO;
+        _observedLayerManager = nil;
+    }
+    id assertion = _processAssertion;
+    if (assertion) {
+        SEL invalidate = NSSelectorFromString(@"invalidate");
+        if ([assertion respondsToSelector:invalidate]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(assertion, invalidate); }
+            @catch (__unused NSException *e) {}
+        }
+        _processAssertion = nil;
+    }
+}
+
 - (void)releaseProcessAssertion {
     SEL invalidate = NSSelectorFromString(@"invalidate");
     if ([self.processAssertion respondsToSelector:invalidate]) {
