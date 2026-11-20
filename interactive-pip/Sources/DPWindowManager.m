@@ -669,6 +669,7 @@
     [s appendFormat:@"live=%d sceneView=%d pid=%d level=%.0f\n",
        [sh isLive] ? 1 : 0, [sh keyboardHostIsSceneView] ? 1 : 0,
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
+    [s appendFormat:@"hostDiag=%@\n", sh.hostViewDiag ?: @"-"];
     [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d inst=%d factory=%s\n",
        self.hostedInputActive ? 1 : 0, kb ? 1 : 0, self.remoteKeyboardsInstance ? 1 : 0,
        self.remoteKeyboardsFactory ? sel_getName(self.remoteKeyboardsFactory) : "-"];
@@ -680,6 +681,12 @@
                 id kw = ((id (*)(id, SEL))objc_msgSend)(kb, NSSelectorFromString(@"keyboardWindow"));
                 [s appendFormat:@"keyboardWindow=%@\n", kw ? NSStringFromClass([kw class]) : @"nil"];
             } @catch (__unused NSException *e) { [s appendFormat:@"keyboardWindow=ERR\n"]; }
+        }
+        if ([kb respondsToSelector:NSSelectorFromString(@"currentHostedPIDs")]) {
+            @try {
+                id pids = ((id (*)(id, SEL))objc_msgSend)(kb, NSSelectorFromString(@"currentHostedPIDs"));
+                [s appendFormat:@"hostedPIDs=%@\n", pids ?: @"nil"];
+            } @catch (__unused NSException *e) { [s appendFormat:@"hostedPIDs=ERR\n"]; }
         }
         [s appendFormat:@"hostedWin=%@\n", self.hostedKeyboardWindow ? NSStringFromClass([self.hostedKeyboardWindow class]) : @"nil"];
         unsigned n = 0;

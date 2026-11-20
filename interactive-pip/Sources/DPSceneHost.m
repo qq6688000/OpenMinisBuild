@@ -30,6 +30,7 @@
 @property (nonatomic, assign) CGSize lastCommittedSceneSize;
 @property (nonatomic, assign) CGSize nativeSceneSize;
 @property (nonatomic, assign) BOOL hostIsSceneView;
+@property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t reconnectTimer;
 @property (nonatomic, assign) NSUInteger reconnectAttempts;
@@ -906,9 +907,15 @@
     ];
     for (NSString *name in selectors) {
         SEL sel = NSSelectorFromString(name);
-        if (![scene respondsToSelector:sel]) continue;
+        if (![scene respondsToSelector:sel]) {
+            self.hostViewDiag = [NSString stringWithFormat:@"no-respond %@", name];
+            continue;
+        }
         NSMethodSignature *sig = [scene methodSignatureForSelector:sel];
-        if (!sig) continue;
+        if (!sig) {
+            self.hostViewDiag = [NSString stringWithFormat:@"no-sig %@", name];
+            continue;
+        }
         @try {
             NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
             inv.target = scene;
@@ -930,8 +937,13 @@
                 self.retainedSceneController = v;
                 v = ((UIView *(*)(id, SEL))objc_msgSend)(v, @selector(view));
             }
-            if ([v isKindOfClass:[UIView class]] && v.frame.size.height > 1) return v;
+            if ([v isKindOfClass:[UIView class]] && v.frame.size.height > 1) {
+                self.hostViewDiag = [NSString stringWithFormat:@"ok %@ -> %@", name, NSStringFromClass([v class])];
+                return v;
+            }
+            self.hostViewDiag = [NSString stringWithFormat:@"bad-view %@ h=%.1f", name, v ? ((UIView *)v).frame.size.height : 0.0];
         } @catch (NSException *e) {
+            self.hostViewDiag = [NSString stringWithFormat:@"throw %@: %@", name, e.name];
             NSLog(@"[InteractivePiP] %@ failed: %@", name, e);
         }
     }
