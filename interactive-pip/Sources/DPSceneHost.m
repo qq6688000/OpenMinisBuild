@@ -1534,27 +1534,16 @@
 
     CGSize target = self.view.bounds.size;
     if (target.width < 1 || target.height < 1) return;
-    CGSize canvas = self.nativeSceneSize;
-    if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
-    // Keep the host canvas as the content coordinate system and squeeze it into
-    // the pane with a (possibly non-uniform) transform. The remote pixel layer
-    // draws for the canvas, so merely shrinking the view frame only shows its
-    // top-left corner and leaves the pane blank on the right/bottom; scaling
-    // the transform makes the app content actually follow the window size.
-    // center is set BEFORE the transform and the scale is derived from the
-    // target, so the scaled frame is exactly the pane and origin is (0,0) —
-    // no letterbox, no offset, nothing pushed outside the pane.
-    // 等比缩放(aspect fit): 内容不变形, 居中, 比例不足的轴留黑边。
-    // 这是 iOS 16 上内容清晰不变形的最优解 — 场景只能按全屏画布渲染,
-    // 无法按窗口尺寸布局, 压缩或居中空白都已试过, 都不如这个。
-    CGFloat fitScale = MIN(target.width / canvas.width, target.height / canvas.height);
-    self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
-    self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    // Fill the pane straight — no transform, no letterbox, no offset. This is
+    // the 0.7.23 behaviour the user confirmed working. The transform variants
+    // (0.7.26 non-uniform, 0.7.28 aspect-fit) either distorted or letterboxed
+    // and 0.7.28 crashed SpringBoard (uncaught ObjC exception in the runloop).
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.transform = CGAffineTransformMakeScale(fitScale, fitScale);
-    self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ fit=%.3f pane=%d",
-                        NSStringFromCGSize(target), NSStringFromCGSize(canvas),
-                        fitScale, self.view.superview ? 1 : 0];
+    self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.hostView.frame = CGRectMake(0, 0, target.width, target.height);
+    self.view.clipsToBounds = YES;
+    self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
+                        NSStringFromCGSize(target), self.view.superview ? 1 : 0];
 }
 
 - (void)applySnapshotFallback {
