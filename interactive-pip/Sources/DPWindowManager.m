@@ -32,6 +32,10 @@
 @property (nonatomic, strong, nullable) DPPassthroughWindow *overlayWindow;
 @property (nonatomic, strong) DPPassthroughView *overlayRoot;
 @property (nonatomic, strong, nullable) UILabel *diagLabel;
+/// 缓存的 _UIRemoteKeyboards 实例（用类方法表自动发现工厂，不再猜名）。
+@property (nonatomic, strong, nullable) id remoteKeyboardsInstance;
+/// 类方法表里真正返回对象的那个工厂 selector，探到一次就记住。
+@property (nonatomic, assign) SEL remoteKeyboardsFactory;
 @property (nonatomic, strong, readwrite) NSMutableArray<DPFloatingWindow *> *mutableFloatingWindows;
 @property (nonatomic, assign, readwrite) DPPresentationMode mode;
 @property (nonatomic, strong, nullable) DPAppPicker *picker;
@@ -395,11 +399,6 @@
     [self updateSessionControls];
     self.overlayWindow.hidden = YES;
 }
-
-/// 缓存的 _UIRemoteKeyboards 实例。
-@property (nonatomic, strong, nullable) id remoteKeyboardsInstance;
-/// 类方法表（工厂方法）里真正返回对象的那个 selector，探到一次就记住。
-@property (nonatomic, assign) SEL remoteKeyboardsFactory;
 
 - (id)sharedRemoteKeyboards {
     if (self.remoteKeyboardsInstance) return self.remoteKeyboardsInstance;
