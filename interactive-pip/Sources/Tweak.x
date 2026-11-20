@@ -592,12 +592,15 @@ static NSArray *DPInjectedShortcutItems(void) {
 - (id)appLayoutsForSwitcherContentController:(id)controller {
     id layouts = %orig;
     NSArray *arr = [layouts isKindOfClass:[NSArray class]] ? layouts : nil;
-    if ([DPWindowManager shared].mode == DPPresentationModeSplit) {
+    DPWindowManager *wm = [DPWindowManager shared];
+    wm.switcherSourceCalls++;
+    if (arr && wm.mode == DPPresentationModeSplit) {
         id ourLayout = [[DPWindowManager shared] currentSwitcherLayout];
         if (ourLayout && ![arr containsObject:ourLayout]) {
             NSMutableArray *m = arr ? [arr mutableCopy] : [NSMutableArray array];
             [m addObject:ourLayout];
             layouts = m;
+            wm.switcherAppendCalls++;
         }
     }
     return layouts;
@@ -624,7 +627,9 @@ static NSArray *DPInjectedShortcutItems(void) {
 - (id)pageContentViewForAppLayout:(id)appLayout setActive:(BOOL)active {
     if ([[DPWindowManager shared] isSwitcherCard:appLayout]) {
         @try {
-            UIView *pv = [[DPWindowManager shared] makeSwitcherPageView:appLayout];
+            DPWindowManager *wm = [DPWindowManager shared];
+            wm.switcherPageCalls++;
+            UIView *pv = [wm makeSwitcherPageView:appLayout];
             if (pv) {
                 NSLog(@"[InteractivePiP] pageContentViewForAppLayout: 返回 DPGroupPageView");
                 return pv;
@@ -645,6 +650,7 @@ static NSArray *DPInjectedShortcutItems(void) {
 %hook SBAppSwitcherSnapshotImageCache
 - (void)setCachableAppLayouts:(NSArray<id> *)layouts {
     NSArray *in = layouts;
+    [DPWindowManager shared].switcherCacheCalls++;
     @try {
         id ourLayout = [[DPWindowManager shared] currentSwitcherLayout];
         if (ourLayout && in && ![in containsObject:ourLayout]) {

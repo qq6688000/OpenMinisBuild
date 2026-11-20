@@ -54,6 +54,7 @@
 @property (nonatomic, assign) BOOL deviceLocked;
 @property (nonatomic, assign) BOOL sessionParked;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
+@property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
 @property (nonatomic, strong) UIView *splitDivider;
 @property (nonatomic, strong) UIStackView *sessionControls;
 @property (nonatomic, strong) UIButton *leaveSplitButton;
@@ -663,6 +664,11 @@
     UIView *hv = [sh keyboardRoutingView];
     id sc = [sh keyboardRoutingScene];
     NSMutableString *s = [NSMutableString string];
+    [s appendFormat:@"SW mode=%ld panes=%lu parked=%d build=%@\nsrc=%lu add=%lu cache=%lu page=%lu\n",
+        (long)self.mode, (unsigned long)self.splitWindows.count, self.sessionParked,
+        self.switcherBuildStatus ?: @"-", (unsigned long)self.switcherSourceCalls,
+        (unsigned long)self.switcherAppendCalls, (unsigned long)self.switcherCacheCalls,
+        (unsigned long)self.switcherPageCalls];
     [s appendFormat:@"focus=%@\nhost=%@\n", f.bundleID ?: @"-",
        hv ? NSStringFromClass([hv class]) : @"nil"];
     [s appendFormat:@"scene=%@\n", sc ? NSStringFromClass([sc class]) : @"nil"];
@@ -1042,6 +1048,8 @@
 // absent so the two panes behave like two physical displays.
 
 - (void)leaveSplit {
+    self.activeSwitcherCard = nil;
+    self.switcherBuildStatus = nil;
     for (DPFloatingWindow *w in self.splitWindows) {
         w.tiled = NO;
         NSValue *v = self.savedFrames[w.bundleID];
@@ -1474,60 +1482,49 @@ static id DPDynamicGet(id obj, NSString *key) {
 #pragma mark - Switcher card (Stage B: build SBAppLayout)
 
 - (nullable id)switcherLayoutForBundleIDs:(NSArray<NSString *> *)bundleIDs {
-    if (bundleIDs.count == 0) return nil;
-    NSMutableArray *items = [NSMutableArray array];
-    for (NSString *bid in bundleIDs) {
-        id di = [self displayItemForBundleID:bid];
-        NSLog(@"[InteractivePiP] displayItemForBundleID %@ -> %@", bid, di?@"YES":@"NO");
-        if (di) [items addObject:di];
+    if (bundleIDs.count != 2) return nil;
+    id first = [self displayItemForBundleID:bundleIDs[0]];
+    id second = [self displayItemForBundleID:bundleIDs[1]];
+    if (!first || !second || [first isEqual:second]) {
+        self.switcherBuildStatus = [NSString stringWithFormat:@"items-%d%d", first != nil, second != nil];
+        return nil;
     }
-    if (items.count == 0) { NSLog(@"[InteractivePiP] switcherLayout: no displayItems"); return nil; }
-
-    Class SBAppLayoutCls = NSClassFromString(@"SBAppLayout");
-    if (!SBAppLayoutCls) return nil;
-    id layout = nil;
-
-    // 优先：initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:
-    SEL s1 = NSSelectorFromString(@"initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:");
-    if ([SBAppLayoutCls instancesRespondToSelector:s1]) {
+    Class cls = NSClassFromString(@"SBAppLayout");
+    // PV passes a dictionary keyed by layout role. Roles 1/2 for two real
+    // members are Duo's experimental mapping, not a claim about PV's group item.
+    NSDictionary *roles = @{@1:first, @2:second};
+    NSArray<NSString *> *names = @[
+        @"initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:",
+        @"initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:",
+        @"initWithItemsForLayoutRoles:configuration:environment:"];
+    self.switcherBuildStatus = @"no-ABI";
+    for (NSUInteger i = 0; i < names.count; i++) {
+        SEL sel = NSSelectorFromString(names[i]);
+        NSMethodSignature *sig = [cls instanceMethodSignatureForSelector:sel];
+        NSUInteger n = i == 0 ? 6 : 5;
+        if (!sig || sig.numberOfArguments != n || sig.methodReturnType[0] != '@' ||
+            [sig getArgumentTypeAtIndex:2][0] != '@') continue;
+        BOOL valid = YES;
+        for (NSUInteger j = 3; j < n; j++) {
+            if ([sig getArgumentTypeAtIndex:j][0] != 'q') valid = NO;
+        }
+        if (!valid) continue;
         @try {
-            layout = ((id(*)(id, SEL, id, id, id, id, long))objc_msgSend)(
-                [[SBAppLayoutCls alloc] init], s1, items, @[@1], nil, nil, 0);
-        } @catch (__unused NSException *e) { layout = nil; }
-    }
-    // 旧变体：initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:
-    if (!layout) {
-        SEL s2 = NSSelectorFromString(@"initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:");
-        if ([SBAppLayoutCls instancesRespondToSelector:s2]) {
-            @try {
-                layout = ((id(*)(id, SEL, id, id, id, long))objc_msgSend)(
-                    [[SBAppLayoutCls alloc] init], s2, items, @[@1], nil, 0);
-            } @catch (__unused NSException *e) { layout = nil; }
-        }
-    }
-    // PV 1.0.9 also probes the three-argument variant. Only invoke it when
-    // the runtime encoding confirms all three object parameters; otherwise
-    // leave the existing behavior untouched rather than guessing an ABI.
-    if (!layout) {
-        SEL s3 = NSSelectorFromString(@"initWithItemsForLayoutRoles:configuration:environment:");
-        NSMethodSignature *sig = [SBAppLayoutCls instanceMethodSignatureForSelector:s3];
-        if (sig && sig.numberOfArguments == 5 &&
-            [sig getArgumentTypeAtIndex:2][0] == '@' &&
-            [sig getArgumentTypeAtIndex:3][0] == '@' &&
-            [sig getArgumentTypeAtIndex:4][0] == '@') {
-            @try {
-                layout = ((id(*)(id, SEL, id, id, id))objc_msgSend)(
-                    [SBAppLayoutCls alloc], s3, items, @[@1], nil);
-                NSLog(@"[InteractivePiP] switcher third initializer result=%@", layout ? @"YES" : @"NO");
-            } @catch (NSException *e) {
-                NSLog(@"[InteractivePiP] switcher third initializer exception=%@", e.name);
-                layout = nil;
+            id allocated = [cls alloc];
+            id layout;
+            if (i == 0) {
+                layout = ((id (*)(id, SEL, id, NSInteger, NSInteger, NSInteger))objc_msgSend)(allocated, sel, roles, 1, 1, 0);
+            } else {
+                layout = ((id (*)(id, SEL, id, NSInteger, NSInteger))objc_msgSend)(allocated, sel, roles, 1, i == 1 ? 0 : 1);
             }
-        } else {
-            NSLog(@"[InteractivePiP] switcher third initializer absent or ABI mismatch");
+            self.switcherBuildStatus = [NSString stringWithFormat:@"init%lu-%@", (unsigned long)i+1, layout ? @"ok" : @"nil"];
+            if (layout) return layout;
+        } @catch (NSException *e) {
+            self.switcherBuildStatus = [NSString stringWithFormat:@"init%lu-ex", (unsigned long)i+1];
+            NSLog(@"[InteractivePiP] split layout %@: %@", names[i], e);
         }
     }
-    return layout;
+    return nil;
 }
 
 #pragma mark - Switcher card (Stage C: current layout for data source)
@@ -1556,7 +1553,6 @@ static id DPDynamicGet(id obj, NSString *key) {
 - (void)activateSwitcherCard:(id)layout {
     if (![self isSwitcherCard:layout]) return;
     NSLog(@"[InteractivePiP] Switcher 卡被点击 -> 恢复分屏会话");
-    self.activeSwitcherCard = nil;
     [self restoreParkedSession];
 }
 
