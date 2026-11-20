@@ -475,7 +475,8 @@
     }
     CGRect b = self.overlayRoot.bounds;
     self.sessionControls.frame = CGRectMake(0, self.overlayRoot.safeAreaInsets.top, b.size.width, 44);
-    self.sessionControls.hidden = self.mutableFloatingWindows.count == 0;
+    // Top toolbar removed per user: never show the exit/close bar over the panes.
+    self.sessionControls.hidden = YES;
     self.leaveSplitButton.enabled = self.duoMode;
     [self.overlayRoot bringSubviewToFront:self.sessionControls];
 }
@@ -628,7 +629,7 @@
     self.mode = DPPresentationModeSplit;
     self.duoMode = YES;
     CGFloat saved = [[NSUserDefaults standardUserDefaults] doubleForKey:@"sg.split.lastRatio"];
-    self.splitRatio = (saved > 0.15 && saved < 0.85) ? saved : 0.5;
+    self.splitRatio = (saved > 0.08 && saved < 0.92) ? saved : 0.5;
     [self layoutSplit];
     [self focusWindow:second];
 }
@@ -642,7 +643,7 @@
     const CGFloat gap = sideBySide ? 8.0 : 10.0;   // visual seam
     const CGFloat touch = 26.0;                    // draggable strip
     CGFloat total = sideBySide ? b.size.width : b.size.height;
-    CGFloat ratio = MIN(0.8, MAX(0.2, self.splitRatio));
+    CGFloat ratio = MIN(0.9, MAX(0.1, self.splitRatio));
     CGFloat first = floor((total - touch) * ratio);
     CGRect a = b, c = b, h = b;
     if (sideBySide) {
@@ -887,6 +888,26 @@
     }
 }
 
+- (void)handleHomeGestureEnded {
+    // Called when a FluidSwitcher pan gesture ends. Decide asynchronously
+    // whether it was a "swipe to Home": session still alive AND the foreground
+    // app is no longer one we host (nil / SpringBoard / another app) => Home.
+    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn) return;
+    NSUInteger generation = self.sessionGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self2 = weakSelf;
+        if (!self2 || generation != self2.sessionGeneration || self2.deviceLocked) return;
+        if (self2.mode == DPPresentationModeNone) return;
+        NSString *fg = [self2 foregroundBundleID];
+        // If a hosted app is still foreground, this was an app switch / open — keep the session.
+        if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
+        NSLog(@"[InteractivePiP] 上滑回桌面 -> 拆会话 (fg=%@)", fg ?: @"(none)");
+        [self2 dismissAllAnimated:NO];
+    });
+}
+
 - (void)handleUserHome {
     if (!self.internalHomeReturn) [self dismissAllAnimated:NO];
 }
@@ -975,7 +996,7 @@
 
     CGPoint p = [gr locationInView:self.overlayRoot];
     CGFloat pos = (sideBySide ? p.x : (p.y - topInset)) - 13.0;
-    self.splitRatio = MIN(0.8, MAX(0.2, pos / available));
+    self.splitRatio = MIN(0.9, MAX(0.1, pos / available));
     [self layoutSplit];
     [[NSUserDefaults standardUserDefaults] setDouble:self.splitRatio forKey:@"sg.split.lastRatio"];
 }

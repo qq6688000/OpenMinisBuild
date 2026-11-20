@@ -560,6 +560,19 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
+// ── 全面屏上滑回桌面：PanoramicView 实证入口 ─────────────────────────────
+// PV 通过 hook SBFluidSwitcherGestureManager 的 pan 手势捕获上滑。我们在手势
+// 结束时判定：若会话仍在、且前台已不是被托管的 App（即回到桌面），才拆会话。
+// 只在 Ended 触发，began/changed 阶段不动，避免打开/切换 App 时误拆。
+%hook SBFluidSwitcherGestureManager
+- (void)_handleSwitcherPanGestureEnded:(id)gesture {
+    %orig;
+    if ([DPWindowManager shared].mode != DPPresentationModeNone) {
+        [[DPWindowManager shared] handleHomeGestureEnded];
+    }
+}
+%end
+
 %hook SBLockScreenManager
 - (void)lockUIFromSource:(int)source withOptions:(id)options {
     [[DPWindowManager shared] handleDeviceLock];

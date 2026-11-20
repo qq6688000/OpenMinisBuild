@@ -34,6 +34,7 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)prepareForHostedInput;
 - (void)prepareForTouchInView:(UIView *)view;
 - (void)handleUserHome;
+- (void)handleHomeGestureEnded;
 - (void)handleDeviceLock;
 - (void)handleDeviceUnlock;
 - (void)focusWindow:(DPFloatingWindow *)window;
