@@ -254,6 +254,7 @@
 
     for (DPFloatingWindow *existing in self.mutableFloatingWindows) {
         if ([existing.bundleID isEqualToString:bundleID]) {
+            [existing.sceneHost setSuspended:NO];   // resume after lightweight home/lock exit
             [existing bringToFront];
             if (!existing.sceneHost.isLive) [existing.sceneHost retryAttach];
             [self bringOverlayToFront];
@@ -903,8 +904,19 @@
         NSString *fg = [self2 foregroundBundleID];
         // If a hosted app is still foreground, this was an app switch / open — keep the session.
         if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
-        NSLog(@"[InteractivePiP] 上滑回桌面 -> 拆会话 (fg=%@)", fg ?: @"(none)");
-        [self2 dismissAllAnimated:NO];
+        NSLog(@"[InteractivePiP] 上滑回桌面 -> 轻量退出 (fg=%@)", fg ?: @"(none)");
+        // Do NOT call dismissAllAnimated here: synchronously invalidating the
+        // hosted scene layer inside the switcher-home transaction crashes
+        // _UISceneLayerHostContainerView dealloc (safe mode). Mirror PanoramicView
+        // instead: undo the split layout, hide the overlay, suspend hosts, keep
+        // the session alive for reuse.
+        [self2 leaveSplit];
+        self2.overlayWindow.hidden = YES;
+        for (DPFloatingWindow *w in self2.mutableFloatingWindows) {
+            [w.sceneHost setSuspended:YES];
+        }
+        self2.mode = DPPresentationModeNone;
+        [self2 updateSessionControls];
     });
 }
 

@@ -188,7 +188,7 @@ def main():
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'InteractivePiPPrefs',
             'CFBundleIdentifier':'com.seagull.interactivepip.prefs','CFBundleInfoDictionaryVersion':'6.0',
-            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.6.2','CFBundleVersion':'9',
+            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.6.3','CFBundleVersion':'9',
             'NSPrincipalClass':'DPRootListController'},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'Preferences/Resources/Root.plist',pb/'Root.plist')
         (pl/'InteractivePiP.plist').write_bytes(plistlib.dumps({
@@ -205,7 +205,7 @@ def main():
                 p=Path(cur)/n
                 os.chmod(p,0o755 if p.name in ('InteractivePiP.dylib','InteractivePiPPrefs') else 0o644)
         out=ROOT/'dist-apple';out.mkdir(exist_ok=True)
-        deb=out/'InteractivePiP_Duo_0.6.2_iphoneos-arm64e.deb'
+        deb=out/'InteractivePiP_Duo_0.6.3_iphoneos-arm64e.deb'
         run([dpkg,'--root-owner-group','-Zgzip','--build',str(stage),str(deb)])
         print(f'Built {deb} ({deb.stat().st_size} bytes); NOT device-validated.')
 
