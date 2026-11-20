@@ -59,6 +59,10 @@
 @property (nonatomic) BOOL switcherRefreshScheduled;
 @property (nonatomic) NSUInteger switcherGestureEpoch;
 @property (nonatomic) BOOL switcherRestorePending;
+@property (nonatomic) NSTimeInterval switcherRestoreGraceUntil;
+@property (nonatomic, copy, nullable) NSString *switcherGroupIdentifier;
+@property (nonatomic, weak, nullable) UIWindowScene *switcherHomeScene;
+- (void)finishSwitcherRestore:(NSUInteger)epoch card:(id)card deadline:(NSTimeInterval)deadline;
 @property (nonatomic, copy, nullable) NSString *switcherTapStatus;
 @property (nonatomic, copy, nullable) NSArray *switcherPaneImages;
 - (void)captureSwitcherPaneImages;
@@ -211,7 +215,8 @@
     self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
     // 重新挂到当前 scene（切 App 后 scene 可能变）
     if (@available(iOS 13.0, *)) {
-        UIWindowScene *scene = [self activeWindowScene];
+        UIWindowScene *saved = self.switcherHomeScene;
+        UIWindowScene *scene = self.switcherRestorePending && saved.activationState == UISceneActivationStateForegroundActive && saved ? saved : [self activeWindowScene];
         if (scene && self.overlayWindow.windowScene != scene) {
             self.overlayWindow.windowScene = scene;
             self.overlayWindow.frame = scene.coordinateSpace.bounds;
@@ -1061,6 +1066,9 @@
 - (void)leaveSplit {
     BOOL hadCard = self.activeSwitcherCard != nil;
     self.switcherPaneImages = nil;
+    self.switcherGroupIdentifier = nil;
+    self.switcherHomeScene = nil;
+    self.switcherRestoreGraceUntil = 0;
     self.switcherRestorePending = NO;
     self.switcherGestureEpoch++;
     self.activeSwitcherCard = nil;
@@ -1278,7 +1286,7 @@
     // Called when a FluidSwitcher pan gesture ends. Decide asynchronously
     // whether it was a "swipe to Home": session still alive AND the foreground
     // app is no longer one we host (nil / SpringBoard / another app) => Home.
-    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn || self.switcherRestorePending) return;
+    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn || self.switcherRestorePending || NSProcessInfo.processInfo.systemUptime < self.switcherRestoreGraceUntil) return;
     NSUInteger epoch = self.switcherGestureEpoch;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
@@ -1297,6 +1305,7 @@
 
 - (void)parkSessionInAppSwitcher {
     if (self.sessionParked || self.switcherRestorePending) return;
+    self.switcherHomeScene = self.overlayWindow.windowScene ?: self.switcherHomeScene;
     [self captureSwitcherPaneImages];
     // Keep the whole session alive but take it off screen entirely, so the home
     // screen and the app switcher stay visually clean. Nothing is torn down:
@@ -1343,7 +1352,7 @@
 }
 
 - (void)handleUserHome {
-    if (self.internalHomeReturn || self.switcherRestorePending) return;
+    if (self.internalHomeReturn || self.switcherRestorePending || NSProcessInfo.processInfo.systemUptime < self.switcherRestoreGraceUntil) return;
     if (self.mode == DPPresentationModeSplit && self.splitWindows.count == 2) {
         [self parkSessionInAppSwitcher];
     } else {
@@ -1606,6 +1615,7 @@ static id DPDynamicGet(id obj, NSString *key) {
     if (self.splitWindows.count != 2 || self.activeSwitcherCard) return;
     NSString *identifier = [@"com.seagull.interactivepip.group." stringByAppendingString:[NSUUID UUID].UUIDString];
     self.activeSwitcherCard = [self switcherLayoutForGroupIdentifier:identifier];
+    self.switcherGroupIdentifier = self.activeSwitcherCard ? identifier : nil;
     NSLog(@"[InteractivePiP] group layout %@", self.switcherBuildStatus);
     if (self.activeSwitcherCard) [self requestSwitcherGroupRefresh];
 }
@@ -1613,10 +1623,26 @@ static id DPDynamicGet(id obj, NSString *key) {
 - (nullable id)currentSwitcherLayout {
     return self.activeSwitcherCard;
 }
+static id DPSwitcherObjectValue(id obj, SEL sel) {
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') return nil;
+    return ((id(*)(id, SEL))objc_msgSend)(obj, sel);
+}
+
 - (BOOL)isSwitcherCard:(id)layout {
     id card = self.activeSwitcherCard;
-    if (!layout || !card) return NO;
-    return layout == card || ([layout isKindOfClass:[card class]] && [card isEqual:layout]);
+    if (!layout || !card || ![layout isKindOfClass:[card class]]) return NO;
+    if (layout == card || [card isEqual:layout]) return YES;
+    @try {
+        id items = DPSwitcherObjectValue(layout, NSSelectorFromString(@"allItems"));
+        if (![items isKindOfClass:[NSArray class]] && ![items isKindOfClass:[NSSet class]] && ![items isKindOfClass:[NSOrderedSet class]]) return NO;
+        if ([items count] != 1) return NO;
+        for (id item in items) {
+            id tag = DPSwitcherObjectValue(item, NSSelectorFromString(@"uniqueIdentifier"));
+            return [self.switcherGroupIdentifier isEqual:tag];
+        }
+    } @catch (__unused NSException *e) { }
+    return NO;
 }
 
 - (void)activateSwitcherCard:(id)layout {
@@ -1625,16 +1651,35 @@ static id DPDynamicGet(id obj, NSString *key) {
     self.switcherTapStatus = @"received";
     NSUInteger epoch = ++self.switcherGestureEpoch;
     id card = self.activeSwitcherCard;
-    // Let the switcher finish its dismissal before reattaching the overlay.
+    NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 1.5;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (epoch != self.switcherGestureEpoch) return;
-        self.switcherRestorePending = NO;
-        if (self.activeSwitcherCard != card || self.deviceLocked || self.splitWindows.count != 2) return;
-        if (self.sessionParked) [self restoreParkedSession];
-        else [self bringOverlayToFront];
-        self.switcherTapStatus = self.overlayWindow.hidden ? @"hidden" : @"shown";
-        NSLog(@"[InteractivePiP] group tap %@", self.switcherTapStatus);
+        [self finishSwitcherRestore:epoch card:card deadline:deadline];
     });
+}
+
+- (void)finishSwitcherRestore:(NSUInteger)epoch card:(id)card deadline:(NSTimeInterval)deadline {
+    if (epoch != self.switcherGestureEpoch) return;
+    if (self.activeSwitcherCard != card || self.deviceLocked || self.splitWindows.count != 2) {
+        self.switcherRestorePending = NO;
+        self.switcherTapStatus = @"cancelled";
+        return;
+    }
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    UIWindowScene *saved = self.switcherHomeScene;
+    if (saved && saved.activationState != UISceneActivationStateForegroundActive && now < deadline) {
+        self.switcherTapStatus = @"wait-scene";
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self finishSwitcherRestore:epoch card:card deadline:deadline];
+        });
+        return;
+    }
+    self.switcherRestoreGraceUntil = now + 0.45;
+    if (self.sessionParked) [self restoreParkedSession];
+    else [self bringOverlayToFront];
+    self.switcherRestorePending = NO;
+    self.switcherTapStatus = self.overlayWindow.hidden ? @"hidden" : @"shown";
+    [self showKeyboardDiagnostics];
+    NSLog(@"[InteractivePiP] group tap %@ scene=%@", self.switcherTapStatus, self.overlayWindow.windowScene);
 }
 
 static BOOL DPHasPreviewDetail(UIImage *image) {
