@@ -1188,4 +1188,31 @@ static id DPDynamicGet(id obj, NSString *key) {
     [self restoreParkedSession];
 }
 
+- (UIView *)contentViewForSwitcherLayout:(id)layout {
+    if (self.splitWindows.count < 2) return nil;
+    DPFloatingWindow *w0 = self.splitWindows[0];
+    DPFloatingWindow *w1 = self.splitWindows[1];
+    UIView *v0 = w0.sceneHost.view;
+    UIView *v1 = w1.sceneHost.view;
+    if (!v0 || !v1) return nil;
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
+    container.backgroundColor = [UIColor blackColor];
+    container.clipsToBounds = YES;
+
+    BOOL sideBySide = (container.bounds.size.width > container.bounds.size.height);
+    if (sideBySide) {
+        CGFloat w = container.bounds.size.width * 0.5;
+        v0.frame = CGRectMake(0, 0, w, container.bounds.size.height);
+        v1.frame = CGRectMake(w, 0, container.bounds.size.width - w, container.bounds.size.height);
+    } else {
+        CGFloat h = container.bounds.size.height * 0.5;
+        v0.frame = CGRectMake(0, 0, container.bounds.size.width, h);
+        v1.frame = CGRectMake(0, h, container.bounds.size.width, container.bounds.size.height - h);
+    }
+    [container addSubview:v0];
+    [container addSubview:v1];
+    return container;
+}
+
 @end
