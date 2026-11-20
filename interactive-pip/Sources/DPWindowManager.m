@@ -560,6 +560,23 @@
             }
         }
 
+        @try {
+            Class medusaCls = NSClassFromString(@"SBMedusaHostedKeyboardWindowController");
+            if (medusaCls) {
+                id medusa = ((id (*)(id, SEL))objc_msgSend)(medusaCls, NSSelectorFromString(@"sharedInstance"));
+                if (!medusa) medusa = ((id (*)(id, SEL))objc_msgSend)(medusaCls, NSSelectorFromString(@"new"));
+                if (medusa) {
+                    SEL setKb = NSSelectorFromString(@"setRemoteKeyboards:");
+                    if ([medusa respondsToSelector:setKb]) {
+                        ((void (*)(id, SEL, id))objc_msgSend)(medusa, setKb, kb);
+                    }
+                    SEL upd = NSSelectorFromString(@"updateMedusaHostedKeyboardWindow");
+                    if ([medusa respondsToSelector:upd]) {
+                        ((void (*)(id, SEL))objc_msgSend)(medusa, upd);
+                    }
+                }
+            }
+        } @catch (__unused NSException *medEx) {}
         self.hostedInputActive = YES;
         self.keyboardRoutedWindow = target;
         NSLog(@"[InteractivePiP] 键盘登记完成 %@ pid=%d scene=%@", target.bundleID, pid, scene);
