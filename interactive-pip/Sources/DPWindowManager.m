@@ -629,7 +629,7 @@
     [divider addGestureRecognizer:tap];
     UIView *seam = [[UIView alloc] initWithFrame:CGRectZero];
     seam.tag = 0x5D1;
-    seam.backgroundColor = [UIColor colorWithWhite:0.10 alpha:1.0];
+    seam.backgroundColor = [UIColor blackColor];
     seam.userInteractionEnabled = NO;
     [divider addSubview:seam];
     divider.backgroundColor = [UIColor clearColor];
@@ -653,7 +653,7 @@
     // Duo: panels fill the entire screen edge to edge (no status/home inset).
     CGRect b = full;
     BOOL sideBySide = b.size.width >= b.size.height;
-    const CGFloat seamW = 3.0;                     // single thin divider line
+    const CGFloat seamW = 8.0;                     // visible dark divider line
     const CGFloat touch = 20.0;                    // invisible draggable strip over the seam
     CGFloat total = sideBySide ? b.size.width : b.size.height;
     CGFloat ratio = MIN(0.95, MAX(0.05, self.splitRatio));
@@ -1068,6 +1068,7 @@ static id DPDynamicGet(id obj, NSString *key) {
 
 - (nullable id)displayItemForBundleID:(NSString *)bundleID {
     if (!bundleID) return nil;
+    NSLog(@"[InteractivePiP] displayItemForBundleID: try %@", bundleID);
 
     // 1) FBSceneManager: 遍历已激活场景，找 bundleID 匹配的 scene 实体 → displayItem
     Class FBSceneManagerCls = NSClassFromString(@"FBSceneManager");
@@ -1127,9 +1128,10 @@ static id DPDynamicGet(id obj, NSString *key) {
     NSMutableArray *items = [NSMutableArray array];
     for (NSString *bid in bundleIDs) {
         id di = [self displayItemForBundleID:bid];
+        NSLog(@"[InteractivePiP] displayItemForBundleID %@ -> %@", bid, di?@"YES":@"NO");
         if (di) [items addObject:di];
     }
-    if (items.count == 0) return nil;
+    if (items.count == 0) { NSLog(@"[InteractivePiP] switcherLayout: no displayItems"); return nil; }
 
     Class SBAppLayoutCls = NSClassFromString(@"SBAppLayout");
     if (!SBAppLayoutCls) return nil;
@@ -1159,7 +1161,10 @@ static id DPDynamicGet(id obj, NSString *key) {
 #pragma mark - Switcher card (Stage C: current layout for data source)
 
 - (nullable id)currentSwitcherLayout {
-    if (self.mode != DPPresentationModeSplit || self.splitWindows.count < 2) return nil;
+    if (self.mode != DPPresentationModeSplit || self.splitWindows.count < 2) {
+        NSLog(@"[InteractivePiP] currentSwitcherLayout nil: mode=%ld count=%lu", (long)self.mode, (unsigned long)self.splitWindows.count);
+        return nil;
+    }
     // Cache the same SBAppLayout instance so the switcher data source and the
     // bring-to-front hook see one identical object.
     if (self.activeSwitcherCard) return self.activeSwitcherCard;
@@ -1169,6 +1174,7 @@ static id DPDynamicGet(id obj, NSString *key) {
     }
     if (bids.count < 2) return nil;
     id layout = [self switcherLayoutForBundleIDs:bids];
+    NSLog(@"[InteractivePiP] currentSwitcherLayout built=%@ bids=%@", layout?@"YES":@"NO", bids);
     if (layout) self.activeSwitcherCard = layout;
     return layout;
 }
