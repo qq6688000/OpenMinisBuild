@@ -646,6 +646,12 @@ static void (*_origUIInputViewDidLayout)(id, SEL);
 static void _dpUIInputViewDidLayout(id self, SEL _cmd) {
     if (_origUIInputViewDidLayout) _origUIInputViewDidLayout(self, _cmd);
     @try {
+        // iOS 16 私有: 设 hosting=YES 让 QQ 键盘 window 进入 hosted 渲染
+        SEL setH = NSSelectorFromString(@"setHosting:");
+        if ([self respondsToSelector:setH]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setH, YES);
+            NSLog(@"[InteractivePiP] App 键盘 hosting=YES 已设");
+        }
         id win = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"window"));
         if (win) {
             NSLog(@"[InteractivePiP] App 键盘窗口 %@ level=%.0f",
