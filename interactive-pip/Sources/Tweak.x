@@ -640,47 +640,12 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
 
-// App 进程: 让托管 App 以为屏幕就是 pane 尺寸 —— 实时分辨率(非压缩)。
-// 只 hook UIScreen 的只读属性 bounds/nativeBounds, 绝不碰任何布局核心方法。
-// pane 尺寸由 SpringBoard 侧通过 notify 状态写入, 未托管时返回原值。
-static CGRect (*_origUIScreenBounds)(id, SEL);
-static CGRect _dpUIScreenBounds(id self, SEL _cmd) {
-    static int tokW = 0, tokH = 0;
-    if (!tokW) notify_register_check("com.seagull.duo.pane.w", &tokW);
-    if (!tokH) notify_register_check("com.seagull.duo.pane.h", &tokH);
-    uint64_t w = 0, h = 0;
-    notify_get_state(tokW, &w);
-    notify_get_state(tokH, &h);
-    if (w > 0 && h > 0) return CGRectMake(0, 0, (CGFloat)w / 1000.0, (CGFloat)h / 1000.0);
-    return _origUIScreenBounds(self, _cmd);
-}
-
-static CGRect (*_origUIScreenNativeBounds)(id, SEL);
-static CGRect _dpUIScreenNativeBounds(id self, SEL _cmd) {
-    static int tokW = 0, tokH = 0;
-    if (!tokW) notify_register_check("com.seagull.duo.pane.w", &tokW);
-    if (!tokH) notify_register_check("com.seagull.duo.pane.h", &tokH);
-    uint64_t w = 0, h = 0;
-    notify_get_state(tokW, &w);
-    notify_get_state(tokH, &h);
-    if (w > 0 && h > 0) return CGRectMake(0, 0, (CGFloat)w / 1000.0, (CGFloat)h / 1000.0);
-    return _origUIScreenNativeBounds(self, _cmd);
-}
-
 %ctor {
     @autoreleasepool {
         if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
-            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 实时分辨率 hook", NSProcessInfo.processInfo.processName);
-            @try {
-                Class us = NSClassFromString(@"UIScreen");
-                if (us) {
-                    MSHookMessageEx(us, NSSelectorFromString(@"bounds"),
-                                    (IMP)&_dpUIScreenBounds, (IMP *)&_origUIScreenBounds);
-                    MSHookMessageEx(us, NSSelectorFromString(@"nativeBounds"),
-                                    (IMP)&_dpUIScreenNativeBounds, (IMP *)&_origUIScreenNativeBounds);
-                    NSLog(@"[InteractivePiP] UIScreen bounds/nativeBounds hook 已装");
-                }
-            } @catch (__unused NSException *e) {}
+            // App 进程: 0.7.27 的 UIScreen bounds hook 只改了 screen 而 QQ 的
+            // window 仍全屏, 结果内容居中+上下空白, 已回滚 — 这里不装任何 hook。
+            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 无 hook", NSProcessInfo.processInfo.processName);
         } else {
         [DPSettings shared];
         static int lockToken;
