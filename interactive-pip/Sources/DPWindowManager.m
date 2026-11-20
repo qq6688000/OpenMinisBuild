@@ -542,7 +542,7 @@
        hv ? NSStringFromClass([hv class]) : @"nil"];
     [s appendFormat:@"scene=%@\n", sc ? NSStringFromClass([sc class]) : @"nil"];
     [s appendFormat:@"live=%d sceneView=%d pid=%d level=%.0f\n",
-       sh.isLive ? 1 : 0, sh.keyboardHostIsSceneView ? 1 : 0,
+       [sh isLive] ? 1 : 0, [sh keyboardHostIsSceneView] ? 1 : 0,
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
     [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d\n",
        self.hostedInputActive ? 1 : 0, kb ? 1 : 0];
