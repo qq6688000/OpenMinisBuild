@@ -672,6 +672,50 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
 
+// Observe the actual switcher transition in addition to the explicit tap callback.
+// Never rewrite a system request or claim a non-Duo layout.
+static id DPTransitionObject(id object, SEL getter) {
+    if (![object respondsToSelector:getter]) return nil;
+    NSMethodSignature *sig = [object methodSignatureForSelector:getter];
+    if (sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') return nil;
+    return ((id(*)(id, SEL))objc_msgSend)(object, getter);
+}
+
+%group DPGroupReturnTransition
+%hook SBMainSwitcherControllerCoordinator
+- (void)switcherContentController:(id)controller performTransitionWithRequest:(id)request gestureInitiated:(BOOL)gesture {
+    DPWindowManager *wm = nil;
+    id target = nil;
+    if ([NSThread isMainThread]) {
+        wm = [DPWindowManager shared];
+        if ([wm currentSwitcherLayout]) {
+            @try {
+                SEL toLayout = NSSelectorFromString(@"toAppLayout");
+                target = DPTransitionObject(request, toLayout);
+                if (!target) {
+                    id context = DPTransitionObject(request, NSSelectorFromString(@"transitionContext"));
+                    target = DPTransitionObject(context, toLayout);
+                }
+                if (![wm isSwitcherCard:target]) target = nil;
+            } @catch (__unused NSException *e) { target = nil; }
+        }
+    }
+    // Arm before the original: its synchronous Home callbacks must not park again.
+    if (target) [wm activateSwitcherCard:target];
+    %orig;
+}
+%end
+%end
+
+static BOOL DPHasGroupReturnTransition(void) {
+    Class cls = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
+    SEL sel = NSSelectorFromString(@"switcherContentController:performTransitionWithRequest:gestureInitiated:");
+    NSMethodSignature *sig = [cls instanceMethodSignatureForSelector:sel];
+    return sig.numberOfArguments == 5 && sig.methodReturnType[0] == 'v' &&
+           [sig getArgumentTypeAtIndex:2][0] == '@' && [sig getArgumentTypeAtIndex:3][0] == '@' &&
+           [sig getArgumentTypeAtIndex:4][0] == @encode(BOOL)[0];
+}
+
 %ctor {
     @autoreleasepool {
         if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
@@ -680,6 +724,8 @@ static NSArray *DPInjectedShortcutItems(void) {
             NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 无 hook", NSProcessInfo.processInfo.processName);
         } else {
         [DPSettings shared];
+        if (DPHasGroupReturnTransition()) { %init(DPGroupReturnTransition); }
+        %init(_ungrouped);
         static int lockToken;
         notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
             uint64_t state = 0;
