@@ -486,20 +486,45 @@
     }
 
     @try {
-        // This system exposes the scene-aware variants.
+        // The scene-aware prep may throw if the hosted scene is not in a state
+        // the system accepts. It must NEVER abort the registration: split every
+        // call into its own try so one failure cannot skip the actual
+        // `addHostedWindowView:` registration below.
         SEL prep = NSSelectorFromString(@"prepareForHostedWindowWithScene:");
-        if ([kb respondsToSelector:prep]) ((id (*)(id, SEL, id))objc_msgSend)(kb, prep, scene);
+        if ([kb respondsToSelector:prep]) {
+            @try {
+                ((id (*)(id, SEL, id))objc_msgSend)(kb, prep, scene);
+                NSLog(@"[InteractivePiP] 键盘 prep 成功 scene=%@", scene);
+            } @catch (__unused NSException *prepEx) {
+                NSLog(@"[InteractivePiP] 键盘 prep 异常(继续登记): %@", prepEx);
+            }
+        }
 
         SEL add = NSSelectorFromString(@"addHostedWindowView:fromPID:forScene:");
-        if ([kb respondsToSelector:add])
-            ((void (*)(id, SEL, id, int, id))objc_msgSend)(kb, add, host, pid, scene);
+        if ([kb respondsToSelector:add]) {
+            @try {
+                ((void (*)(id, SEL, id, int, id))objc_msgSend)(kb, add, host, pid, scene);
+                NSLog(@"[InteractivePiP] 键盘 addHostedWindowView 已调用 pid=%d scene=%@", pid, scene);
+            } @catch (__unused NSException *addEx) {
+                NSLog(@"[InteractivePiP] 键盘 add 异常: %@", addEx);
+            }
+        } else {
+            NSLog(@"[InteractivePiP] 无 addHostedWindowView:fromPID:forScene: 方法");
+        }
 
         SEL enable = NSSelectorFromString(@"setWindowEnabled:");
-        if ([kb respondsToSelector:enable]) ((void (*)(id, SEL, BOOL))objc_msgSend)(kb, enable, YES);
+        if ([kb respondsToSelector:enable]) {
+            @try {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(kb, enable, YES);
+                NSLog(@"[InteractivePiP] 键盘 setWindowEnabled:YES");
+            } @catch (__unused NSException *enEx) {
+                NSLog(@"[InteractivePiP] 键盘 enable 异常: %@", enEx);
+            }
+        }
 
         self.hostedInputActive = YES;
         self.keyboardRoutedWindow = target;
-        NSLog(@"[InteractivePiP] 键盘登记 %@ pid=%d scene=%@", target.bundleID, pid, scene);
+        NSLog(@"[InteractivePiP] 键盘登记完成 %@ pid=%d scene=%@", target.bundleID, pid, scene);
     } @catch (NSException *e) {
         NSLog(@"[InteractivePiP] 键盘登记异常 %@: %@", target.bundleID, e);
         self.hostedInputActive = NO;
