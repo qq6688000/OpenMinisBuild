@@ -534,6 +534,22 @@
             NSLog(@"[InteractivePiP] 无 addHostedWindowView:fromPID:forScene: 方法");
         }
 
+        // After addHostedWindowView:, the system needs finishWithHostedWindow
+        // (no-arg, confirmed on panel: v16@0:8) to complete the hosted window
+        // setup and start rendering the keyboard content layer. Without it the
+        // window exists but the content area stays empty.
+        SEL finish = NSSelectorFromString(@"finishWithHostedWindow");
+        if ([kb respondsToSelector:finish]) {
+            @try {
+                ((void (*)(id, SEL))objc_msgSend)(kb, finish);
+                NSLog(@"[InteractivePiP] 键盘 finishWithHostedWindow 已调用");
+            } @catch (__unused NSException *finEx) {
+                NSLog(@"[InteractivePiP] 键盘 finish 异常: %@", finEx);
+            }
+        } else {
+            NSLog(@"[InteractivePiP] 无 finishWithHostedWindow 方法");
+        }
+
         SEL enable = NSSelectorFromString(@"setWindowEnabled:");
         if ([kb respondsToSelector:enable]) {
             @try {
