@@ -639,23 +639,33 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
-%hook UIInputWindowController
-- (void)viewDidLayoutSubviews {
-    %orig;
+
+// App 进程键盘托管: 运行时 hook UIInputWindowController viewDidLayoutSubviews
+// (编译期 UIInputWindowController 是 forward declaration, 不能用 %hook)
+static void (*_origUIInputViewDidLayout)(id, SEL);
+static void _dpUIInputViewDidLayout(id self, SEL _cmd) {
+    if (_origUIInputViewDidLayout) _origUIInputViewDidLayout(self, _cmd);
     @try {
-        id win = [self valueForKey:@"window"];
+        id win = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"window"));
         if (win) {
             NSLog(@"[InteractivePiP] App 键盘窗口 %@ level=%.0f",
                   NSStringFromClass([win class]), ((UIWindow *)win).windowLevel);
         }
     } @catch (__unused NSException *e) {}
 }
-%end
 
 %ctor {
     @autoreleasepool {
         if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
             NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 仅键盘托管", NSProcessInfo.processInfo.processName);
+            @try {
+                Class uic = NSClassFromString(@"UIInputWindowController");
+                if (uic) {
+                    MSHookMessageEx(uic, NSSelectorFromString(@"viewDidLayoutSubviews"),
+                                    (IMP)&_dpUIInputViewDidLayout, (IMP *)&_origUIInputViewDidLayout);
+                    NSLog(@"[InteractivePiP] App 键盘托管 hook 已装");
+                }
+            } @catch (__unused NSException *e) {}
         } else {
         [DPSettings shared];
         static int lockToken;
