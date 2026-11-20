@@ -740,6 +740,28 @@
             if ([settings respondsToSelector:setReasons]) {
                 ((void (*)(id, SEL, unsigned long long))objc_msgSend)(settings, setReasons, 0);
             }
+            // Keyboard arbitration (_UIRemoteKeyboards) only dispatches to an
+            // ACTIVE scene. Without setSceneActive:YES the hosted app can show a
+            // caret but never receives a keyboard - the long-standing "keyboard
+            // won't come up" symptom. FBSceneSettings carries this separately
+            // from foreground/backgrounded.
+            SEL setActive = NSSelectorFromString(@"setSceneActive:");
+            if ([settings respondsToSelector:setActive]) {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setActive, YES);
+            }
+            SEL setActiveAlt = NSSelectorFromString(@"setActive:");
+            if (![settings respondsToSelector:setActive] && [settings respondsToSelector:setActiveAlt]) {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setActiveAlt, YES);
+            }
+            SEL setUiActive = NSSelectorFromString(@"setUIApplicationSceneActive:");
+            if ([settings respondsToSelector:setUiActive]) {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setUiActive, YES);
+            }
+        } else {
+            SEL setActive = NSSelectorFromString(@"setSceneActive:");
+            if ([settings respondsToSelector:setActive]) {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setActive, NO);
+            }
         }
 
         if (includeFrame && size.width > 1 && size.height > 1) {
