@@ -1,0 +1,10 @@
+{
+	entry = {
+		bundle = DualPanePrefs;
+		cell = PSLinkCell;
+		detail = DPRootListController;
+		icon = icon.png;
+		isController = 1;
+		label = "分屏助手";
+	};
+}

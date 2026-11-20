@@ -1,0 +1,8 @@
+--- !tapi-tbd-v2
+archs: [ arm64e ]
+platform: ios
+install-name: '@loader_path/.jbroot/usr/lib/libroothide.dylib'
+exports:
+  - archs: [ arm64e ]
+    symbols: [ _jbroot, _rootfs, _jbrand, _jbroot_alloc, _rootfs_alloc, _jbrootat_alloc, __Z6jbrootP8NSString, __Z6rootfsP8NSString ]
+...
