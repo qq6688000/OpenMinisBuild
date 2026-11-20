@@ -707,13 +707,47 @@ static id DPTransitionObject(id object, SEL getter) {
 %end
 %end
 
-static BOOL DPHasGroupReturnTransition(void) {
-    Class cls = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
+// PV also installs the transition hook on the FluidSwitcher controller. On
+// this iOS build the coordinator hook is not the callback receiving the tap.
+%group DPFluidGroupReturnTransition
+%hook SBFluidSwitcherViewController
+- (void)switcherContentController:(id)controller performTransitionWithRequest:(id)request gestureInitiated:(BOOL)gesture {
+    DPWindowManager *wm = [DPWindowManager shared];
+    id target = nil;
+    if ([NSThread isMainThread] && [wm currentSwitcherLayout]) {
+        @try {
+            target = DPTransitionObject(request, NSSelectorFromString(@"toAppLayout"));
+            if (!target) {
+                id context = DPTransitionObject(request, NSSelectorFromString(@"transitionContext"));
+                target = DPTransitionObject(context, NSSelectorFromString(@"toAppLayout"));
+            }
+            if (![wm isSwitcherCard:target]) target = nil;
+        } @catch (__unused NSException *e) { target = nil; }
+    }
+    if (target) [wm activateSwitcherCard:target];
+    %orig;
+}
+- (void)switcherContentController:(id)controller bringAppLayoutToFront:(id)layout {
+    DPWindowManager *wm = [DPWindowManager shared];
+    if ([wm isSwitcherCard:layout]) {
+        [wm activateSwitcherCard:layout];
+        return;
+    }
+    %orig;
+}
+%end
+%end
+
+static BOOL DPHasGroupReturnTransitionForClass(NSString *className) {
+    Class cls = NSClassFromString(className);
     SEL sel = NSSelectorFromString(@"switcherContentController:performTransitionWithRequest:gestureInitiated:");
     NSMethodSignature *sig = [cls instanceMethodSignatureForSelector:sel];
-    return sig.numberOfArguments == 5 && sig.methodReturnType[0] == 'v' &&
+    return sig && sig.numberOfArguments == 5 && sig.methodReturnType[0] == 'v' &&
            [sig getArgumentTypeAtIndex:2][0] == '@' && [sig getArgumentTypeAtIndex:3][0] == '@' &&
            [sig getArgumentTypeAtIndex:4][0] == @encode(BOOL)[0];
+}
+static BOOL DPHasGroupReturnTransition(void) {
+    return DPHasGroupReturnTransitionForClass(@"SBMainSwitcherControllerCoordinator");
 }
 
 %ctor {
@@ -725,6 +759,7 @@ static BOOL DPHasGroupReturnTransition(void) {
         } else {
         [DPSettings shared];
         if (DPHasGroupReturnTransition()) { %init(DPGroupReturnTransition); }
+        if (DPHasGroupReturnTransitionForClass(@"SBFluidSwitcherViewController")) { %init(DPFluidGroupReturnTransition); }
         %init(_ungrouped);
         static int lockToken;
         notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
