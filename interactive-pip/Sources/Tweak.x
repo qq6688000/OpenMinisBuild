@@ -619,20 +619,6 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
-// 给我们的分屏卡提供真实内容视图（两个 App 画面拼成的容器），否则卡渲染为空
-%hook SBFluidSwitcherPageContentViewProvider
-- (id)pageContentViewForAppLayout:(id)appLayout setActive:(BOOL)active {
-    if ([[DPWindowManager shared] isSwitcherCard:appLayout]) {
-        UIView *content = [[DPWindowManager shared] contentViewForSwitcherLayout:appLayout];
-        if (content) {
-            NSLog(@"[InteractivePiP] pageContentViewForAppLayout: 提供分屏卡内容");
-            return content;
-        }
-    }
-    return %orig;
-}
-%end
-
 %ctor {
     @autoreleasepool {
         [DPSettings shared];
