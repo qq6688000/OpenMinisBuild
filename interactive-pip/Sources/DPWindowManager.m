@@ -98,7 +98,9 @@
 }
 
 - (void)install {
-    if (self.overlayWindow && self.overlayWindow.hidden == NO) {
+    if (self.overlayWindow) {
+        // Reuse the existing window, hidden or not. Creating a second window
+        // here orphans the old one together with every hosted scene in it.
         [self bringOverlayToFront];
         return;
     }
@@ -905,17 +907,26 @@
         // If a hosted app is still foreground, this was an app switch / open — keep the session.
         if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
         NSLog(@"[InteractivePiP] 上滑回桌面 -> 轻量退出 (fg=%@)", fg ?: @"(none)");
-        // Do NOT call dismissAllAnimated here: synchronously invalidating the
-        // hosted scene layer inside the switcher-home transaction crashes
-        // _UISceneLayerHostContainerView dealloc (safe mode). Mirror PanoramicView
-        // instead: undo the split layout, hide the overlay, suspend hosts, keep
-        // the session alive for reuse.
+        // Do NOT invalidate scene hosts here: doing that inside the switcher-home
+        // transaction crashes _UISceneLayerHostContainerView dealloc (safe mode).
+        // Instead end the session the cheap way: suspend every host, take the
+        // windows out of the overlay and clear the bookkeeping, so the next
+        // activation starts clean and can build a new split.
         [self2 leaveSplit];
-        self2.overlayWindow.hidden = YES;
-        for (DPFloatingWindow *w in self2.mutableFloatingWindows) {
+        NSArray *all = [self2.mutableFloatingWindows copy];
+        for (DPFloatingWindow *w in all) {
             [w.sceneHost setSuspended:YES];
+            [w removeFromSuperview];
         }
+        [self2.mutableFloatingWindows removeAllObjects];
+        [self2.mutableHostedBundleIDs removeAllObjects];
+        [self2.savedFrames removeAllObjects];
+        self2.focusedWindow = nil;
+        self2.splitWindows = nil;
+        self2.duoMode = NO;
+        self2.overlayWindow.hidden = YES;
         self2.mode = DPPresentationModeNone;
+        self2.suppressLaunch = NO;
         [self2 updateSessionControls];
     });
 }
