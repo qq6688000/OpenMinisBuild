@@ -482,15 +482,22 @@
 
 - (void)handleDeviceLock {
     self.deviceLocked = YES;
-    [self dismissAllAnimated:NO];
-    // Full removal: a merely hidden overlay still shipped pixels to the lock screen.
-    self.overlayWindow.hidden = YES;
-    self.overlayWindow.windowScene = nil;
+    // Mirrors PanoramicView -[PVTaskSession cancelPendingSelectionOnLock]:
+    // stop any in-flight interactive resize/drag, but KEEP the hosted pair.
+    // Tearing down the scene here (windowScene = nil / dismissAll) is what made
+    // the overlay bleed onto the lock screen and never come back on unlock.
+    UIPanGestureRecognizer *drag = nil;
+    for (UIGestureRecognizer *g in self.splitDivider.gestureRecognizers) {
+        if ([g isKindOfClass:[UIPanGestureRecognizer class]]) { drag = (UIPanGestureRecognizer *)g; break; }
+    }
+    if (drag) { drag.enabled = NO; drag.enabled = YES; }  // cancels current touch
+    self.overlayWindow.hidden = YES;                       // pixels off lock screen
+    // NOTE: windowScene intentionally preserved; session survives lock.
 }
 
 - (void)handleDeviceUnlock {
     self.deviceLocked = NO;
-    // old session is gone; the window is rebuilt on next activation
+    // Keep hidden until a real activation; bringOverlayToFront will re-show it.
     self.overlayWindow.hidden = YES;
 }
 
@@ -958,7 +965,6 @@
     UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
     CGFloat topInset = MAX(0, insets.top) + 44.0;
     BOOL sideBySide = (full.size.width >= full.size.height);
-    CGFloat hinge = sideBySide ? 8.0 : 10.0;
     CGFloat available = (sideBySide ? full.size.width : full.size.height) - 26.0;
     if (available <= 1) return;
 

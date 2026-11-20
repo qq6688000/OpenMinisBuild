@@ -15,7 +15,7 @@
     self.title = [self.listType isEqualToString:@"favorites"] ? @"收藏" : @"黑名单";
 
     NSArray *stored = (NSArray *)CFBridgingRelease(CFPreferencesCopyAppValue(
-        (__bridge CFStringRef)self.listType, CFSTR("com.dualpane.tweak")));
+        (__bridge CFStringRef)self.listType, CFSTR("com.seagull.interactivepip")));
     self.bundleIDs = [stored isKindOfClass:[NSArray class]] ? [stored mutableCopy] : [NSMutableArray array];
 
     self.navigationItem.rightBarButtonItem =
@@ -113,9 +113,9 @@
 - (void)persist {
     CFPreferencesSetAppValue((__bridge CFStringRef)self.listType,
                              (__bridge CFPropertyListRef)self.bundleIDs,
-                             CFSTR("com.dualpane.tweak"));
-    CFPreferencesAppSynchronize(CFSTR("com.dualpane.tweak"));
-    notify_post("com.dualpane.tweak/settings.changed");
+                             CFSTR("com.seagull.interactivepip"));
+    CFPreferencesAppSynchronize(CFSTR("com.seagull.interactivepip"));
+    notify_post("com.seagull.interactivepip/settings.changed");
 }
 
 @end
