@@ -405,13 +405,28 @@
     Class remoteClass = NSClassFromString(@"_UIRemoteKeyboards");
     if (!remoteClass) return nil;
 
-    // Guessing one spelling of the singleton accessor is not enough: on this
-    // build `+sharedRemoteKeyboards` does not exist, the call silently returned
-    // nil and every downstream registration was skipped, which is precisely
-    // why the keyboard never appeared. Enumerate the class method list instead
-    // and pick any id-returning factory.
+    // Preferred: the canonical singleton accessor. The 0.7.7 diagnostics panel
+    // proved `+sharedRemoteKeyboards` exists and returns an instance on this
+    // build, so try it first before any generic discovery.
+    SEL shared = NSSelectorFromString(@"sharedRemoteKeyboards");
+    if ([remoteClass respondsToSelector:shared]) {
+        @try {
+            id inst = ((id (*)(id, SEL))objc_msgSend)(remoteClass, shared);
+            NSLog(@"[InteractivePiP] _UIRemoteKeyboards +sharedRemoteKeyboards -> %@", inst);
+            if (inst) {
+                self.remoteKeyboardsInstance = inst;
+                self.remoteKeyboardsFactory = shared;
+                return inst;
+            }
+        } @catch (__unused NSException *exception) {}
+    }
+
+    // Fallback: enumerate the CLASS method list (meta class). `+sharedRemoteKeyboards`
+    // is a class method, so it lives in the metaclass method table, not the
+    // instance table. Pick any id-returning factory.
+    Class metaClass = object_getClass(remoteClass);
     unsigned metaCount = 0;
-    Method *meta = class_copyMethodList(remoteClass, &metaCount);
+    Method *meta = metaClass ? class_copyMethodList(metaClass, &metaCount) : NULL;
     if (meta) {
         for (unsigned i = 0; i < metaCount; i++) {
             const char *name = sel_getName(method_getName(meta[i]));
