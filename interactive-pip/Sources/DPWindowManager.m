@@ -535,28 +535,36 @@
     DPFloatingWindow *f = self.focusedWindow;
     id sh = f.sceneHost;
     id kb = [self sharedRemoteKeyboards];
-    NSMutableString *s = [NSMutableString string];
     UIView *hv = [sh keyboardRoutingView];
     id sc = [sh keyboardRoutingScene];
+    NSMutableString *s = [NSMutableString string];
     [s appendFormat:@"focus=%@\nhost=%@\n", f.bundleID ?: @"-",
-       hv ? NSStringFromClass(hv.class) : @"nil"];
-    [s appendFormat:@"scene=%@\npid=%d level=%.0f\n",
-       sc ? NSStringFromClass([sc class]) : @"nil",
+       hv ? NSStringFromClass([hv class]) : @"nil"];
+    [s appendFormat:@"scene=%@\n", sc ? NSStringFromClass([sc class]) : @"nil"];
+    [s appendFormat:@"live=%d sceneView=%d pid=%d level=%.0f\n",
+       sh.isLive ? 1 : 0, sh.keyboardHostIsSceneView ? 1 : 0,
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
-    [s appendFormat:@"wkscene=%@\n_UIRemoteKeyboards=%d\n",
-       NSStringFromClass(self.overlayWindow.windowScene.class) ?: @"nil", kb ? 1 : 0];
+    [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d\n",
+       self.hostedInputActive ? 1 : 0, kb ? 1 : 0];
+    [s appendFormat:@"wkscene=%@\n",
+       NSStringFromClass([self.overlayWindow.windowScene class]) ?: @"nil"];
     if (kb) {
+        if ([kb respondsToSelector:NSSelectorFromString(@"keyboardWindow")]) {
+            @try {
+                id kw = ((id (*)(id, SEL))objc_msgSend)(kb, NSSelectorFromString(@"keyboardWindow"));
+                [s appendFormat:@"keyboardWindow=%@\n", kw ? NSStringFromClass([kw class]) : @"nil"];
+            } @catch (__unused NSException *e) { [s appendFormat:@"keyboardWindow=ERR\n"]; }
+        }
         unsigned n = 0;
         Method *ms = class_copyMethodList([kb class], &n);
         if (ms) {
             for (unsigned i = 0; i < n; i++) {
                 NSString *nm = [NSString stringWithUTF8String:sel_getName(method_getName(ms[i]))];
-                const char *t = method_getTypeEncoding(ms[i]);
-                BOOL hit = [nm rangeOfString:@"Hosted" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                           [nm rangeOfString:@"Window" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                           [nm rangeOfString:@"Scene" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                           [nm rangeOfString:@"Pair" options:NSCaseInsensitiveSearch].location != NSNotFound;
+                BOOL hit = [nm rangeOfString:@"Hosted"].location != NSNotFound ||
+                           [nm rangeOfString:@"inputWindowController"].location != NSNotFound ||
+                           [nm rangeOfString:@"keyboardWindow"].location != NSNotFound;
                 if (!hit) continue;
+                const char *t = method_getTypeEncoding(ms[i]);
                 [s appendFormat:@" %@ %s\n", nm, t ? t : "-"];
             }
             free(ms);
@@ -575,7 +583,7 @@
     }
     self.diagLabel.text = s;
     CGFloat w = self.overlayRoot.bounds.size.width;
-    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 214);
+    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 250);
     self.diagLabel.hidden = NO;
 }
 

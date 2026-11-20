@@ -20,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable UIView *)keyboardRoutingView;
 - (nullable id)keyboardRoutingScene;
 - (int)keyboardRoutingPID;
+@property (nonatomic, assign, readonly) BOOL keyboardHostIsSceneView;
 - (void)setSuspended:(BOOL)suspended;
 - (void)retryAttach;
 - (void)invalidate;

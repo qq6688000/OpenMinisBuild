@@ -1621,11 +1621,20 @@
 }
 
 - (UIView *)keyboardRoutingView {
-    if (!self.live || !self.hostView || !self.hostIsSceneView) return nil;
+    // A hosted scene view is the ideal keyboard host, but the remote keyboard
+    // registration does not care what the host view is called: it only needs a
+    // view that actually presents the remote scene, plus the app pid and the
+    // scene identity. Requiring the "Scene" class name here silently skipped the
+    // registration on every build that fell back to a host manager view or a
+    // layer container, which is exactly why the keyboard window appeared with
+    // no content at all.
+    if (!self.live || !self.hostView) return nil;
     return self.hostView;
 }
 
-- (id)keyboardRoutingScene { return (self.live && self.hostIsSceneView) ? self.scene : nil; }
+- (id)keyboardRoutingScene { return self.live ? self.scene : nil; }
+
+- (BOOL)keyboardHostIsSceneView { return self.hostIsSceneView; }
 
 - (int)keyboardRoutingPID { return [self hostedApplicationPID]; }
 
