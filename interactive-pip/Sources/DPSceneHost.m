@@ -1512,7 +1512,7 @@
     if (self.nativeSceneSize.width < 2 || self.nativeSceneSize.height < 2) {
         self.nativeSceneSize = [UIScreen mainScreen].bounds.size;
     }
-    hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; // track pane resize
+    hostView.autoresizingMask = UIViewAutoresizingNone; // 0.7.5 cover-scale: bounds+center+transform own the geometry; flexible mask fights the transform
     hostView.clipsToBounds = YES;
     [self.view addSubview:hostView];
     [self.view bringSubviewToFront:hostView];
@@ -1533,17 +1533,20 @@
     if (!self.hostView) return;
 
     CGSize target = self.view.bounds.size;
-    if (target.width < 1 || target.height < 1) return;
-    // Fill the pane straight — no transform, no letterbox, no offset. This is
-    // the 0.7.23 behaviour the user confirmed working. The transform variants
-    // (0.7.26 non-uniform, 0.7.28 aspect-fit) either distorted or letterboxed
-    // and 0.7.28 crashed SpringBoard (uncaught ObjC exception in the runloop).
+    CGSize canvas = self.nativeSceneSize;
+    if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
+    if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
+
+    // 0.7.5 original: uniform cover-scale into the pane (aspect fill).
+    // Keeps app aspect ratio (no stretch), fills pane, clips overflow.
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.hostView.frame = CGRectMake(0, 0, target.width, target.height);
+    self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
+    self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    CGFloat scale = MAX(target.width / canvas.width, target.height / canvas.height);
     self.view.clipsToBounds = YES;
-    self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
-                        NSStringFromCGSize(target), self.view.superview ? 1 : 0];
+    self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
+    self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
+                       NSStringFromCGSize(target), NSStringFromCGSize(canvas), scale];
 }
 
 - (void)applySnapshotFallback {
@@ -1778,21 +1781,12 @@
 - (void)updateSceneSettingsWithSize:(CGSize)size {
     if (!self.scene || size.width < 1 || size.height < 1) return;
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
-    // 0.2.2 "real half-screen scene relayout" 三件套(用户确认过的老版本):
-    // 1) 把 pane 真实尺寸提交给场景 setFrame; 2) 更新 nativeSceneSize; 3) 重新 layout。
-    // 0.7.24 当年只做了第 1 步就黑屏, 这次三件套齐全照抄 0.2.2。
-    if ([self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES]) {
+    // Keep scene full-screen: a half-screen setFrame is invalid on iOS 16 and
+    // kills the hosted pid. Scale the host view uniformly into the pane.
+    if ([self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO]) {
         self.lastCommittedSceneSize = size;
-        self.nativeSceneSize = size;
-        [self layoutHostView];
-        self.layoutDiag = [NSString stringWithFormat:@"view=%@ committed=%@ set=%d pid=%d",
-                           NSStringFromCGSize(self.view.bounds.size),
-                           NSStringFromCGSize(size), 1,
-                           (int)[self keyboardRoutingPID]];
-        NSLog(@"[InteractivePiP] 0.2.2-relayout %@ -> %@ pid=%d", self.bundleID,
-              NSStringFromCGSize(size), (int)[self keyboardRoutingPID]);
-    } else {
-        self.layoutDiag = [NSString stringWithFormat:@"view=%@ commit-fail", NSStringFromCGSize(self.view.bounds.size)];
+        self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
+                           NSStringFromCGSize(self.view.bounds.size), self.scene ? 1 : 0];
     }
 }
 
