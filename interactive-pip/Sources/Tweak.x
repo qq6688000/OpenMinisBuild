@@ -640,36 +640,45 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
 
-// App 进程键盘托管: 运行时 hook UIInputWindowController viewDidLayoutSubviews
-// (编译期 UIInputWindowController 是 forward declaration, 不能用 %hook)
-static void (*_origUIInputViewDidLayout)(id, SEL);
-static void _dpUIInputViewDidLayout(id self, SEL _cmd) {
-    if (_origUIInputViewDidLayout) _origUIInputViewDidLayout(self, _cmd);
-    @try {
-        // iOS 16 私有: 设 hosting=YES 让 QQ 键盘 window 进入 hosted 渲染
-        SEL setH = NSSelectorFromString(@"setHosting:");
-        if ([self respondsToSelector:setH]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setH, YES);
-            NSLog(@"[InteractivePiP] App 键盘 hosting=YES 已设");
-        }
-        id win = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"window"));
-        if (win) {
-            NSLog(@"[InteractivePiP] App 键盘窗口 %@ level=%.0f",
-                  NSStringFromClass([win class]), ((UIWindow *)win).windowLevel);
-        }
-    } @catch (__unused NSException *e) {}
+// App 进程: 让托管 App 以为屏幕就是 pane 尺寸 —— 实时分辨率(非压缩)。
+// 只 hook UIScreen 的只读属性 bounds/nativeBounds, 绝不碰任何布局核心方法。
+// pane 尺寸由 SpringBoard 侧通过 notify 状态写入, 未托管时返回原值。
+static CGRect (*_origUIScreenBounds)(id, SEL);
+static CGRect _dpUIScreenBounds(id self, SEL _cmd) {
+    static int tokW = 0, tokH = 0;
+    if (!tokW) notify_register_check("com.seagull.duo.pane.w", &tokW);
+    if (!tokH) notify_register_check("com.seagull.duo.pane.h", &tokH);
+    uint64_t w = 0, h = 0;
+    notify_get_state(tokW, &w);
+    notify_get_state(tokH, &h);
+    if (w > 0 && h > 0) return CGRectMake(0, 0, (CGFloat)w / 1000.0, (CGFloat)h / 1000.0);
+    return _origUIScreenBounds(self, _cmd);
+}
+
+static CGRect (*_origUIScreenNativeBounds)(id, SEL);
+static CGRect _dpUIScreenNativeBounds(id self, SEL _cmd) {
+    static int tokW = 0, tokH = 0;
+    if (!tokW) notify_register_check("com.seagull.duo.pane.w", &tokW);
+    if (!tokH) notify_register_check("com.seagull.duo.pane.h", &tokH);
+    uint64_t w = 0, h = 0;
+    notify_get_state(tokW, &w);
+    notify_get_state(tokH, &h);
+    if (w > 0 && h > 0) return CGRectMake(0, 0, (CGFloat)w / 1000.0, (CGFloat)h / 1000.0);
+    return _origUIScreenNativeBounds(self, _cmd);
 }
 
 %ctor {
     @autoreleasepool {
         if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
-            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 仅键盘托管", NSProcessInfo.processInfo.processName);
+            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 实时分辨率 hook", NSProcessInfo.processInfo.processName);
             @try {
-                Class uic = NSClassFromString(@"UIInputWindowController");
-                if (uic) {
-                    MSHookMessageEx(uic, NSSelectorFromString(@"viewDidLayoutSubviews"),
-                                    (IMP)&_dpUIInputViewDidLayout, (IMP *)&_origUIInputViewDidLayout);
-                    NSLog(@"[InteractivePiP] App 键盘托管 hook 已装");
+                Class us = NSClassFromString(@"UIScreen");
+                if (us) {
+                    MSHookMessageEx(us, NSSelectorFromString(@"bounds"),
+                                    (IMP)&_dpUIScreenBounds, (IMP *)&_origUIScreenBounds);
+                    MSHookMessageEx(us, NSSelectorFromString(@"nativeBounds"),
+                                    (IMP)&_dpUIScreenNativeBounds, (IMP *)&_origUIScreenNativeBounds);
+                    NSLog(@"[InteractivePiP] UIScreen bounds/nativeBounds hook 已装");
                 }
             } @catch (__unused NSException *e) {}
         } else {
