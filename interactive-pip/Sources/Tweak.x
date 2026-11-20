@@ -640,12 +640,83 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
 
+// 实时分辨率(安全版): 只注入 QQ 进程(Filter=com.tencent.qq), notify 带 pid 过滤,
+// 只有 getpid()==托管pid 的进程才改 UIScreen 和主 UIWindow frame。
+// 0.7.30 的教训: UIKit 全注入 + 无 pid 过滤 = 所有 App 布局错乱卡死。
+static int sPaneW = 0, sPaneH = 0, sHostPid = 0;
+static void dpEnsureToks(void) {
+    if (!sPaneW) notify_register_check("com.seagull.duo.pane.w", &sPaneW);
+    if (!sPaneH) notify_register_check("com.seagull.duo.pane.h", &sPaneH);
+    if (!sHostPid) notify_register_check("com.seagull.duo.host.pid", &sHostPid);
+}
+static BOOL dpAmIHosted(void) {
+    dpEnsureToks();
+    uint64_t v = 0;
+    if (sHostPid && notify_get_state(sHostPid, &v) == NOTIFY_STATUS_OK && v > 0)
+        return (pid_t)v == getpid();
+    return NO;
+}
+static CGFloat dpPaneW(void) { dpEnsureToks(); uint64_t v=0;
+    if (sPaneW && notify_get_state(sPaneW,&v)==NOTIFY_STATUS_OK && v>0) return (CGFloat)v/1000.0; return 0; }
+static CGFloat dpPaneH(void) { dpEnsureToks(); uint64_t v=0;
+    if (sPaneH && notify_get_state(sPaneH,&v)==NOTIFY_STATUS_OK && v>0) return (CGFloat)v/1000.0; return 0; }
+
+static CGRect (*_origUIScreenBounds)(id, SEL);
+static CGRect _dpUIScreenBounds(id self, SEL _cmd) {
+    if (dpAmIHosted()) { CGFloat w=dpPaneW(), h=dpPaneH(); if (w>1&&h>1) return CGRectMake(0,0,w,h); }
+    return _origUIScreenBounds(self, _cmd);
+}
+static CGRect (*_origUIScreenNativeBounds)(id, SEL);
+static CGRect _dpUIScreenNativeBounds(id self, SEL _cmd) {
+    if (dpAmIHosted()) { CGFloat w=dpPaneW(), h=dpPaneH(); if (w>1&&h>1) return CGRectMake(0,0,w,h); }
+    return _origUIScreenNativeBounds(self, _cmd);
+}
+
+static BOOL gWinAdjusted = NO;
+static CGRect gOrigWinFrame;
+static void dpApplyPaneFrame(void) {
+    @autoreleasepool {
+        if (!dpAmIHosted()) {
+            if (gWinAdjusted) {
+                UIWindow *w = [UIApplication sharedApplication].keyWindow;
+                if (!w) w = [UIApplication sharedApplication].windows.firstObject;
+                if (w) w.frame = gOrigWinFrame;
+                gWinAdjusted = NO;
+            }
+            return;
+        }
+        CGFloat w = dpPaneW(), h = dpPaneH();
+        if (w < 1 || h < 1) return;
+        UIWindow *win = [UIApplication sharedApplication].keyWindow;
+        if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+        if (!win) return;
+        if (!gWinAdjusted) { gOrigWinFrame = win.frame; gWinAdjusted = YES; }
+        if (!CGRectEqualToRect(win.frame, CGRectMake(0,0,w,h))) {
+            win.frame = CGRectMake(0,0,w,h);
+            [win layoutIfNeeded];
+        }
+    }
+}
+
 %ctor {
     @autoreleasepool {
         if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
-            // App 进程: 0.7.27 的 UIScreen bounds hook 只改了 screen 而 QQ 的
-            // window 仍全屏, 结果内容居中+上下空白, 已回滚 — 这里不装任何 hook。
-            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 无 hook", NSProcessInfo.processInfo.processName);
+            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 实时分辨率 hook(pid过滤)", NSProcessInfo.processInfo.processName);
+            @try {
+                Class us = NSClassFromString(@"UIScreen");
+                if (us) {
+                    MSHookMessageEx(us, NSSelectorFromString(@"bounds"),
+                                    (IMP)&_dpUIScreenBounds, (IMP *)&_origUIScreenBounds);
+                    MSHookMessageEx(us, NSSelectorFromString(@"nativeBounds"),
+                                    (IMP)&_dpUIScreenNativeBounds, (IMP *)&_origUIScreenNativeBounds);
+                }
+                int tok = 0;
+                notify_register_dispatch("com.seagull.duo.pane.updated", &tok, dispatch_get_main_queue(), ^(int t) {
+                    dpApplyPaneFrame();
+                });
+                dpApplyPaneFrame();
+                NSLog(@"[InteractivePiP] App 实时分辨率 hook 已装");
+            } @catch (__unused NSException *e) {}
         } else {
         [DPSettings shared];
         static int lockToken;

@@ -1,5 +1,6 @@
 #import "DPSceneHost.h"
 #import <notify.h>
+#import <unistd.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -1544,6 +1545,16 @@
     self.view.clipsToBounds = YES;
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
                         NSStringFromCGSize(target), self.view.superview ? 1 : 0];
+    // 实时分辨率(安全版): 广播 pane 尺寸 + 被托管 App 的 pid。App 进程读取后
+    // 只有 getpid()==托管pid 才改 UIScreen/window, 其它 App 零影响。
+    static int sPaneW = 0, sPaneH = 0, sHostPid = 0;
+    if (!sPaneW) notify_register_check("com.seagull.duo.pane.w", &sPaneW);
+    if (!sPaneH) notify_register_check("com.seagull.duo.pane.h", &sPaneH);
+    if (!sHostPid) notify_register_check("com.seagull.duo.host.pid", &sHostPid);
+    notify_set_state(sPaneW, (uint64_t)(target.width * 1000.0));
+    notify_set_state(sPaneH, (uint64_t)(target.height * 1000.0));
+    notify_set_state(sHostPid, (uint64_t)([self keyboardRoutingPID] > 0 ? [self keyboardRoutingPID] : 0));
+    notify_post("com.seagull.duo.pane.updated");
 }
 
 - (void)applySnapshotFallback {
