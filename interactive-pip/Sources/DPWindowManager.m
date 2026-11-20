@@ -718,8 +718,10 @@
                 for (unsigned i = 0; i < nm2 && cnt < 7; i++) {
                     const char *sn = sel_getName(method_getName(ml2[i]));
                     NSString *xn = [NSString stringWithUTF8String:sn];
-                    if ([xn rangeOfString:@"ceneView"].location != NSNotFound ||
-                        [xn rangeOfString:@"hostView"].location != NSNotFound) {
+                    const char *tc = method_getTypeEncoding(ml2[i]);
+                    if (![[NSString stringWithUTF8String:tc] hasPrefix:@"@"]) continue;
+                    if ([xn rangeOfString:@"View"].location != NSNotFound ||
+                        [xn rangeOfString:@"Host"].location != NSNotFound) {
                         [s appendFormat:@"  %s %s\n", sn, method_getTypeEncoding(ml2[i])];
                         cnt++;
                     }
@@ -728,6 +730,27 @@
             }
         }
     } @catch (__unused NSException *dmEx) { [s appendFormat:@"fbMgr=ERR\n"]; }
+
+    // Read-only: what view-returning selector does the FBScene itself expose?
+    if (sc) {
+        @try {
+            [s appendFormat:@"scView=\n"];
+            unsigned nm3 = 0;
+            Method *ml3 = class_copyMethodList([sc class], &nm3);
+            if (ml3) {
+                int c3 = 0;
+                for (unsigned i = 0; i < nm3 && c3 < 6; i++) {
+                    const char *sn = sel_getName(method_getName(ml3[i]));
+                    const char *tc = method_getTypeEncoding(ml3[i]);
+                    if (![[NSString stringWithUTF8String:tc] hasPrefix:@"@"]) continue;
+                    if ([[NSString stringWithUTF8String:sn] rangeOfString:@"View"].location == NSNotFound) continue;
+                    [s appendFormat:@"  %s %s\n", sn, tc];
+                    c3++;
+                }
+                free(ml3);
+            }
+        } @catch (__unused NSException *scEx) { [s appendFormat:@"scView=ERR\n"]; }
+    }
 
     if (!self.diagLabel) {
         UILabel *l = [[UILabel alloc] init];
@@ -742,7 +765,7 @@
     }
     self.diagLabel.text = s;
     CGFloat w = self.overlayRoot.bounds.size.width;
-    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 300);
+    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 360);
     self.diagLabel.hidden = NO;
 }
 

@@ -654,12 +654,7 @@
             }
         }
     } @catch (__unused NSException *e) {}
-        // Last resort: FrontBoard's scene manager itself acts as the host manager.
-    // Without this iOS 16 falls through to the pixel-only layer container,
-    // which cannot take the system keyboard.
-    id mgr = [self fbSceneManager] ?: [self sbMainDisplaySceneManager];
-    if (mgr) return mgr;
-return nil;
+    return nil;
 }
 
 - (id)settingsCopyForScene:(id)scene {
@@ -930,15 +925,6 @@ return nil;
         self.hostIsSceneView = YES;
         NSLog(@"[InteractivePiP] sceneView %@ -> %@", self.bundleID, NSStringFromClass(sceneView.class));
         return sceneView;
-    }
-
-    // 1.5) Ask the FrontBoard scene manager. On iOS 16 the scene view factory
-    //      lives on FBSceneManager, not on the FBScene itself.
-    UIView *mgrView = [self sceneViewFromSceneManager:ref];
-    if (mgrView) {
-        self.hostIsSceneView = YES;
-        NSLog(@"[InteractivePiP] sceneView(manager) %@ -> %@", self.bundleID, NSStringFromClass(mgrView.class));
-        return mgrView;
     }
 
     // 2) Legacy host manager (absent on newer systems).
