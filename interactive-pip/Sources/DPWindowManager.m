@@ -1505,6 +1505,28 @@ static id DPDynamicGet(id obj, NSString *key) {
             } @catch (__unused NSException *e) { layout = nil; }
         }
     }
+    // PV 1.0.9 also probes the three-argument variant. Only invoke it when
+    // the runtime encoding confirms all three object parameters; otherwise
+    // leave the existing behavior untouched rather than guessing an ABI.
+    if (!layout) {
+        SEL s3 = NSSelectorFromString(@"initWithItemsForLayoutRoles:configuration:environment:");
+        NSMethodSignature *sig = [SBAppLayoutCls instanceMethodSignatureForSelector:s3];
+        if (sig && sig.numberOfArguments == 5 &&
+            [sig getArgumentTypeAtIndex:2][0] == '@' &&
+            [sig getArgumentTypeAtIndex:3][0] == '@' &&
+            [sig getArgumentTypeAtIndex:4][0] == '@') {
+            @try {
+                layout = ((id(*)(id, SEL, id, id, id))objc_msgSend)(
+                    [SBAppLayoutCls alloc], s3, items, @[@1], nil);
+                NSLog(@"[InteractivePiP] switcher third initializer result=%@", layout ? @"YES" : @"NO");
+            } @catch (NSException *e) {
+                NSLog(@"[InteractivePiP] switcher third initializer exception=%@", e.name);
+                layout = nil;
+            }
+        } else {
+            NSLog(@"[InteractivePiP] switcher third initializer absent or ABI mismatch");
+        }
+    }
     return layout;
 }
 
