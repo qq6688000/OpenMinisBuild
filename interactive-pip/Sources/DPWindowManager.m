@@ -396,16 +396,52 @@
     self.overlayWindow.hidden = YES;
 }
 
+/// 缓存的 _UIRemoteKeyboards 实例。
+@property (nonatomic, strong, nullable) id remoteKeyboardsInstance;
+/// 类方法表（工厂方法）里真正返回对象的那个 selector，探到一次就记住。
+@property (nonatomic, assign) SEL remoteKeyboardsFactory;
+
 - (id)sharedRemoteKeyboards {
+    if (self.remoteKeyboardsInstance) return self.remoteKeyboardsInstance;
     Class remoteClass = NSClassFromString(@"_UIRemoteKeyboards");
     if (!remoteClass) return nil;
-    SEL shared = NSSelectorFromString(@"sharedRemoteKeyboards");
-    if (![remoteClass respondsToSelector:shared]) return nil;
-    @try {
-        return ((id (*)(id, SEL))objc_msgSend)(remoteClass, shared);
-    } @catch (__unused NSException *exception) {
-        return nil;
+
+    // Guessing one spelling of the singleton accessor is not enough: on this
+    // build `+sharedRemoteKeyboards` does not exist, the call silently returned
+    // nil and every downstream registration was skipped, which is precisely
+    // why the keyboard never appeared. Enumerate the class method list instead
+    // and pick any id-returning factory.
+    unsigned metaCount = 0;
+    Method *meta = class_copyMethodList(remoteClass, &metaCount);
+    if (meta) {
+        for (unsigned i = 0; i < metaCount; i++) {
+            const char *name = sel_getName(method_getName(meta[i]));
+            if (!name) continue;
+            NSString *ns = [NSString stringWithUTF8String:name];
+            BOOL factoryName = [ns containsString:@"hared"] || [ns containsString:@"nstance"];
+            const char *types = method_getTypeEncoding(meta[i]);
+            BOOL returnsObject = types && (types[0] == '@');
+            if (!factoryName && !returnsObject) continue;
+            @try {
+                id inst = ((id (*)(id, SEL))objc_msgSend)(remoteClass, method_getName(meta[i]));
+                NSLog(@"[InteractivePiP] _UIRemoteKeyboards 工厂 %@ -> %s (%@)", name, types ? types : "-", inst);
+                if (inst) {
+                    self.remoteKeyboardsInstance = inst;
+                    self.remoteKeyboardsFactory = method_getName(meta[i]);
+                    break;
+                }
+            } @catch (__unused NSException *exception) {}
+        }
+        free(meta);
     }
+    if (!self.remoteKeyboardsInstance) {
+        NSLog(@"[InteractivePiP] _UIRemoteKeyboards 没有找到实例工厂方法");
+    }
+    return self.remoteKeyboardsInstance;
+}
+
+- (Class)remoteKeyboardsClass {
+    return NSClassFromString(@"_UIRemoteKeyboards");
 }
 
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled {
@@ -504,12 +540,20 @@
 }
 
 - (void)attemptRemoteKeyboardsRegistration:(id)kb host:(UIView *)host pid:(int)pid scene:(id)scene {
-    // `_UIRemoteKeyboards` renames between iOS builds. Trusting one guessed
-    // selector means a silent no-op, and the remote keyboard content layer then
-    // has nowhere to draw — the keyboard window takes its space but stays blank,
-    // which is exactly the symptom we saw. So scan the real method list and
-    // invoke any void setter whose encoding says (object, pid, object): that is
-    // the call which tells the keyboard content where to render.
+    if (!kb) return;
+    // Exact spelling wins: the diagnostics panel proved this selector exists on
+    // this build. Trusting the exact name is what turns a silent no-op into a
+    // real registration.
+    SEL add = NSSelectorFromString(@"addHostedWindowView:fromPID:forScene:");
+    if ([kb respondsToSelector:add]) {
+        @try {
+            ((void (*)(id, SEL, id, int, id))objc_msgSend)(kb, add, host, pid, scene);
+            NSLog(@"[InteractivePiP] 远程键盘登记已调用 addHostedWindowView:fromPID:forScene: pid=%d scene=%@", pid, scene);
+            return;
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    // Generic fallback: any void setter whose encoding is (object, int, object).
     Class c = [kb class];
     unsigned count = 0;
     Method *methods = class_copyMethodList(c, &count);
@@ -519,8 +563,12 @@
         const char *types = method_getTypeEncoding(methods[i]);
         if (!types || types[0] != 'v') continue;
         NSString *args = [NSString stringWithUTF8String:types + 3];
-        if ([args rangeOfString:@"Q"].location == NSNotFound) continue;
-        if ([args componentsSeparatedByString:@""].count != 2) continue;
+        // An object, then a scalar integer pid, then an object.
+        if ([args length] < 3) continue;
+        if ([args characterAtIndex:0] != '@') continue;
+        unichar mid = [args characterAtIndex:1];
+        BOOL isInt = (mid == 'i' || mid == 'q' || mid == 'Q' || mid == 'I');
+        if (!isInt) continue;
         @try {
             ((void (*)(id, SEL, id, int, id))objc_msgSend)(kb, sel, host, pid, scene);
             NSLog(@"[InteractivePiP] 远程键盘登记已调用 %s (%s)", sel_getName(sel), types);
@@ -544,8 +592,9 @@
     [s appendFormat:@"live=%d sceneView=%d pid=%d level=%.0f\n",
        [sh isLive] ? 1 : 0, [sh keyboardHostIsSceneView] ? 1 : 0,
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
-    [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d\n",
-       self.hostedInputActive ? 1 : 0, kb ? 1 : 0];
+    [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d inst=%d factory=%s\n",
+       self.hostedInputActive ? 1 : 0, kb ? 1 : 0, self.remoteKeyboardsInstance ? 1 : 0,
+       self.remoteKeyboardsFactory ? sel_getName(self.remoteKeyboardsFactory) : "-"];
     [s appendFormat:@"wkscene=%@\n",
        NSStringFromClass([self.overlayWindow.windowScene class]) ?: @"nil"];
     if (kb) {
