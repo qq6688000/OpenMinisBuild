@@ -32,6 +32,7 @@
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t reconnectTimer;
 @property (nonatomic, assign) NSUInteger reconnectAttempts;
@@ -1510,7 +1511,7 @@
     if (self.nativeSceneSize.width < 2 || self.nativeSceneSize.height < 2) {
         self.nativeSceneSize = [UIScreen mainScreen].bounds.size;
     }
-    hostView.autoresizingMask = UIViewAutoresizingNone;
+    hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; // track pane resize
     hostView.clipsToBounds = YES;
     [self.view addSubview:hostView];
     [self.view bringSubviewToFront:hostView];
@@ -1531,18 +1532,19 @@
     if (!self.hostView) return;
 
     CGSize target = self.view.bounds.size;
-    CGSize canvas = self.nativeSceneSize;
-    if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
-    if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
-
+    if (target.width < 1 || target.height < 1) return;
+    // Fill the pane straight — no transform, no centering, no letterbox.
+    // The host canvas (393x852) and the pane share the phone's aspect ratio, so
+    // covering the pane bounds IS an equal-ratio fit. The old transform+center
+    // path measured self.view.bounds BEFORE the pane reached its final size,
+    // which pushed hostView's top ~91pt outside the pane and left the pane's
+    // own dark background showing (the reported "black window").
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
-    self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    // Fill the pane: take the larger factor so no letterbox remains, and let
-    // the overflowing axis be clipped. Uniform scale keeps text undistorted.
-    CGFloat scale = MAX(target.width / canvas.width, target.height / canvas.height);
+    self.hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.hostView.frame = CGRectMake(0, 0, target.width, target.height);
     self.view.clipsToBounds = YES;
-    self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
+    self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
+                        NSStringFromCGSize(target), self.view.superview ? 1 : 0];
 }
 
 - (void)applySnapshotFallback {

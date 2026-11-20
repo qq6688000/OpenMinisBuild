@@ -672,6 +672,7 @@
     NSString *hvd = [sh hostViewDiag];
     [s appendFormat:@"hostDiag=%@\n", hvd ?: @"-"];
     [s appendFormat:@"layer=%@\n", [sh layerDiag] ?: @"-"];
+    [s appendFormat:@"layout=%@\n", [sh layoutDiag] ?: @"-"];
     if (hv) {
         [s appendFormat:@"hvInfo=%@ sub=%lu alpha=%.2f hid=%d win=%d\n",
            NSStringFromCGRect(hv.frame), (unsigned long)[hv subviews].count, hv.alpha,

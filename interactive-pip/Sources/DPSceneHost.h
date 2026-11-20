@@ -23,6 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign, readonly) BOOL keyboardHostIsSceneView;
 @property (nonatomic, copy, readonly, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
+@property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;
 - (void)retryAttach;
 - (void)invalidate;
