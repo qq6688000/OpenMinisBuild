@@ -183,7 +183,7 @@ def main():
         (stage/'DEBIAN').mkdir()
         shutil.copyfile(dylib,dl/dylib.name)
         (dl/'InteractivePiP.plist').write_bytes(plistlib.dumps(
-            {'Filter':{'Bundles':['com.apple.springboard']}},fmt=plistlib.FMT_XML))
+            {'Filter':{'Bundles':['com.apple.springboard','com.tencent.qq']}},fmt=plistlib.FMT_XML))
         shutil.copyfile(prefs_bin,pb/prefs_bin.name)
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'InteractivePiPPrefs',
