@@ -637,6 +637,31 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
+// ── 快照缓存：让系统把我们的分屏 layout 当“可缓存 layout”，为其生成切换器快照 ──
+// 逆向自 PanoramicView 1.0.9（SBAppSwitcherSnapshotImageCache setCachableAppLayouts:
+// hook，反汇编 0x75ec0 分支 + restore 流程 0x158cc 的配套缓存路径）。
+// 数据源(appLayoutsForSwitcherContentController:)里有 layout 不够 —— 系统快照
+// 缓存不认它就不会渲染卡片。只追加不删除，非分屏态完全不干预。
+%hook SBAppSwitcherSnapshotImageCache
+- (void)setCachableAppLayouts:(NSArray<id> *)layouts {
+    NSArray *in = layouts;
+    @try {
+        id ourLayout = [[DPWindowManager shared] currentSwitcherLayout];
+        if (ourLayout && in && ![in containsObject:ourLayout]) {
+            NSMutableArray *m = [in mutableCopy];
+            [m addObject:ourLayout];
+            in = m;
+            NSLog(@"[InteractivePiP] cachableAppLayouts appended ours total=%lu",
+                  (unsigned long)m.count);
+        }
+    } @catch (__unused NSException *e) {
+        NSLog(@"[InteractivePiP] cachableAppLayouts hook exception -> passthrough");
+    }
+    %orig(in);
+}
+%end
+
+
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
 
