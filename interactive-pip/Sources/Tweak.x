@@ -640,12 +640,86 @@ static NSArray *DPInjectedShortcutItems(void) {
 
 // App 进程（QQ 等被托管 App）键盘窗口托管辅助
 
+// App 进程: 让托管 App 的 UIWindow 和 UIScreen 都以为屏幕是 pane 尺寸。
+// QQ 布局的锚点是 UIWindow(全屏), 只改 UIScreen 会让内容居中; 必须连 window
+// frame 一起改, 它才会按 pane 布局。不碰 scene settings(0.7.24 已证场景非法)。
+static int sDpPaneW = 0, sDpPaneH = 0;
+static void dpEnsurePaneTokens(void) {
+    if (!sDpPaneW) notify_register_check("com.seagull.duo.pane.w", &sDpPaneW);
+    if (!sDpPaneH) notify_register_check("com.seagull.duo.pane.h", &sDpPaneH);
+}
+static CGFloat dpPaneWidth(void) {
+    dpEnsurePaneTokens();
+    uint64_t v = 0;
+    if (sDpPaneW && notify_get_state(sDpPaneW, &v) == NOTIFY_STATUS_OK && v > 0) return v / 1000.0;
+    return 0;
+}
+static CGFloat dpPaneHeight(void) {
+    dpEnsurePaneTokens();
+    uint64_t v = 0;
+    if (sDpPaneH && notify_get_state(sDpPaneH, &v) == NOTIFY_STATUS_OK && v > 0) return v / 1000.0;
+    return 0;
+}
+static CGRect (*_dpOrigUIScreenBounds)(id, SEL);
+static CGRect _dpUIScreenBounds(id self, SEL _cmd) {
+    CGRect r = _dpOrigUIScreenBounds(self, _cmd);
+    @try {
+        CGFloat pw = dpPaneWidth(), ph = dpPaneHeight();
+        if (pw > 1 && ph > 1) { r.size.width = pw; r.size.height = ph; }
+    } @catch (__unused NSException *e) {}
+    return r;
+}
+static CGRect (*_dpOrigUIScreenNativeBounds)(id, SEL);
+static CGRect _dpUIScreenNativeBounds(id self, SEL _cmd) {
+    CGRect r = _dpOrigUIScreenNativeBounds(self, _cmd);
+    @try {
+        CGFloat pw = dpPaneWidth(), ph = dpPaneHeight();
+        if (pw > 1 && ph > 1) { r.size.width = pw; r.size.height = ph; }
+    } @catch (__unused NSException *e) {}
+    return r;
+}
+static CGRect gDpOrigWindowFrame;
+static BOOL gDpWindowAdjusted = NO;
+static void dpApplyPaneFrame(void) {
+    @autoreleasepool {
+        CGFloat pw = dpPaneWidth(), ph = dpPaneHeight();
+        UIWindow *w = [UIApplication sharedApplication].keyWindow;
+        if (!w) w = [UIApplication sharedApplication].windows.firstObject;
+        if (!w) return;
+        if (pw < 1 || ph < 1) {
+            if (gDpWindowAdjusted) { w.frame = gDpOrigWindowFrame; gDpWindowAdjusted = NO; }
+            return;
+        }
+        if (!gDpWindowAdjusted) { gDpOrigWindowFrame = w.frame; gDpWindowAdjusted = YES; }
+        if (!CGRectEqualToRect(w.frame, CGRectMake(0, 0, pw, ph))) {
+            w.frame = CGRectMake(0, 0, pw, ph);
+            [w layoutIfNeeded];
+        }
+    }
+}
+
 %ctor {
     @autoreleasepool {
         if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
-            // App 进程: 0.7.27 的 UIScreen bounds hook 只改了 screen 而 QQ 的
-            // window 仍全屏, 结果内容居中+上下空白, 已回滚 — 这里不装任何 hook。
-            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 无 hook", NSProcessInfo.processInfo.processName);
+            // App 进程: hook UIScreen bounds/nativeBounds + 把主 UIWindow frame 改成
+            // pane 尺寸, 让托管 App 真正按窗口布局(实时分辨率, 非压缩/非居中)。
+            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 窗口/屏幕缩放 hook", NSProcessInfo.processInfo.processName);
+            @try {
+                Class us = [UIScreen class];
+                if (us) {
+                    MSHookMessageEx(us, @selector(bounds),
+                                    (IMP)&_dpUIScreenBounds, (IMP *)&_dpOrigUIScreenBounds);
+                    MSHookMessageEx(us, @selector(nativeBounds),
+                                    (IMP)&_dpUIScreenNativeBounds, (IMP *)&_dpOrigUIScreenNativeBounds);
+                    NSLog(@"[InteractivePiP] UIScreen bounds/nativeBounds hook 已装");
+                }
+            } @catch (__unused NSException *e) {}
+            @try {
+                static int sDpUpdated = 0;
+                notify_register_dispatch("com.seagull.duo.pane.updated", &sDpUpdated,
+                                         dispatch_get_main_queue(), ^(int t) { dpApplyPaneFrame(); });
+                dpApplyPaneFrame();
+            } @catch (__unused NSException *e) {}
         } else {
         [DPSettings shared];
         static int lockToken;

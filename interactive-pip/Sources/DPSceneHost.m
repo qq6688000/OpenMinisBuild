@@ -1544,6 +1544,14 @@
     self.view.clipsToBounds = YES;
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
                         NSStringFromCGSize(target), self.view.superview ? 1 : 0];
+    // 实时分辨率: 把 pane 尺寸广播给 App 进程, 其 hook 据此调整 UIScreen 与
+    // 主 UIWindow, 让托管 App 按窗口布局而非全屏画布。
+    static int sPaneW = 0, sPaneH = 0;
+    if (!sPaneW) notify_register_check("com.seagull.duo.pane.w", &sPaneW);
+    if (!sPaneH) notify_register_check("com.seagull.duo.pane.h", &sPaneH);
+    notify_set_state(sPaneW, (uint64_t)(target.width * 1000.0));
+    notify_set_state(sPaneH, (uint64_t)(target.height * 1000.0));
+    notify_post("com.seagull.duo.pane.updated");
 }
 
 - (void)applySnapshotFallback {
