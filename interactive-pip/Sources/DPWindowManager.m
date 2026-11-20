@@ -32,6 +32,9 @@
 @property (nonatomic, strong, nullable) DPPassthroughWindow *overlayWindow;
 @property (nonatomic, strong) DPPassthroughView *overlayRoot;
 @property (nonatomic, strong, nullable) UILabel *diagLabel;
+/// `prepareForHostedWindowWithScene:` 返回的键盘宿主窗口。必须保留，否则 ARC 释放，
+/// 系统 `keyboardWindow` 就变 nil，键盘永远不出现。
+@property (nonatomic, strong, nullable) id hostedKeyboardWindow;
 /// 缓存的 _UIRemoteKeyboards 实例（用类方法表自动发现工厂，不再猜名）。
 @property (nonatomic, strong, nullable) id remoteKeyboardsInstance;
 /// 类方法表里真正返回对象的那个工厂 selector，探到一次就记住。
@@ -493,8 +496,16 @@
         SEL prep = NSSelectorFromString(@"prepareForHostedWindowWithScene:");
         if ([kb respondsToSelector:prep]) {
             @try {
-                ((id (*)(id, SEL, id))objc_msgSend)(kb, prep, scene);
-                NSLog(@"[InteractivePiP] 键盘 prep 成功 scene=%@", scene);
+                // This returns the hosted keyboard window. Retain it: if the
+                // reference is dropped, ARC releases the window and the system's
+                // `keyboardWindow` goes nil — the keyboard never appears.
+                id prepWin = ((id (*)(id, SEL, id))objc_msgSend)(kb, prep, scene);
+                if (prepWin) {
+                    self.hostedKeyboardWindow = prepWin;
+                    NSLog(@"[InteractivePiP] 键盘 prep 成功 scene=%@ win=%@", scene, prepWin);
+                } else {
+                    NSLog(@"[InteractivePiP] 键盘 prep 返回 nil scene=%@", scene);
+                }
             } @catch (__unused NSException *prepEx) {
                 NSLog(@"[InteractivePiP] 键盘 prep 异常(继续登记): %@", prepEx);
             }
@@ -643,6 +654,7 @@
                 [s appendFormat:@"keyboardWindow=%@\n", kw ? NSStringFromClass([kw class]) : @"nil"];
             } @catch (__unused NSException *e) { [s appendFormat:@"keyboardWindow=ERR\n"]; }
         }
+        [s appendFormat:@"hostedWin=%@\n", self.hostedKeyboardWindow ? NSStringFromClass([self.hostedKeyboardWindow class]) : @"nil"];
         unsigned n = 0;
         Method *ms = class_copyMethodList([kb class], &n);
         if (ms) {
