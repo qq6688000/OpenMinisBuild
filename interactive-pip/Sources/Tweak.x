@@ -637,8 +637,26 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
+
+// App 进程（QQ 等被托管 App）键盘窗口托管辅助
+%hook UIInputWindowController
+- (void)viewDidLayoutSubviews {
+    %orig;
+    @try {
+        id win = [self valueForKey:@"window"];
+        if (win) {
+            NSLog(@"[InteractivePiP] App 键盘窗口 %@ level=%.0f",
+                  NSStringFromClass([win class]), ((UIWindow *)win).windowLevel);
+        }
+    } @catch (__unused NSException *e) {}
+}
+%end
+
 %ctor {
     @autoreleasepool {
+        if (![NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
+            NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 仅键盘托管", NSProcessInfo.processInfo.processName);
+        } else {
         [DPSettings shared];
         static int lockToken;
         notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
@@ -651,5 +669,6 @@ static NSArray *DPInjectedShortcutItems(void) {
         uint64_t initialState = 0;
         if (notify_get_state(lockToken, &initialState) == NOTIFY_STATUS_OK && initialState) [[DPWindowManager shared] handleDeviceLock];
         NSLog(@"[InteractivePiP] 已加载 — 启用=%d", [DPSettings shared].isEnabled);
+        }
     }
 }
