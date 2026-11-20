@@ -1777,16 +1777,14 @@
 - (void)updateSceneSettingsWithSize:(CGSize)size {
     if (!self.scene || size.width < 1 || size.height < 1) return;
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
-    // Commit the pane's real size so the hosted app lays itself out for the
-    // window instead of the full screen. Passing CGSizeZero here meant the
-    // scene never learned the window size and rendered full-screen, which we
-    // then had to stretch into the pane (distorted content).
-    if ([self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES]) {
+    // NB: do NOT pass the pane size here. FBSceneSettings' frame is the scene's
+    // position on screen, and on iOS 16 it must stay full screen — committing a
+    // half-screen frame makes the scene invalid (hosted pid dropped to 0 and the
+    // pane goes black). The app therefore always renders the full canvas.
+    if ([self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO]) {
         self.lastCommittedSceneSize = size;
-        self.layoutDiag = [NSString stringWithFormat:@"view=%@ committed=%@ set=%d",
-                           NSStringFromCGSize(self.view.bounds.size),
-                           NSStringFromCGSize(size), self.scene ? 1 : 0];
-        NSLog(@"[InteractivePiP] 场景尺寸已提交 %@ -> %@", self.bundleID, NSStringFromCGSize(size));
+        self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
+                           NSStringFromCGSize(self.view.bounds.size), self.scene ? 1 : 0];
     }
 }
 
