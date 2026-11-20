@@ -599,7 +599,7 @@ static NSArray *DPInjectedShortcutItems(void) {
         id ourLayout = [wm currentSwitcherLayout];
         if (ourLayout && ![arr containsObject:ourLayout]) {
             NSMutableArray *m = [arr mutableCopy];
-            [m addObject:ourLayout];
+            [m insertObject:ourLayout atIndex:0];
             layouts = m;
             wm.switcherAppendCalls++;
         }

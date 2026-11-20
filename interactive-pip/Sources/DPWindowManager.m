@@ -57,6 +57,7 @@
 @property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
 @property (nonatomic, weak, nullable) id switcherContentController;
 @property (nonatomic) BOOL switcherRefreshScheduled;
+@property (nonatomic, copy, nullable) NSString *switcherRefreshStatus;
 - (void)createSwitcherGroupCard;
 - (void)requestSwitcherGroupRefresh;
 @property (nonatomic, strong) UIView *splitDivider;
@@ -668,9 +669,9 @@
     UIView *hv = [sh keyboardRoutingView];
     id sc = [sh keyboardRoutingScene];
     NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"SW mode=%ld panes=%lu parked=%d build=%@\nsrc=%lu add=%lu cache=%lu page=%lu\n",
+    [s appendFormat:@"SW mode=%ld panes=%lu parked=%d build=%@ refresh=%@\nsrc=%lu add=%lu cache=%lu page=%lu\n",
         (long)self.mode, (unsigned long)self.splitWindows.count, self.sessionParked,
-        self.switcherBuildStatus ?: @"-", (unsigned long)self.switcherSourceCalls,
+        self.switcherBuildStatus ?: @"-", self.switcherRefreshStatus ?: @"-", (unsigned long)self.switcherSourceCalls,
         (unsigned long)self.switcherAppendCalls, (unsigned long)self.switcherCacheCalls,
         (unsigned long)self.switcherPageCalls];
     [s appendFormat:@"focus=%@\nhost=%@\n", f.bundleID ?: @"-",
@@ -1286,6 +1287,7 @@
 }
 
 - (void)parkSessionInAppSwitcher {
+    if (self.sessionParked) return;
     // Keep the whole session alive but take it off screen entirely, so the home
     // screen and the app switcher stay visually clean. Nothing is torn down:
     // scenes stay hosted and resume instantly on the next activation.
@@ -1307,6 +1309,7 @@
         w.alpha = 0.0;
     }
     [self updateSessionControls];
+    if (self.activeSwitcherCard) [self requestSwitcherGroupRefresh];
     NSLog(@"[InteractivePiP] 会话已停靠后台任务列表，窗口数=%lu",
           (unsigned long)self.mutableFloatingWindows.count);
 }
@@ -1330,7 +1333,12 @@
 }
 
 - (void)handleUserHome {
-    if (!self.internalHomeReturn) [self dismissAllAnimated:NO];
+    if (self.internalHomeReturn) return;
+    if (self.mode == DPPresentationModeSplit && self.splitWindows.count == 2) {
+        [self parkSessionInAppSwitcher];
+    } else {
+        [self dismissAllAnimated:NO];
+    }
 }
 
 - (void)goHome {
@@ -1548,20 +1556,39 @@ static id DPDynamicGet(id obj, NSString *key) {
 - (void)observeSwitcherContentController:(id)controller {
     if (![NSThread isMainThread] || !controller) return;
     SEL sel = NSSelectorFromString(@"noteAppLayoutsDidChange");
-    if ([controller respondsToSelector:sel]) self.switcherContentController = controller;
+    if (![controller respondsToSelector:sel]) return;
+    if (self.switcherContentController == controller) return;
+    self.switcherContentController = controller;
+    // First data-source request may arrive after the split pair is created.
+    // Defer one refresh off the callback stack; repeat reads of this same
+    // controller do not schedule another one.
+    if (self.activeSwitcherCard) [self requestSwitcherGroupRefresh];
 }
 
 - (void)requestSwitcherGroupRefresh {
-    if (!self.switcherContentController || self.switcherRefreshScheduled) return;
+    if (self.switcherRefreshScheduled) return;
+    if (!self.switcherContentController) {
+        self.switcherRefreshStatus = @"wait-controller";
+        return;
+    }
+    self.switcherRefreshStatus = @"queued";
     self.switcherRefreshScheduled = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
         self.switcherRefreshScheduled = NO;
         id controller = self.switcherContentController;
         SEL sel = NSSelectorFromString(@"noteAppLayoutsDidChange");
         NSMethodSignature *sig = [controller methodSignatureForSelector:sel];
-        if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != 'v') return;
-        @try { ((void (*)(id, SEL))objc_msgSend)(controller, sel); }
-        @catch (NSException *e) { NSLog(@"[InteractivePiP] group refresh: %@", e.name); }
+        if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != 'v') {
+            self.switcherRefreshStatus = @"no-method";
+            return;
+        }
+        @try {
+            ((void (*)(id, SEL))objc_msgSend)(controller, sel);
+            self.switcherRefreshStatus = @"called";
+        } @catch (NSException *e) {
+            self.switcherRefreshStatus = @"exception";
+            NSLog(@"[InteractivePiP] group refresh: %@", e.name);
+        }
     });
 }
 
