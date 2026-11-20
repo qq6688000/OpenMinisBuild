@@ -1250,7 +1250,9 @@
     dispatch_source_set_event_handler(timer, ^{
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2 || !self2.live || !self2.scene) return;
-        [self2 applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
+        // Do NOT force foreground every second: that pins hosted scenes above
+        // the home/lock screen and is the "rebound after a few seconds" cause.
+        // [self2 applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
         [self2 acquireProcessAssertionIfNeeded];
         [self2 refreshExternalSceneHosts];
     });

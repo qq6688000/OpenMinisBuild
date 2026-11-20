@@ -492,13 +492,20 @@
     }
     if (drag) { drag.enabled = NO; drag.enabled = YES; }  // cancels current touch
     self.overlayWindow.hidden = YES;                       // pixels off lock screen
-    // NOTE: windowScene intentionally preserved; session survives lock.
+    // Suspend every hosted scene: stops the 1s keepAlive + reconnect timers so
+    // nothing can re-foreground the panes and rebound them over the lock screen.
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        [w.sceneHost setSuspended:YES];
+    }
+    // NOTE: windowScene / pair intentionally preserved; session survives lock.
 }
 
 - (void)handleDeviceUnlock {
     self.deviceLocked = NO;
     // Keep hidden until a real activation; bringOverlayToFront will re-show it.
     self.overlayWindow.hidden = YES;
+    // Do NOT resume here: session is rebuilt on next explicit activation, which
+    // avoids replaying the hosted scene onto the home/lock screen.
 }
 
 - (void)ensureOverlayVisible {
@@ -629,10 +636,8 @@
 - (void)layoutSplit {
     if (self.splitWindows.count != 2) return;
     CGRect full = self.overlayRoot.bounds;
-    UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
-    // Duo: panels reach the physical screen edges; only keep the status-bar
-    // cutout clear at the top. Hinge is a narrow centered seam.
-    CGRect b = UIEdgeInsetsInsetRect(full, UIEdgeInsetsMake(MAX(0, insets.top) + 44.0, 0, MAX(0, insets.bottom), 0));
+    // Duo: panels fill the entire screen edge to edge (no status/home inset).
+    CGRect b = full;
     BOOL sideBySide = b.size.width >= b.size.height;
     const CGFloat gap = sideBySide ? 8.0 : 10.0;   // visual seam
     const CGFloat touch = 26.0;                    // draggable strip
@@ -900,7 +905,8 @@
             break;
         }
     }
-    [self bringOverlayToFront];
+    // Do not re-show the overlay after Home; that repaints split panes over
+    // the home screen. Session stays alive and is rebuilt on next activation.
 }
 
 #pragma mark - Helpers
@@ -962,8 +968,7 @@
 - (void)handleSplitDrag:(UIPanGestureRecognizer *)gr {
     if (self.splitWindows.count != 2 || !self.overlayRoot) return;
     CGRect full = self.overlayRoot.bounds;
-    UIEdgeInsets insets = self.overlayRoot.safeAreaInsets;
-    CGFloat topInset = MAX(0, insets.top) + 44.0;
+    CGFloat topInset = 0;  // panels are edge-to-edge
     BOOL sideBySide = (full.size.width >= full.size.height);
     CGFloat available = (sideBySide ? full.size.width : full.size.height) - 26.0;
     if (available <= 1) return;
