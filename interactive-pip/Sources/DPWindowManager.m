@@ -560,23 +560,6 @@
             }
         }
 
-        @try {
-            Class medusaCls = NSClassFromString(@"SBMedusaHostedKeyboardWindowController");
-            if (medusaCls) {
-                id medusa = ((id (*)(id, SEL))objc_msgSend)(medusaCls, NSSelectorFromString(@"sharedInstance"));
-                if (!medusa) medusa = ((id (*)(id, SEL))objc_msgSend)(medusaCls, NSSelectorFromString(@"new"));
-                if (medusa) {
-                    SEL setKb = NSSelectorFromString(@"setRemoteKeyboards:");
-                    if ([medusa respondsToSelector:setKb]) {
-                        ((void (*)(id, SEL, id))objc_msgSend)(medusa, setKb, kb);
-                    }
-                    SEL upd = NSSelectorFromString(@"updateMedusaHostedKeyboardWindow");
-                    if ([medusa respondsToSelector:upd]) {
-                        ((void (*)(id, SEL))objc_msgSend)(medusa, upd);
-                    }
-                }
-            }
-        } @catch (__unused NSException *medEx) {}
         self.hostedInputActive = YES;
         self.keyboardRoutedWindow = target;
         NSLog(@"[InteractivePiP] 键盘登记完成 %@ pid=%d scene=%@", target.bundleID, pid, scene);
@@ -722,6 +705,30 @@
             free(ms);
         }
     }
+    // Which scene view selector does FrontBoard actually expose on THIS system?
+    @try {
+        id fbm = ((id (*)(id, SEL))objc_msgSend)(sh, NSSelectorFromString(@"fbSceneManager"));
+        if (!fbm) fbm = ((id (*)(id, SEL))objc_msgSend)(sh, NSSelectorFromString(@"sbMainDisplaySceneManager"));
+        [s appendFormat:@"fbMgr=%@\n", fbm ? NSStringFromClass([fbm class]) : @"nil"];
+        if (fbm) {
+            unsigned nm2 = 0;
+            Method *ml2 = class_copyMethodList([fbm class], &nm2);
+            if (ml2) {
+                int cnt = 0;
+                for (unsigned i = 0; i < nm2 && cnt < 7; i++) {
+                    const char *sn = sel_getName(method_getName(ml2[i]));
+                    NSString *xn = [NSString stringWithUTF8String:sn];
+                    if ([xn rangeOfString:@"ceneView"].location != NSNotFound ||
+                        [xn rangeOfString:@"hostView"].location != NSNotFound) {
+                        [s appendFormat:@"  %s %s\n", sn, method_getTypeEncoding(ml2[i])];
+                        cnt++;
+                    }
+                }
+                free(ml2);
+            }
+        }
+    } @catch (__unused NSException *dmEx) { [s appendFormat:@"fbMgr=ERR\n"]; }
+
     if (!self.diagLabel) {
         UILabel *l = [[UILabel alloc] init];
         l.tag = 0x445044;
@@ -735,7 +742,7 @@
     }
     self.diagLabel.text = s;
     CGFloat w = self.overlayRoot.bounds.size.width;
-    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 250);
+    self.diagLabel.frame = CGRectMake(6, 70, MIN(w - 12, 330), 300);
     self.diagLabel.hidden = NO;
 }
 

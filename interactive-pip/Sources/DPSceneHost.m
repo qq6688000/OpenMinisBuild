@@ -654,7 +654,12 @@
             }
         }
     } @catch (__unused NSException *e) {}
-    return nil;
+        // Last resort: FrontBoard's scene manager itself acts as the host manager.
+    // Without this iOS 16 falls through to the pixel-only layer container,
+    // which cannot take the system keyboard.
+    id mgr = [self fbSceneManager] ?: [self sbMainDisplaySceneManager];
+    if (mgr) return mgr;
+return nil;
 }
 
 - (id)settingsCopyForScene:(id)scene {
@@ -864,6 +869,51 @@
     return nil;
 }
 
+- (UIView *)sceneViewFromSceneManager:(CGSize)size {
+    // iOS 16 exposes scene view creation on FBSceneManager, NOT on the FBScene.
+    id mgr = [self fbSceneManager] ?: [self sbMainDisplaySceneManager];
+    if (!mgr) return nil;
+    NSString *req = self.requesterToken ?: @"InteractivePiP";
+    NSArray *names = @[
+        @"newSceneViewWithReferenceSize:hostRequester:",
+        @"newSceneViewWithReferenceSize:orientation:hostRequester:",
+        @"newSceneViewWithReferenceSize:containerOrientation:hostRequester:",
+        @"newSceneViewForScene:",
+    ];
+    for (NSString *name in names) {
+        SEL sel = NSSelectorFromString(name);
+        if (![mgr respondsToSelector:sel]) continue;
+        NSMethodSignature *sig = [mgr methodSignatureForSelector:sel];
+        if (!sig) continue;
+        @try {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            inv.target = mgr;
+            inv.selector = sel;
+            NSUInteger argc = sig.numberOfArguments;
+            if (argc > 2) [inv setArgument:&size atIndex:2];
+            if (argc > 3) [inv setArgument:&req atIndex:3];
+            if (argc > 4) { NSInteger z = 0; [inv setArgument:&z atIndex:4]; }
+            [inv invoke];
+            __unsafe_unretained id result = nil;
+            [inv getReturnValue:&result];
+            UIView *v = (UIView *)result;
+            if (![v isKindOfClass:[UIView class]] && [v respondsToSelector:@selector(view)]) {
+                v = ((UIView *(*)(id, SEL))objc_msgSend)(v, @selector(view));
+            }
+            if ([v isKindOfClass:[UIView class]] && v.frame.size.height > 1) {
+                self.hostViewDiag = [NSString stringWithFormat:@"ok-mgr %@ -> %@", name, NSStringFromClass([v class])];
+                NSLog(@"[InteractivePiP] sceneView via manager %@ -> %@", name, NSStringFromClass([v class]));
+                return v;
+            }
+            self.hostViewDiag = [NSString stringWithFormat:@"badview-mgr %@ h=%.1f", name, v ? ((UIView *)v).frame.size.height : 0.0];
+        } @catch (NSException *e) {
+            self.hostViewDiag = [NSString stringWithFormat:@"throw-mgr %@: %@", name, e.name];
+            NSLog(@"[InteractivePiP] manager %@ failed: %@", name, e);
+        }
+    }
+    return nil;
+}
+
 - (UIView *)hostViewFromFBScene:(id)scene {
     if (!scene) return nil;
     // Request the scene at the phone's native canvas, not the pane size: a
@@ -880,6 +930,15 @@
         self.hostIsSceneView = YES;
         NSLog(@"[InteractivePiP] sceneView %@ -> %@", self.bundleID, NSStringFromClass(sceneView.class));
         return sceneView;
+    }
+
+    // 1.5) Ask the FrontBoard scene manager. On iOS 16 the scene view factory
+    //      lives on FBSceneManager, not on the FBScene itself.
+    UIView *mgrView = [self sceneViewFromSceneManager:ref];
+    if (mgrView) {
+        self.hostIsSceneView = YES;
+        NSLog(@"[InteractivePiP] sceneView(manager) %@ -> %@", self.bundleID, NSStringFromClass(mgrView.class));
+        return mgrView;
     }
 
     // 2) Legacy host manager (absent on newer systems).
