@@ -23,6 +23,7 @@
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
 @property (nonatomic, assign) BOOL deviceLocked;
 @property (nonatomic, assign) BOOL sessionParked;
+@property (nonatomic, strong, nullable) id activeSwitcherCard;
 @property (nonatomic, strong) UIView *splitDivider;
 @property (nonatomic, strong) UIStackView *sessionControls;
 @property (nonatomic, strong) UIButton *leaveSplitButton;
@@ -1053,6 +1054,127 @@
     self.splitRatio = MIN(0.95, MAX(0.05, pos / available));
     [self layoutSplit];
     [[NSUserDefaults standardUserDefaults] setDouble:self.splitRatio forKey:@"sg.split.lastRatio"];
+}
+
+#pragma mark - Switcher card (Stage A: resolve real displayItem)
+
+static id DPDynamicGet(id obj, NSString *key) {
+    if (!obj || !key) return nil;
+    @try {
+        id v = [obj valueForKey:key];
+        return v;
+    } @catch (__unused NSException *e) { return nil; }
+}
+
+- (nullable id)displayItemForBundleID:(NSString *)bundleID {
+    if (!bundleID) return nil;
+
+    // 1) FBSceneManager: 遍历已激活场景，找 bundleID 匹配的 scene 实体 → displayItem
+    Class FBSceneManagerCls = NSClassFromString(@"FBSceneManager");
+    id sceneManager = nil;
+    @try { sceneManager = [FBSceneManagerCls sharedManager]; } @catch (__unused NSException *e) {}
+    if (sceneManager) {
+        id scenes = DPDynamicGet(sceneManager, @"scenes");
+        if ([scenes isKindOfClass:[NSArray class]]) {
+            for (id sc in scenes) {
+                if (!sc) continue;
+                id entity = sc;
+                // scene 对象通常有 identity/identifier，取 bundleID
+                NSString *scBundle = DPDynamicGet(entity, @"bundleIdentifier");
+                if (!scBundle) scBundle = DPDynamicGet(entity, @"bundleID");
+                if (![scBundle isEqualToString:bundleID]) continue;
+                id di = DPDynamicGet(entity, @"displayItem");
+                if (di) return di;
+                // scene 可能包在 sceneIdentity 里
+                id ident = DPDynamicGet(entity, @"sceneIdentity");
+                id di2 = DPDynamicGet(ident, @"displayItem");
+                if (di2) return di2;
+            }
+        }
+    }
+
+    // 2) SBApplicationController: applicationWithBundleIdentifier → displayItem
+    Class SBAppCtrl = NSClassFromString(@"SBApplicationController");
+    id appCtrl = nil;
+    @try { appCtrl = [SBAppCtrl sharedInstance]; } @catch (__unused NSException *e) {}
+    if (appCtrl) {
+        @try {
+            id app = [appCtrl valueForKey:@"applicationWithBundleIdentifier:"];
+        } @catch (__unused NSException *e) {}
+        if ([appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")]) {
+            @try {
+                id app = ((id(*)(id, SEL, id))objc_msgSend)(appCtrl, NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundleID);
+                if (app) {
+                    id di = DPDynamicGet(app, @"displayItem");
+                    if (di) return di;
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+
+    return nil;
+}
+
+#pragma mark - Switcher card (Stage B: build SBAppLayout)
+
+- (nullable id)switcherLayoutForBundleIDs:(NSArray<NSString *> *)bundleIDs {
+    if (bundleIDs.count == 0) return nil;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSString *bid in bundleIDs) {
+        id di = [self displayItemForBundleID:bid];
+        if (di) [items addObject:di];
+    }
+    if (items.count == 0) return nil;
+
+    Class SBAppLayoutCls = NSClassFromString(@"SBAppLayout");
+    if (!SBAppLayoutCls) return nil;
+    id layout = nil;
+
+    // 优先：initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:
+    SEL s1 = NSSelectorFromString(@"initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:");
+    if ([SBAppLayoutCls instancesRespondToSelector:s1]) {
+        @try {
+            layout = ((id(*)(id, SEL, id, id, id, id, long))objc_msgSend)(
+                [[SBAppLayoutCls alloc] init], s1, items, @[@1], nil, nil, 0);
+        } @catch (__unused NSException *e) { layout = nil; }
+    }
+    // 旧变体：initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:
+    if (!layout) {
+        SEL s2 = NSSelectorFromString(@"initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:");
+        if ([SBAppLayoutCls instancesRespondToSelector:s2]) {
+            @try {
+                layout = ((id(*)(id, SEL, id, id, id, long))objc_msgSend)(
+                    [[SBAppLayoutCls alloc] init], s2, items, @[@1], nil, 0);
+            } @catch (__unused NSException *e) { layout = nil; }
+        }
+    }
+    return layout;
+}
+
+#pragma mark - Switcher card (Stage C: current layout for data source)
+
+- (nullable id)currentSwitcherLayout {
+    if (self.mode != DPPresentationModeSplit || self.splitWindows.count < 2) return nil;
+    // Cache the same SBAppLayout instance so the switcher data source and the
+    // bring-to-front hook see one identical object.
+    if (self.activeSwitcherCard) return self.activeSwitcherCard;
+    NSMutableArray *bids = [NSMutableArray array];
+    for (DPFloatingWindow *w in self.splitWindows) {
+        if (w.bundleID) [bids addObject:w.bundleID];
+    }
+    if (bids.count < 2) return nil;
+    id layout = [self switcherLayoutForBundleIDs:bids];
+    if (layout) self.activeSwitcherCard = layout;
+    return layout;
+}
+- (BOOL)isSwitcherCard:(id)layout {
+    return (layout && layout == self.activeSwitcherCard);
+}
+- (void)activateSwitcherCard:(id)layout {
+    if (![self isSwitcherCard:layout]) return;
+    NSLog(@"[InteractivePiP] Switcher 卡被点击 -> 恢复分屏会话");
+    self.activeSwitcherCard = nil;
+    [self restoreParkedSession];
 }
 
 @end

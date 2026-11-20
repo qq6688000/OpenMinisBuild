@@ -584,6 +584,41 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
+// ── Switcher 数据源：让分屏作为一张卡出现在 App Switcher ─────────────────
+// 逆向自 PanoramicView：hook SBMainSwitcherControllerCoordinator 的
+// appLayoutsForSwitcherContentController:，先取系统已有 layouts，
+// 若处于分屏态则把我们的组合 layout 追加进去（不在数组中时）。
+%hook SBMainSwitcherControllerCoordinator
+- (id)appLayoutsForSwitcherContentController:(id)controller {
+    id layouts = %orig;
+    NSArray *arr = [layouts isKindOfClass:[NSArray class]] ? layouts : nil;
+    if ([DPWindowManager shared].mode == DPPresentationModeSplit) {
+        id ourLayout = [[DPWindowManager shared] currentSwitcherLayout];
+        if (ourLayout && ![arr containsObject:ourLayout]) {
+            NSMutableArray *m = arr ? [arr mutableCopy] : [NSMutableArray array];
+            [m addObject:ourLayout];
+            layouts = m;
+        }
+    }
+    return layouts;
+}
+- (void)switcherContentController:(id)controller bringAppLayoutToFront:(id)layout {
+    if ([[DPWindowManager shared] isSwitcherCard:layout]) {
+        [[DPWindowManager shared] activateSwitcherCard:layout];
+        return; // 拦截：不走系统整屏激活，恢复我们的分屏
+    }
+    %orig;
+}
+- (BOOL)switcherContentController:(id)controller supportsKillingOfAppLayout:(id)layout {
+    if ([[DPWindowManager shared] isSwitcherCard:layout]) return NO;
+    return %orig;
+}
+- (BOOL)switcherContentController:(id)controller supportsTitleItemsForAppLayout:(id)layout {
+    if ([[DPWindowManager shared] isSwitcherCard:layout]) return YES;
+    return %orig;
+}
+%end
+
 %ctor {
     @autoreleasepool {
         [DPSettings shared];

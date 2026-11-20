@@ -47,6 +47,15 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)shouldSuppressFullscreenForBundleID:(nullable NSString *)bundleID;
 - (void)handlePotentialFullscreenActivationForBundleID:(nullable NSString *)bundleID;
 - (void)bringOverlayToFront;
+/// 按 bundleID 从 SpringBoard 场景实体解析真实 displayItem（供 Switcher 卡注册）
+- (nullable id)displayItemForBundleID:(NSString *)bundleID;
+/// 当前分屏对应的 SBAppLayout（分屏态才有值，否则 nil）。Switcher 数据源 hook 用。
+- (nullable id)currentSwitcherLayout;
+/// 判断某 layout 是否就是我们的分屏卡
+- (BOOL)isSwitcherCard:(nullable id)layout;
+/// Switcher 卡被点击：恢复分屏会话
+- (void)activateSwitcherCard:(nullable id)layout;
+
 
 /// 允许下一次该 bundle 全屏启动（用于先拉起进程再回桌面挂画面）
 - (void)allowNextLaunchForBundleID:(NSString *)bundleID;
