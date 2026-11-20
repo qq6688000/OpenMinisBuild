@@ -669,7 +669,8 @@
     [s appendFormat:@"live=%d sceneView=%d pid=%d level=%.0f\n",
        [sh isLive] ? 1 : 0, [sh keyboardHostIsSceneView] ? 1 : 0,
        [sh keyboardRoutingPID], self.overlayWindow.windowLevel];
-    [s appendFormat:@"hostDiag=%@\n", sh.hostViewDiag ?: @"-"];
+    NSString *hvd = [sh hostViewDiag];
+    [s appendFormat:@"hostDiag=%@\n", hvd ?: @"-"];
     [s appendFormat:@"hosted=%d _UIRemoteKeyboards=%d inst=%d factory=%s\n",
        self.hostedInputActive ? 1 : 0, kb ? 1 : 0, self.remoteKeyboardsInstance ? 1 : 0,
        self.remoteKeyboardsFactory ? sel_getName(self.remoteKeyboardsFactory) : "-"];
