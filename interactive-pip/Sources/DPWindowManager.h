@@ -60,6 +60,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)isSwitcherCard:(nullable id)layout;
 /// Switcher 卡被点击：恢复分屏会话
 - (void)activateSwitcherCard:(nullable id)layout;
+/// Record any native switcher activation candidate before identity matching.
+- (void)noteSwitcherActivationCandidate:(nullable id)layout source:(NSString *)source;
 /// 从两个分屏 pane 截图拼出 Switcher 卡内容（快照方式，不移动原视图）
 - (nullable UIView *)contentViewForSwitcherLayout:(nullable id)layout;
 /// 构造 Switcher 卡 page content 视图（类型安全的 DPGroupPageView，塞快照）

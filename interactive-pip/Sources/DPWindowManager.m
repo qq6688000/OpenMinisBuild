@@ -1645,7 +1645,15 @@ static id DPSwitcherObjectValue(id obj, SEL sel) {
     return NO;
 }
 
+- (void)noteSwitcherActivationCandidate:(id)layout source:(NSString *)source {
+    if (!self.activeSwitcherCard || !layout) return;
+    self.switcherTapStatus = [NSString stringWithFormat:@"candidate-%@", source ?: @"?"];
+    NSLog(@"[InteractivePiP] switcher candidate source=%@ class=%@ ours=%@",
+          source, NSStringFromClass([layout class]), [self isSwitcherCard:layout] ? @"YES" : @"NO");
+}
+
 - (void)activateSwitcherCard:(id)layout {
+    if (self.activeSwitcherCard && layout) [self noteSwitcherActivationCandidate:layout source:@"activate"];
     if (![self isSwitcherCard:layout] || self.deviceLocked || self.switcherRestorePending) return;
     self.switcherRestorePending = YES;
     self.switcherTapStatus = @"received";

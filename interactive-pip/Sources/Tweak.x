@@ -607,8 +607,10 @@ static NSArray *DPInjectedShortcutItems(void) {
     return layouts;
 }
 - (void)switcherContentController:(id)controller bringAppLayoutToFront:(id)layout {
-    if ([[DPWindowManager shared] isSwitcherCard:layout]) {
-        [[DPWindowManager shared] activateSwitcherCard:layout];
+    DPWindowManager *wm = [DPWindowManager shared];
+    [wm noteSwitcherActivationCandidate:layout source:@"coordinator-bring"];
+    if ([wm isSwitcherCard:layout]) {
+        [wm activateSwitcherCard:layout];
         return; // 拦截：不走系统整屏激活，恢复我们的分屏
     }
     %orig;
@@ -684,7 +686,8 @@ static id DPTransitionObject(id object, SEL getter) {
 %group DPGroupReturnTransition
 %hook SBMainSwitcherControllerCoordinator
 - (void)switcherContentController:(id)controller performTransitionWithRequest:(id)request gestureInitiated:(BOOL)gesture {
-    DPWindowManager *wm = nil;
+    DPWindowManager *wm = [DPWindowManager shared];
+    [wm noteSwitcherActivationCandidate:request source:@"coordinator-transition"];
     id target = nil;
     if ([NSThread isMainThread]) {
         wm = [DPWindowManager shared];
@@ -713,6 +716,7 @@ static id DPTransitionObject(id object, SEL getter) {
 %hook SBFluidSwitcherViewController
 - (void)switcherContentController:(id)controller performTransitionWithRequest:(id)request gestureInitiated:(BOOL)gesture {
     DPWindowManager *wm = [DPWindowManager shared];
+    [wm noteSwitcherActivationCandidate:request source:@"fluid-transition"];
     id target = nil;
     if ([NSThread isMainThread] && [wm currentSwitcherLayout]) {
         @try {
@@ -729,6 +733,7 @@ static id DPTransitionObject(id object, SEL getter) {
 }
 - (void)switcherContentController:(id)controller bringAppLayoutToFront:(id)layout {
     DPWindowManager *wm = [DPWindowManager shared];
+    [wm noteSwitcherActivationCandidate:layout source:@"fluid-bring"];
     if ([wm isSwitcherCard:layout]) {
         [wm activateSwitcherCard:layout];
         return;
