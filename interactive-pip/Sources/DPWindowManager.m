@@ -781,14 +781,11 @@
 - (void)prepareForHostedInput {
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden || !self.focusedWindow) return;
     [self.focusedWindow.sceneHost prepareForInput];
-    [self configureRemoteKeyboardsForHostedInput:YES];
-    UIView *host = [self.focusedWindow.sceneHost keyboardRoutingView];
-    id scene = [self.focusedWindow.sceneHost keyboardRoutingScene];
-    id kb = [self sharedRemoteKeyboards];
-    if (kb && host && scene) {
-        [self attemptRemoteKeyboardsRegistration:kb host:host pid:[self.focusedWindow.sceneHost keyboardRoutingPID] scene:scene];
-    }
-    [self attemptKeyboardScenePairingWithScene:scene host:host];
+    // The remote-keyboard registration was the culprit: registering the hosted
+    // scene with _UIRemoteKeyboards made the system treat it as a remote
+    // keyboard scene and dropped its normal presentation, so the pane stayed
+    // empty. Registration is disabled and any earlier registration is undone.
+    [self configureRemoteKeyboardsForHostedInput:NO];
     [self showKeyboardDiagnostics];
 }
 
