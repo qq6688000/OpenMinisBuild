@@ -480,7 +480,18 @@
     if (self.hostedInputActive && self.keyboardRoutedWindow == target) return;
 
     UIView *host = [target.sceneHost keyboardRoutingView];
-    id scene = [target.sceneHost keyboardRoutingScene];
+    id fs = [target.sceneHost keyboardRoutingScene];
+    // `prepareForHostedWindowWithScene:` expects a UIWindowScene, NOT an FBScene.
+    // Try the FBScene's own uiWindowScene first (most correct), then fall back to
+    // the hosted window's actual UIWindowScene (SBSystemApertureCurtainWindowScene).
+    id scene = nil;
+    if (fs) {
+        SEL su = NSSelectorFromString(@"uiWindowScene");
+        if ([fs respondsToSelector:su]) {
+            @try { scene = ((id (*)(id, SEL))objc_msgSend)(fs, su); } @catch (__unused NSException *e) {}
+        }
+    }
+    if (!scene) scene = host.window.windowScene ?: self.overlayWindow.windowScene ?: fs;
     int pid = [target.sceneHost keyboardRoutingPID];
     if (!host || !scene || pid <= 0) {
         NSLog(@"[InteractivePiP] 无场景宿主，跳过键盘登记 %@", target.bundleID);
