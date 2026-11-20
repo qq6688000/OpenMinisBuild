@@ -1,6 +1,5 @@
 #import "DPSceneHost.h"
 #import <notify.h>
-#import <unistd.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -33,6 +32,7 @@
 @property (nonatomic, assign) CGSize nativeSceneSize;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *refSizeDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
@@ -1545,16 +1545,6 @@
     self.view.clipsToBounds = YES;
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
                         NSStringFromCGSize(target), self.view.superview ? 1 : 0];
-    // 实时分辨率(安全版): 广播 pane 尺寸 + 被托管 App 的 pid。App 进程读取后
-    // 只有 getpid()==托管pid 才改 UIScreen/window, 其它 App 零影响。
-    static int sPaneW = 0, sPaneH = 0, sHostPid = 0;
-    if (!sPaneW) notify_register_check("com.seagull.duo.pane.w", &sPaneW);
-    if (!sPaneH) notify_register_check("com.seagull.duo.pane.h", &sPaneH);
-    if (!sHostPid) notify_register_check("com.seagull.duo.host.pid", &sHostPid);
-    notify_set_state(sPaneW, (uint64_t)(target.width * 1000.0));
-    notify_set_state(sPaneH, (uint64_t)(target.height * 1000.0));
-    notify_set_state(sHostPid, (uint64_t)([self keyboardRoutingPID] > 0 ? [self keyboardRoutingPID] : 0));
-    notify_post("com.seagull.duo.pane.updated");
 }
 
 - (void)applySnapshotFallback {
@@ -1776,6 +1766,41 @@
     [self layoutHostView];
     self.placeholder.frame = self.view.bounds;
     self.snapshotView.frame = self.view.bounds;
+
+    // PV 正解: 用 setContentReferenceSize 让 App 自己按窗口尺寸重新布局(实时分辨率)。
+    // 与 0.7.24 的 setFrame 不同 —— 那是场景在屏幕上的位置(半屏→非法→黑屏),
+    // 这个是场景内容的参考尺寸, UIKit 收到会重跑 layout。全程 @try + respondsToSelector
+    // 保护, 探测不到就什么都不做, 退回 0.7.23 铺满, 不会更差。
+    [self applySceneReferenceSize:self.view.bounds.size];
+}
+
+- (void)applySceneReferenceSize:(CGSize)refSize {
+    if (!self.scene || refSize.width < 40 || refSize.height < 40) return;
+    @try {
+        SEL sel3 = NSSelectorFromString(@"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
+        SEL sel2 = NSSelectorFromString(@"setContentReferenceSize:withInterfaceOrientation:");
+        BOOL ok = NO;
+        if ([self.scene respondsToSelector:sel3]) {
+            NSInteger co = 0, to = 0;
+            @try { id v = [self.scene valueForKey:@"contentOrientation"]; if (v) co = [v integerValue]; } @catch (__unused NSException *e) {}
+            @try { id v = [self.scene valueForKey:@"containerOrientation"]; if (v) to = [v integerValue]; } @catch (__unused NSException *e) {}
+            ((void (*)(id, SEL, CGSize, NSInteger, NSInteger))objc_msgSend)(
+                self.scene, sel3, refSize, co, to);
+            ok = YES;
+        } else if ([self.scene respondsToSelector:sel2]) {
+            NSInteger io = 0;
+            @try { id v = [self.scene valueForKey:@"contentInterfaceOrientation"]; if (v) io = [v integerValue]; } @catch (__unused NSException *e) {}
+            ((void (*)(id, SEL, CGSize, NSInteger))objc_msgSend)(self.scene, sel2, refSize, io);
+            ok = YES;
+        }
+        self.refSizeDiag = [NSString stringWithFormat:@"ref=%@ %@",
+                            NSStringFromCGSize(refSize), ok ? @"OK" : @"no-sel"];
+        NSLog(@"[InteractivePiP] setContentReferenceSize %@ -> %@ (%@)",
+              self.bundleID, NSStringFromCGSize(refSize), ok ? @"OK" : @"no-sel");
+    } @catch (NSException *e) {
+        self.refSizeDiag = [NSString stringWithFormat:@"ref=%@ throw", NSStringFromCGSize(refSize)];
+        NSLog(@"[InteractivePiP] setContentReferenceSize threw %@", e);
+    }
 }
 
 - (void)commitHostedFrame {

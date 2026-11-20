@@ -673,6 +673,7 @@
     [s appendFormat:@"hostDiag=%@\n", hvd ?: @"-"];
     [s appendFormat:@"layer=%@\n", [sh layerDiag] ?: @"-"];
     [s appendFormat:@"layout=%@\n", [sh layoutDiag] ?: @"-"];
+    [s appendFormat:@"ref=%@\n", [sh refSizeDiag] ?: @"-"];
     if (hv) {
         [s appendFormat:@"hvInfo=%@ sub=%lu alpha=%.2f hid=%d win=%d\n",
            NSStringFromCGRect(hv.frame), (unsigned long)[hv subviews].count, hv.alpha,
