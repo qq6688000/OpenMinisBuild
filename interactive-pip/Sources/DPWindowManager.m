@@ -64,6 +64,8 @@
 @property (nonatomic, strong, nullable) NSTimer *switcherPreviewTimer;
 @property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
 @property (nonatomic, assign) NSUInteger shelfWindowCount;
+@property (nonatomic, copy, nullable) NSArray *shelfImages;
+- (void)captureShelfThumbnails;
 @property (nonatomic) NSUInteger homeGestureSerial;
 @property (nonatomic) BOOL homeGestureSettling;
 - (void)updateEdgeShelf;
@@ -1274,10 +1276,11 @@ static BOOL DPSystemSwitcherVisible(void) {
         NSArray<DPFloatingWindow *> *floaters = [self.mutableFloatingWindows copy];
         NSMutableArray *names = [NSMutableArray arrayWithCapacity:floaters.count];
         NSMutableArray *images = [NSMutableArray arrayWithCapacity:floaters.count];
-        for (DPFloatingWindow *window in floaters) {
-            NSString *bundle = window.bundleID;
+        for (NSUInteger i = 0; i < floaters.count; ++i) {
+            NSString *bundle = floaters[i].bundleID;
             [names addObject:bundle.pathExtension.length ? bundle.pathExtension : bundle];
-            [images addObject:[window.sceneHost iconImageLarge]];
+            id thumb = (i < self.shelfImages.count) ? self.shelfImages[i] : nil;
+            [images addObject:[thumb isKindOfClass:[UIImage class]] ? thumb : [NSNull null]];
         }
         NSUInteger generation = self.sessionGeneration;
         __weak typeof(self) weakSelf = self;
@@ -1385,9 +1388,36 @@ static BOOL DPSystemSwitcherVisible(void) {
     [self bringOverlayToFront];
 }
 
+- (void)captureShelfThumbnails {
+    // Live window previews for the edge shelf, taken BEFORE the overlay hides
+    // so each card shows the app's real content, not its icon.
+    NSMutableArray *images = [NSMutableArray arrayWithCapacity:self.mutableFloatingWindows.count];
+    for (DPFloatingWindow *window in self.mutableFloatingWindows) {
+        UIView *view = window.sceneHost.view;
+        UIImage *image = nil;
+        if (view && view.window && !view.window.hidden && view.bounds.size.width >= 2 && view.bounds.size.height >= 2) {
+            @try {
+                CGFloat scale = MIN(1.0, 240.0 / MAX(view.bounds.size.width, view.bounds.size.height));
+                CGSize size = CGSizeMake(view.bounds.size.width * scale, view.bounds.size.height * scale);
+                UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+                format.scale = 1;
+                UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+                __block BOOL drawn = NO;
+                image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+                    drawn = [window drawViewHierarchyInRect:(CGRect){CGPointZero, size} afterScreenUpdates:NO];
+                }];
+                if (!drawn) image = nil;
+            } @catch (__unused NSException *e) { image = nil; }
+        }
+        [images addObject:image ?: [NSNull null]];
+    }
+    self.shelfImages = images;
+}
+
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
+    [self captureShelfThumbnails];
     self.overlayWindow.hidden = YES;
     [self updateEdgeShelf];
     if (self.floatingHomeTimer) return;
