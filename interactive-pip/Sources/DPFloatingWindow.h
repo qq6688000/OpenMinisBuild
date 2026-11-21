@@ -22,6 +22,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)attachSceneHost:(DPSceneHost *)host;
 - (nullable DPSceneHost *)detachSceneHost;
 - (void)commitSceneLayout;
+/// Round the pane's own chrome + content container while in Duo split.
+/// Never touches the hosted scene layer container's layer.
+- (void)setSplitCardCornerRadius:(CGFloat)radius;
 - (void)setActive:(BOOL)active animated:(BOOL)animated;
 - (void)bringToFront;
 - (void)closeAnimated:(BOOL)animated completion:(void (^ _Nullable)(void))completion;

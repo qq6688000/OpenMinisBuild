@@ -371,6 +371,19 @@ static const CGFloat kDPMinHeight = 220.0;
     if (self.onSplit) self.onSplit(self);
 }
 
+- (void)setSplitCardCornerRadius:(CGFloat)radius {
+    // Only our own views get rounded. The hosted scene layer container is a
+    // system view that validates its scene binding on dealloc; mutating its
+    // layer throws NSInternalInconsistencyException and kills SpringBoard.
+    self.clipsToBounds = YES;
+    self.chromeView.layer.cornerRadius = radius;
+    self.chromeView.layer.cornerCurve = kCACornerCurveContinuous;
+    self.chromeView.clipsToBounds = YES;
+    self.contentContainer.layer.cornerRadius = radius;
+    self.contentContainer.layer.cornerCurve = kCACornerCurveContinuous;
+    self.contentContainer.clipsToBounds = YES;
+}
+
 - (void)setTiled:(BOOL)tiled {
     if (_tiled == tiled) return;
     if (tiled) {
