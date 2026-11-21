@@ -1829,31 +1829,22 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     }
 }
 
-// 静态侧栏模式下，画面是截图但场景仍 active，App 会继续出声。
-// 只切 scene 的 setSceneActive / setUIApplicationSceneActive 标志停音频，
-// 不碰 foreground/backgrounded（避免触发 didEnterBackground 状态丢失），
-// 不 suspend、不动进程断言，回弹时能立刻恢复。
+// 静态侧栏模式下，画面是截图但进程保活断言(RBSAssertion PreventSuspend)
+// 一直阻止系统挂起 App，AVAudioSession 音频就会继续播——切 scene 标志没用。
+// 真正停声：撤销保活断言 + 停 keepalive 并阻止重获，让系统正常冻结进程；
+// 回弹时重新 acquire 解冻。进程冻结不影响静态截图画面。
 - (void)setSceneAudible:(BOOL)audible {
-    id settings = [self settingsCopyForScene:self.scene];
-    if (!settings) return;
-    if (self.settingsScene != self.scene) {
-        if (self.settingsScene && self.originalSettings) [self submitSettings:self.originalSettings toScene:self.settingsScene];
-        self.settingsScene = self.scene;
-        self.originalSettings = [self settingsCopyForScene:self.scene];
+    if (audible) {
+        self.processAssertionAttempted = NO;
+        [self acquireProcessAssertionIfNeeded];
+        [self startSceneKeepAlive];
+        [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
+    } else {
+        [self stopSceneKeepAlive];
+        [self releaseProcessAssertion];   // 置 attempted=NO，下面立刻封死重获
+        self.processAssertionAttempted = YES;  // 阻止 keepalive/其它路径重获保活
     }
-    @try {
-        SEL setActive = NSSelectorFromString(@"setSceneActive:");
-        if ([settings respondsToSelector:setActive]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setActive, audible);
-        }
-        SEL setUiActive = NSSelectorFromString(@"setUIApplicationSceneActive:");
-        if ([settings respondsToSelector:setUiActive]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setUiActive, audible);
-        }
-        [self submitSettings:settings toScene:self.scene];
-    } @catch (__unused NSException *e) {
-        NSLog(@"[InteractivePiP] setSceneAudible failed %@", self.bundleID);
-    }
+    NSLog(@"[InteractivePiP] setSceneAudible=%d %@ pid=%d", audible ? 1 : 0, self.bundleID, [self hostedApplicationPID]);
 }
 
 - (void)retryAttach {
