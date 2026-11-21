@@ -912,7 +912,7 @@
     BOOL sideBySide = b.size.width >= b.size.height;
     // Card-style split: each pane keeps a rounded card edge and a narrow gap
     // between them shows the backdrop, like the native app switcher cards.
-    const CGFloat seamW = 5.0;                     // white bar thickness
+    const CGFloat seamW = 10.0;                    // white bar thickness
     const CGFloat cardGap = seamW / 2.0;           // inset each card by half the gap
     const CGFloat cardRadius = 26.0;               // matches native switcher corner
     const CGFloat touch = 28.0;                    // invisible draggable strip over the seam
