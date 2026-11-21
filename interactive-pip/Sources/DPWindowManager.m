@@ -879,8 +879,12 @@
     [divider addGestureRecognizer:tap];
     UIView *seam = [[UIView alloc] initWithFrame:CGRectZero];
     seam.tag = 0x5D1;
-    seam.backgroundColor = [UIColor blackColor];
+    // Card-style seam (matches the native switcher): the gap shows the blurred
+    // backdrop through a soft dark tint instead of a hard black bar.
+    seam.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+    seam.layer.cornerRadius = 0;
     seam.userInteractionEnabled = NO;
+    seam.alpha = 0.9;
     [divider addSubview:seam];
     divider.backgroundColor = [UIColor clearColor];
 
@@ -905,24 +909,31 @@
     // Duo: panels fill the entire screen edge to edge (no status/home inset).
     CGRect b = full;
     BOOL sideBySide = b.size.width >= b.size.height;
-    const CGFloat seamW = 8.0;                     // visible dark divider line
-    const CGFloat touch = 20.0;                    // invisible draggable strip over the seam
+    // Card-style split: each pane keeps a rounded card edge and a narrow gap
+    // between them shows the backdrop, like the native app switcher cards.
+    const CGFloat seamW = 14.0;                    // visible gap between cards
+    const CGFloat cardGap = seamW / 2.0;           // inset each card by half the gap
+    const CGFloat cardRadius = 26.0;               // matches native switcher corner
+    const CGFloat touch = 28.0;                    // invisible draggable strip over the seam
     CGFloat total = sideBySide ? b.size.width : b.size.height;
     CGFloat ratio = MIN(0.95, MAX(0.05, self.splitRatio));
-    CGFloat first = floor(total * ratio);          // panes meet at the seam: no gap
+    CGFloat first = floor((total - seamW) * ratio); // panes share the space minus the gap
     CGRect a = b, c = b, h = b;
     if (sideBySide) {
         a.size.width = first;
-        c.origin.x = b.origin.x + first; c.size.width = total - first;   // second pane fills rest
-        h.origin.x = b.origin.x + first - touch / 2.0; h.size.width = touch;
+        c.origin.x = b.origin.x + first + seamW; c.size.width = total - first - seamW;
+        h.origin.x = b.origin.x + first + (seamW - touch) / 2.0; h.size.width = touch;
     } else {
         a.size.height = first;
-        c.origin.y = b.origin.y + first; c.size.height = total - first;
-        h.origin.y = b.origin.y + first - touch / 2.0; h.size.height = touch;
+        c.origin.y = b.origin.y + first + seamW; c.size.height = total - first - seamW;
+        h.origin.y = b.origin.y + first + (seamW - touch) / 2.0; h.size.height = touch;
     }
     for (DPFloatingWindow *w in self.splitWindows) {
         [w.layer removeAllAnimations];
         w.transform = CGAffineTransformIdentity;
+        w.layer.cornerRadius = cardRadius;
+        w.layer.cornerCurve = kCACornerCurveContinuous;
+        w.clipsToBounds = YES;
     }
     self.splitWindows[0].frame = a;
     self.splitWindows[1].frame = c;
@@ -933,8 +944,8 @@
     // one thin dark line, centered in the transparent touch strip
     UIView *line = [self.splitDivider viewWithTag:0x5D1];
     if (line) {
-        if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, 0, seamW, h.size.height);
-        else line.frame = CGRectMake(0, (touch - seamW) / 2.0, h.size.width, seamW);
+        if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, -b.size.height, seamW, h.size.height + b.size.height * 2.0);
+        else line.frame = CGRectMake(-b.size.width, (touch - seamW) / 2.0, h.size.width + b.size.width * 2.0, seamW);
     }
     [self.overlayRoot bringSubviewToFront:self.splitDivider];
     [self updateSessionControls];
