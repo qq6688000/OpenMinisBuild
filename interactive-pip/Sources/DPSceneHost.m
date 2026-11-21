@@ -2,6 +2,9 @@
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <signal.h>
+#import <unistd.h>
+#import <errno.h>
 
 // Only describes known private initializers; no private class is implemented.
 @interface DPSceneLayerContainerABI : UIView
@@ -53,11 +56,13 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
+- (void)unfreezeIfNeeded;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t reconnectTimer;
 @property (nonatomic, assign) NSUInteger reconnectAttempts;
 @property (nonatomic, strong, nullable) id processAssertion;
 @property (nonatomic, assign) BOOL processAssertionAttempted;
+@property (nonatomic, assign) int frozenPID; // >0 表示我们 SIGSTOP 过的进程，负责解冻
 - (void)enableInteractionInView:(UIView *)view;
 - (void)scheduleReconnect;
 - (void)stopReconnect;
@@ -1477,7 +1482,18 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     }
 }
 
+// 兜底：任何销毁/失效路径都要解冻我们冻过的进程，绝不能让 App 永久 STOP。
+- (void)unfreezeIfNeeded {
+    if (self.frozenPID > 0) {
+        int p = self.frozenPID;
+        self.frozenPID = 0;
+        kill(p, SIGCONT);
+        NSLog(@"[InteractivePiP] unfreeze(on-cleanup) pid=%d", p);
+    }
+}
+
 - (void)dealloc {
+    [self unfreezeIfNeeded];
     // RBSAssertion raises if it is deallocated while still valid. Any release
     // path (ARC teardown from the window hierarchy, home exit, reload) must
     // invalidate it first, otherwise SpringBoard dies in .cxx_destruct.
@@ -1829,22 +1845,37 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     }
 }
 
-// 静态侧栏模式下，画面是截图但进程保活断言(RBSAssertion PreventSuspend)
-// 一直阻止系统挂起 App，AVAudioSession 音频就会继续播——切 scene 标志没用。
-// 真正停声：撤销保活断言 + 停 keepalive 并阻止重获，让系统正常冻结进程；
-// 回弹时重新 acquire 解冻。进程冻结不影响静态截图画面。
+// 静态侧栏模式：画面是截图，但 App 进程播音频时系统会主动保活，撤 RBSAssertion
+// 根本冻不住它。唯一无条件停声手段是内核级 SIGSTOP（不可忽略），回弹 SIGCONT 解冻。
+// 只 SIGCONT 我们自己冻过的 pid（frozenPID），绝不碰别的进程。
 - (void)setSceneAudible:(BOOL)audible {
+    int pid = [self hostedApplicationPID];
     if (audible) {
+        if (self.frozenPID > 0) {
+            int p = self.frozenPID;
+            self.frozenPID = 0;
+            if (kill(p, SIGCONT) != 0) {
+                NSLog(@"[InteractivePiP] SIGCONT failed pid=%d errno=%d", p, errno);
+            } else {
+                NSLog(@"[InteractivePiP] SIGCONT pid=%d", p);
+            }
+        }
         self.processAssertionAttempted = NO;
         [self acquireProcessAssertionIfNeeded];
         [self startSceneKeepAlive];
         [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
     } else {
         [self stopSceneKeepAlive];
-        [self releaseProcessAssertion];   // 置 attempted=NO，下面立刻封死重获
-        self.processAssertionAttempted = YES;  // 阻止 keepalive/其它路径重获保活
+        if (pid > 0) {
+            // 信号只发给真实App进程，绝不误伤 SpringBoard 自己
+            if (pid != getpid() && kill(pid, SIGSTOP) == 0) {
+                self.frozenPID = pid;
+                NSLog(@"[InteractivePiP] SIGSTOP pid=%d", pid);
+            } else {
+                NSLog(@"[InteractivePiP] SIGSTOP failed pid=%d errno=%d", pid, errno);
+            }
+        }
     }
-    NSLog(@"[InteractivePiP] setSceneAudible=%d %@ pid=%d", audible ? 1 : 0, self.bundleID, [self hostedApplicationPID]);
 }
 
 - (void)retryAttach {
@@ -1857,6 +1888,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self clearExternalSceneHosts];
     [self stopSceneKeepAlive];
     [self releaseProcessAssertion];
+    [self unfreezeIfNeeded];
     DPInvalidateHostView(self.hostView, @"retry");
     [self.hostView removeFromSuperview];
     self.hostView = nil;
@@ -1873,6 +1905,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 
 - (void)invalidate {
     self.invalidated = YES;
+    [self unfreezeIfNeeded];
     self.externalRefreshGeneration += 1;
     [self stopObservingLayerManager];
     [self clearExternalSceneHosts];
