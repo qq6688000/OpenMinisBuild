@@ -888,6 +888,18 @@
     [divider addSubview:seam];
     divider.backgroundColor = [UIColor clearColor];
 
+    // Home-indicator style grabber at the bottom of each pane, so both halves
+    // read as separate app cards. It mirrors the system bar's geometry/size.
+    for (NSUInteger i = 0; i < 2; i++) {
+        UIView *grabber = [[UIView alloc] initWithFrame:CGRectZero];
+        grabber.tag = 0x5D2 + i;
+        grabber.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.86];
+        grabber.layer.cornerRadius = 2.5;
+        grabber.layer.cornerCurve = kCACornerCurveContinuous;
+        grabber.userInteractionEnabled = NO;
+        [self.overlayRoot addSubview:grabber];
+    }
+
     UIPanGestureRecognizer *drag = [[UIPanGestureRecognizer alloc]
         initWithTarget:self action:@selector(handleSplitDrag:)];
     [divider addGestureRecognizer:drag];
@@ -942,6 +954,25 @@
         [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
     }
     // one thin dark line, centered in the transparent touch strip
+    // Place the two pane grabbers: centered horizontally in each pane, sitting
+    // just above the home-indicator zone.
+    {
+        const CGFloat gw = 134.0, gh = 5.0;
+        CGFloat y = b.size.height - 8.0 - gh;
+        if (!sideBySide) {
+            // Stacked panes: one grabber near the bottom of the upper pane and
+            // one at the very bottom of the lower pane.
+            UIView *g0 = [self.overlayRoot viewWithTag:0x5D2];
+            UIView *g1 = [self.overlayRoot viewWithTag:0x5D3];
+            g0.frame = CGRectMake((b.size.width - gw) / 2.0, a.size.height - 8.0 - gh, gw, gh);
+            g1.frame = CGRectMake((b.size.width - gw) / 2.0, y, gw, gh);
+        } else {
+            UIView *g0 = [self.overlayRoot viewWithTag:0x5D2];
+            UIView *g1 = [self.overlayRoot viewWithTag:0x5D3];
+            g0.frame = CGRectMake(a.origin.x + (a.size.width - gw) / 2.0, y, gw, gh);
+            g1.frame = CGRectMake(c.origin.x + (c.size.width - gw) / 2.0, y, gw, gh);
+        }
+    }
     UIView *line = [self.splitDivider viewWithTag:0x5D1];
     if (line) {
         if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, -b.size.height, seamW, h.size.height + b.size.height * 2.0);
@@ -978,6 +1009,7 @@
         [w layoutIfNeeded]; [w commitSceneLayout];
     }
     [self.splitDivider removeFromSuperview]; self.splitDivider = nil;
+    for (NSUInteger i = 0; i < 2; i++) { [[self.overlayRoot viewWithTag:0x5D2 + i] removeFromSuperview]; }
     self.splitWindows = nil; [self.savedFrames removeAllObjects]; self.duoMode = NO;
     self.mode = self.mutableFloatingWindows.count ? DPPresentationModeFloating : DPPresentationModeNone;
     [self updateSessionControls];
