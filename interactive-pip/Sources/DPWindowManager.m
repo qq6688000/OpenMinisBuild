@@ -931,9 +931,9 @@
     for (DPFloatingWindow *w in self.splitWindows) {
         [w.layer removeAllAnimations];
         w.transform = CGAffineTransformIdentity;
-        w.layer.cornerRadius = cardRadius;
-        w.layer.cornerCurve = kCACornerCurveContinuous;
-        w.clipsToBounds = YES;
+        // Round our own chrome/content views only (never the scene layer host
+        // container: mutating it crashed SpringBoard on dealloc).
+        [w setSplitCardCornerRadius:cardRadius];
     }
     self.splitWindows[0].frame = a;
     self.splitWindows[1].frame = c;
