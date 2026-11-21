@@ -27,6 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setSuspended:(BOOL)suspended;
 - (void)retryAttach;
 - (void)invalidate;
+/// App 大图标（edge shelf 卡片占位用）。
+- (nullable UIImage *)iconImageLarge;
 
 @end
 

@@ -63,6 +63,7 @@
 @property (nonatomic) BOOL switcherRefreshScheduled;
 @property (nonatomic, strong, nullable) NSTimer *switcherPreviewTimer;
 @property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
+@property (nonatomic, assign) NSUInteger shelfWindowCount;
 @property (nonatomic) NSUInteger homeGestureSerial;
 @property (nonatomic) BOOL homeGestureSettling;
 - (void)updateEdgeShelf;
@@ -410,6 +411,13 @@
         [self restorePreviousKeyWindow];
     }
     [self updateSessionControls];
+    // A window closed while hidden on Home changes the shelf's card set.
+    // Cards are built once per shelf instance, so force a rebuild.
+    if (self.edgeShelf) {
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+        if (self.floatingHiddenOnHome && self.mode == DPPresentationModeFloating) [self updateEdgeShelf];
+    }
 }
 
 - (void)dismissAllAnimated:(BOOL)animated {
@@ -1233,7 +1241,9 @@ static BOOL DPSystemSwitcherVisible(void) {
 }
 
 - (void)updateEdgeShelf {
-    if (!self.sessionParked || self.mode != DPPresentationModeSplit || self.splitWindows.count != 2 ||
+    // Shelf is a FLOATING-window feature only. The split pair keeps its native
+    // Switcher group card; parking a split never surfaces this shelf.
+    if (!self.floatingHiddenOnHome || self.mode != DPPresentationModeFloating ||
         self.deviceLocked || self.switcherRestorePending || self.homeGestureSettling || ![DPSettings shared].isEnabled) {
         self.edgeShelf.hidden = YES;
         return;
@@ -1249,29 +1259,47 @@ static BOOL DPSystemSwitcherVisible(void) {
         self.edgeShelf.hidden = YES;
         return;
     }
+    if (self.edgeShelf && self.shelfWindowCount != self.mutableFloatingWindows.count) {
+        // A floating window was closed (or added) while hidden: stale cards
+        // would otherwise keep pointing at released windows. Force rebuild.
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+    }
     if (self.edgeShelf.windowScene != scene) {
         self.edgeShelf.hidden = YES;
         DPEdgeShelfWindow *shelf = [[DPEdgeShelfWindow alloc] initWithWindowScene:scene];
         shelf.hidden = YES;
-        NSArray<DPFloatingWindow *> *pair = self.splitWindows;
-        NSMutableArray *names = [NSMutableArray arrayWithCapacity:pair.count];
-        for (DPFloatingWindow *window in pair) {
+        // Every floating window gets one card; the hidden-on-Home state may
+        // hold several single windows, and the split pair never appears here.
+        NSArray<DPFloatingWindow *> *floaters = [self.mutableFloatingWindows copy];
+        NSMutableArray *names = [NSMutableArray arrayWithCapacity:floaters.count];
+        NSMutableArray *images = [NSMutableArray arrayWithCapacity:floaters.count];
+        for (DPFloatingWindow *window in floaters) {
             NSString *bundle = window.bundleID;
             [names addObject:bundle.pathExtension.length ? bundle.pathExtension : bundle];
+            [images addObject:[window.sceneHost iconImageLarge]];
         }
         NSUInteger generation = self.sessionGeneration;
         __weak typeof(self) weakSelf = self;
         __weak DPEdgeShelfWindow *weakShelf = shelf;
-        [shelf configureWithNames:names images:self.switcherPaneImages restore:^(NSUInteger index) {
+        [shelf configureWithNames:names images:images restore:^(NSUInteger index) {
             __strong typeof(weakSelf) manager = weakSelf;
             if (!manager || !weakShelf || manager.edgeShelf != weakShelf ||
-                manager.sessionGeneration != generation || index >= manager.splitWindows.count) return;
-            [manager updateEdgeShelf];
-            if (!manager.sessionParked || manager.edgeShelf != weakShelf || weakShelf.hidden) return;
-            DPFloatingWindow *selected = manager.splitWindows[index];
-            manager.switcherRestoreGraceUntil = NSProcessInfo.processInfo.systemUptime + 0.45;
-            [manager restoreParkedSession];
+                manager.sessionGeneration != generation || index >= manager.mutableFloatingWindows.count) return;
+            // Single-window restore: unhide + resume + focus. No switcher
+            // transition request, no parked-session path involved.
+            manager.floatingHiddenOnHome = NO;
+            [manager.floatingHomeTimer invalidate];
+            manager.floatingHomeTimer = nil;
+            DPFloatingWindow *selected = manager.mutableFloatingWindows[index];
+            for (DPFloatingWindow *window in manager.mutableFloatingWindows) {
+                window.alpha = 1;
+                [window.sceneHost setSuspended:NO];
+            }
+            manager.overlayWindow.hidden = NO;
             [manager focusWindow:selected];
+            [manager updateEdgeShelf];
+            NSLog(@"[InteractivePiP] edge shelf restore single window %@", selected.bundleID);
         }];
         self.edgeShelf = shelf;
     }
@@ -1301,9 +1329,8 @@ static BOOL DPSystemSwitcherVisible(void) {
         if (manager.mode == DPPresentationModeFloating && home && !DPSystemSwitcherVisible()) {
             [manager hideFloatingOnHome];
         } else if (manager.mode == DPPresentationModeSplit) {
-            // The group remains available in Switcher, but only Home gets the shelf.
+            // Split pair keeps the native Switcher group card only; no shelf.
             if (home) [manager parkSessionInAppSwitcher];
-            [manager updateEdgeShelf];
             if (!manager.sessionParked) [manager scheduleSwitcherPreviewRefresh];
         }
     });
@@ -1350,6 +1377,7 @@ static BOOL DPSystemSwitcherVisible(void) {
     if (!bundleID.length || [bundleID isEqualToString:@"com.apple.springboard"]) return;
     [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
     self.floatingHiddenOnHome = NO;
+    self.edgeShelf.hidden = YES;
     for (DPFloatingWindow *window in self.mutableFloatingWindows) {
         window.alpha = 1;
         [window.sceneHost setSuspended:NO];
@@ -1361,6 +1389,7 @@ static BOOL DPSystemSwitcherVisible(void) {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
     self.overlayWindow.hidden = YES;
+    [self updateEdgeShelf];
     if (self.floatingHomeTimer) return;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
@@ -1863,5 +1892,6 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
     }
     return pv;
 }
+
 
 @end
