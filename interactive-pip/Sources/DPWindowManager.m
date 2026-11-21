@@ -1021,6 +1021,7 @@
 
 - (void)layoutSplit {
     if (self.splitWindows.count != 2) return;
+    [self scheduleSwitcherPreviewRefresh];
     CGRect full = self.overlayRoot.bounds;
     // Duo: panels fill the entire screen edge to edge (no status/home inset).
     CGRect b = full;
@@ -1072,7 +1073,13 @@
     self.switcherRestorePending = NO;
     self.switcherGestureEpoch++;
     self.activeSwitcherCard = nil;
-    if (hadCard) [self requestSwitcherGroupRefresh];
+    if (hadCard) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self2 = weakSelf;
+            if (self2 && !self2.activeSwitcherCard) [self2 requestSwitcherGroupRefresh];
+        });
+    }
     self.switcherBuildStatus = nil;
     for (DPFloatingWindow *w in self.splitWindows) {
         w.tiled = NO;
@@ -1306,7 +1313,7 @@
 - (void)parkSessionInAppSwitcher {
     if (self.sessionParked || self.switcherRestorePending) return;
     self.switcherHomeScene = self.overlayWindow.windowScene ?: self.switcherHomeScene;
-    [self captureSwitcherPaneImages];
+    // No on-park capture: previews are pre-rendered while idle (scheduleSwitcherPreviewRefresh).
     // Keep the whole session alive but take it off screen entirely, so the home
     // screen and the app switcher stay visually clean. Nothing is torn down:
     // scenes stay hosted and resume instantly on the next activation.
@@ -1617,7 +1624,7 @@ static id DPDynamicGet(id obj, NSString *key) {
     self.activeSwitcherCard = [self switcherLayoutForGroupIdentifier:identifier];
     self.switcherGroupIdentifier = self.activeSwitcherCard ? identifier : nil;
     NSLog(@"[InteractivePiP] group layout %@", self.switcherBuildStatus);
-    if (self.activeSwitcherCard) [self requestSwitcherGroupRefresh];
+    if (self.activeSwitcherCard) { [self requestSwitcherGroupRefresh]; [self scheduleSwitcherPreviewRefresh]; }
 }
 
 - (nullable id)currentSwitcherLayout {
@@ -1696,6 +1703,7 @@ static id DPSwitcherObjectValue(id obj, SEL sel) {
     self.switcherRestorePending = NO;
     self.switcherTapStatus = self.overlayWindow.hidden ? @"hidden" : @"shown";
     dispatch_async(dispatch_get_main_queue(), ^{ [self showKeyboardDiagnostics]; });
+    [self scheduleSwitcherPreviewRefresh];
     NSLog(@"[InteractivePiP] group tap %@ scene=%@", self.switcherTapStatus, self.overlayWindow.windowScene);
 }
 
@@ -1715,6 +1723,19 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
         }
     }
     return NO;
+}
+
+- (void)scheduleSwitcherPreviewRefresh {
+    if (!self.activeSwitcherCard || self.splitWindows.count != 2 || self.sessionParked) return;
+    NSUInteger generation = self.sessionGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self2 = weakSelf;
+        if (!self2 || self2.sessionParked || self2.deviceLocked) return;
+        if (self2.sessionGeneration != generation || !self2.activeSwitcherCard || self2.splitWindows.count != 2) return;
+        [self2 captureSwitcherPaneImages];
+        NSLog(@"[InteractivePiP] idle preview refresh panes=%lu", (unsigned long)self2.switcherPaneImages.count);
+    });
 }
 
 - (void)captureSwitcherPaneImages {
@@ -1743,7 +1764,6 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
 
 - (UIView *)contentViewForSwitcherLayout:(id)layout {
     if (![self isSwitcherCard:layout] || self.splitWindows.count != 2) return nil;
-    if (!self.switcherPaneImages) [self captureSwitcherPaneImages];
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
     container.backgroundColor = [UIColor colorWithWhite:0.16 alpha:1];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
