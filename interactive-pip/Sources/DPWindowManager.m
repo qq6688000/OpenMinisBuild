@@ -57,6 +57,7 @@
 @property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
 @property (nonatomic, weak, nullable) id switcherContentController;
 @property (nonatomic) BOOL switcherRefreshScheduled;
+@property (nonatomic) NSUInteger switcherPreviewRefreshGeneration;
 @property (nonatomic) NSUInteger switcherGestureEpoch;
 @property (nonatomic) BOOL switcherRestorePending;
 @property (nonatomic) NSTimeInterval switcherRestoreGraceUntil;
@@ -1448,11 +1449,15 @@
     CGFloat available = sideBySide ? full.size.width : full.size.height;
     if (available <= 1) return;
 
-    CGPoint p = [gr locationInView:self.overlayRoot];
-    CGFloat pos = sideBySide ? p.x : p.y;
-    self.splitRatio = MIN(0.95, MAX(0.05, pos / available));
-    [self layoutSplit];
-    [[NSUserDefaults standardUserDefaults] setDouble:self.splitRatio forKey:@"sg.split.lastRatio"];
+    if (gr.state == UIGestureRecognizerStateBegan || gr.state == UIGestureRecognizerStateChanged) {
+        CGPoint p = [gr locationInView:self.overlayRoot];
+        CGFloat pos = sideBySide ? p.x : p.y;
+        self.splitRatio = MIN(0.95, MAX(0.05, pos / available));
+        [self layoutSplit];
+    } else if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled) {
+        [[NSUserDefaults standardUserDefaults] setDouble:self.splitRatio forKey:@"sg.split.lastRatio"];
+        [self scheduleSwitcherPreviewRefresh];
+    }
 }
 
 #pragma mark - Switcher card (Stage A: resolve real displayItem)
@@ -1727,12 +1732,16 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
 
 - (void)scheduleSwitcherPreviewRefresh {
     if (!self.activeSwitcherCard || self.splitWindows.count != 2 || self.sessionParked) return;
+    // Debounce: layoutSplit runs every frame while dragging the divider; only
+    // the last scheduled refresh may actually capture (earlier ones are voided).
+    NSUInteger refreshGeneration = ++self.switcherPreviewRefreshGeneration;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2 || self2.sessionParked || self2.deviceLocked) return;
         if (self2.sessionGeneration != generation || !self2.activeSwitcherCard || self2.splitWindows.count != 2) return;
+        if (self2.switcherPreviewRefreshGeneration != refreshGeneration) return;
         [self2 captureSwitcherPaneImages];
         NSLog(@"[InteractivePiP] idle preview refresh panes=%lu", (unsigned long)self2.switcherPaneImages.count);
     });
