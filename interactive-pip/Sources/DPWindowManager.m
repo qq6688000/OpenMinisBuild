@@ -1669,7 +1669,7 @@ static id DPSwitcherObjectValue(id obj, SEL sel) {
     NSUInteger epoch = ++self.switcherGestureEpoch;
     id card = self.activeSwitcherCard;
     NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 1.5;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self finishSwitcherRestore:epoch card:card deadline:deadline];
     });
 }
@@ -1695,7 +1695,7 @@ static id DPSwitcherObjectValue(id obj, SEL sel) {
     else [self bringOverlayToFront];
     self.switcherRestorePending = NO;
     self.switcherTapStatus = self.overlayWindow.hidden ? @"hidden" : @"shown";
-    [self showKeyboardDiagnostics];
+    dispatch_async(dispatch_get_main_queue(), ^{ [self showKeyboardDiagnostics]; });
     NSLog(@"[InteractivePiP] group tap %@ scene=%@", self.switcherTapStatus, self.overlayWindow.windowScene);
 }
 
@@ -1726,7 +1726,7 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
         UIImage *image = nil;
         if (view.window && !view.window.hidden && view.bounds.size.width >= 2 && view.bounds.size.height >= 2) {
             @try {
-                CGFloat scale = MIN(1.0, 400.0 / MAX(view.bounds.size.width, view.bounds.size.height));
+                CGFloat scale = MIN(1.0, 240.0 / MAX(view.bounds.size.width, view.bounds.size.height));
                 CGSize size = CGSizeMake(view.bounds.size.width * scale, view.bounds.size.height * scale);
                 UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
                 format.scale = 1;
