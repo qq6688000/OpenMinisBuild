@@ -136,8 +136,13 @@ def main():
         with tweak_mm.open('w') as f:
             subprocess.run(['perl',str(logos),'-c','generator=MobileSubstrate',str(ROOT/'Sources/Tweak.x')],
                            stdout=f,check=True)
-        # 2) compile all Sources .m + Tweak.mm
-        for src in sorted((ROOT/'Sources').glob('*.m')):
+        # 2) compile all Sources .m + Tweak.mm (including the new edge shelf).
+        sources = sorted((ROOT/'Sources').glob('*.m'))
+        require(ROOT/'Sources/DPEdgeShelfWindow.m' in sources,
+                'Missing DPEdgeShelfWindow.m in compile sources')
+        require((ROOT/'Sources/DPEdgeShelfGeometry.h').is_file(),
+                'Missing DPEdgeShelfGeometry.h')
+        for src in sources:
             o=work/(src.stem+'.o')
             run([*xcrun,'clang',*common,'-c',str(src),'-o',str(o)]);objs.append(o)
         o=work/'Tweak.o'

@@ -59,7 +59,6 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, strong, nullable) id processAssertion;
 @property (nonatomic, assign) BOOL processAssertionAttempted;
 - (void)enableInteractionInView:(UIView *)view;
-- (void)probeSceneReferenceSize;
 - (void)scheduleReconnect;
 - (void)stopReconnect;
 - (void)scheduleExternalSceneRefresh;
@@ -75,71 +74,6 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @end
 
 @implementation DPSceneHost
-
-// PROBE ONLY: read the SBSceneViewController reference-size interface without
-// invoking it or touching any layout. Confirms whether iOS 16.4.1 exposes the
-// PV real-reflow path before any risky implementation is attempted.
-- (void)probeSceneReferenceSize {
-    @try {
-        Class expected = NSClassFromString(@"SBSceneViewController");
-        NSArray *selectorNames = @[
-            @"setContentReferenceSize:withContentOrientation:andContainerOrientation:",
-            @"setContentReferenceSize:withInterfaceOrientation:",
-            @"contentReferenceSize",
-            @"contentOrientation",
-            @"containerOrientation",
-        ];
-        // Candidate objects that may own / be an SBSceneViewController.
-        NSMutableArray *candidates = [NSMutableArray array];
-        if (self.scene) [candidates addObject:self.scene];
-        if (self.sceneHandle) [candidates addObject:self.sceneHandle];
-        if (self.retainedSceneController) [candidates addObject:self.retainedSceneController];
-        if (self.hostView) [candidates addObject:self.hostView];
-        if (self.hostView.nextResponder) [candidates addObject:self.hostView.nextResponder];
-        id mgr = [self fbSceneManager] ?: [self sbMainDisplaySceneManager];
-        if (mgr) [candidates addObject:mgr];
-
-        NSLog(@"[InteractivePiP] PROBE begin %@ expected=%@ candidates=%lu",
-              self.bundleID, NSStringFromClass(expected), (unsigned long)candidates.count);
-        NSUInteger svcFound = 0;
-        for (id obj in candidates) {
-            if (!obj) continue;
-            // Walk the object and its superview / nextResponder chain for an SVC.
-            id current = obj;
-            for (NSUInteger depth = 0; current && depth < 8; ++depth) {
-                if (expected && [current isKindOfClass:expected]) {
-                    svcFound += 1;
-                    NSLog(@"[InteractivePiP] PROBE SVC #%lu depth=%lu class=%@ obj=%p",
-                          (unsigned long)svcFound, (unsigned long)depth,
-                          NSStringFromClass([current class]), current);
-                    for (NSString *name in selectorNames) {
-                        SEL sel = NSSelectorFromString(name);
-                        BOOL responds = [current respondsToSelector:sel];
-                        Method method = responds ? class_getInstanceMethod(object_getClass(current), sel) : NULL;
-                        const char *enc = method ? method_getTypeEncoding(method) : NULL;
-                        NSLog(@"[InteractivePiP] PROBE sel %@ responds=%d enc=%s",
-                              name, responds ? 1 : 0, enc ? enc : "(none)");
-                    }
-                }
-                // Move up the responder / view chain.
-                id up = nil;
-                if ([current isKindOfClass:[UIView class]]) {
-                    up = [((UIView *)current) superview];
-                    if (!up) up = [((UIView *)current) nextResponder];
-                } else if ([current respondsToSelector:@selector(nextResponder)]) {
-                    up = ((id(*)(id,SEL))objc_msgSend)(current, @selector(nextResponder));
-                } else if ([current respondsToSelector:@selector(superview)]) {
-                    up = ((id(*)(id,SEL))objc_msgSend)(current, @selector(superview));
-                }
-                if (up == current) break;
-                current = up;
-            }
-        }
-        NSLog(@"[InteractivePiP] PROBE done %@ svcFound=%lu", self.bundleID, (unsigned long)svcFound);
-    } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] PROBE exception %@: %@", e.name, e.reason);
-    }
-}
 
 + (BOOL)isSceneHostingAvailable {
     return NSClassFromString(@"FBSceneManager") != Nil
@@ -1395,7 +1329,6 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             UIView *hv = [self hostViewFromFBScene:scene];
             if (hv) {
                 [self attachHostView:hv scene:scene];
-                [self probeSceneReferenceSize];
                 self.statusText = @"已连接画面";
                 return;
             }
