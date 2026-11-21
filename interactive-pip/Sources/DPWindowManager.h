@@ -47,6 +47,7 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)shouldSuppressFullscreenForBundleID:(nullable NSString *)bundleID;
 - (void)handlePotentialFullscreenActivationForBundleID:(nullable NSString *)bundleID;
 - (void)bringOverlayToFront;
+- (void)noteForegroundApplicationChanged:(nullable NSString *)bundleID;
 /// 按 bundleID 从 SpringBoard 场景实体解析真实 displayItem（供 Switcher 卡注册）
 - (nullable id)displayItemForBundleID:(NSString *)bundleID;
 /// 当前分屏对应的 SBAppLayout（分屏态才有值，否则 nil）。Switcher 数据源 hook 用。

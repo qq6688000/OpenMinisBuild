@@ -1267,6 +1267,23 @@
 // Keep floating hosts alive while Home is visible; only hide our overlay.
 // A single low-frequency timer exists only during this hidden state, does no
 // rendering or scene mutation, and stops after resume/close/split transition.
+- (void)noteForegroundApplicationChanged:(NSString *)bundleID {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
+        return;
+    }
+    if (!self.floatingHiddenOnHome || self.deviceLocked || self.mode != DPPresentationModeFloating || !self.mutableFloatingWindows.count) return;
+    // Empty means no foreground application, not evidence that Home was left.
+    if (!bundleID.length || [bundleID isEqualToString:@"com.apple.springboard"]) return;
+    [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
+    self.floatingHiddenOnHome = NO;
+    for (DPFloatingWindow *window in self.mutableFloatingWindows) {
+        window.alpha = 1;
+        [window.sceneHost setSuspended:NO];
+    }
+    [self bringOverlayToFront];
+}
+
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
@@ -1286,10 +1303,7 @@
         if (self2.deviceLocked) return;
         NSString *foreground = [self2 foregroundBundleID];
         if (!foreground.length || [foreground isEqualToString:@"com.apple.springboard"]) return;
-        [tick invalidate];
-        self2.floatingHomeTimer = nil;
-        self2.floatingHiddenOnHome = NO;
-        [self2 bringOverlayToFront];
+        [self2 noteForegroundApplicationChanged:foreground];
     }];
     timer.tolerance = 0.08;
     self.floatingHomeTimer = timer;
@@ -1348,23 +1362,30 @@
 }
 
 - (NSString *)foregroundBundleID {
-    Class SBAppController = NSClassFromString(@"SBApplicationController");
-    if (SBAppController) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        id controller = [SBAppController performSelector:@selector(sharedInstance)];
-#pragma clang diagnostic pop
-        NSArray *sels = @[@"frontmostApplication", @"_frontMostApplication", @"focusedApplication"];
-        for (NSString *name in sels) {
-            SEL sel = NSSelectorFromString(name);
-            if ([controller respondsToSelector:sel]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                id app = [controller performSelector:sel];
-#pragma clang diagnostic pop
-                NSString *bid = [app valueForKey:@"bundleIdentifier"];
-                if (bid.length) return bid;
-            }
+    // Frontmost-app accessors live on SpringBoard itself on some iOS 16 builds,
+    // not SBApplicationController. Only accept a real application bundle ID.
+    NSMutableArray *owners = [NSMutableArray arrayWithObject:UIApplication.sharedApplication];
+    Class cls = NSClassFromString(@"SBApplicationController");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    if ([cls respondsToSelector:shared]) {
+        id controller = ((id(*)(id,SEL))objc_msgSend)(cls,shared);
+        if (controller) [owners addObject:controller];
+    }
+    for (id owner in owners) {
+        for (NSString *name in @[@"_accessibilityFrontMostApplication", @"_frontMostApplication", @"frontmostApplication", @"focusedApplication"]) {
+            @try {
+                SEL getter = NSSelectorFromString(name);
+                if (![owner respondsToSelector:getter]) continue;
+                NSMethodSignature *sig = [owner methodSignatureForSelector:getter];
+                if (sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') continue;
+                id app = ((id(*)(id,SEL))objc_msgSend)(owner,getter);
+                SEL bidGetter = @selector(bundleIdentifier);
+                if (![app respondsToSelector:bidGetter]) continue;
+                NSMethodSignature *bidSig = [app methodSignatureForSelector:bidGetter];
+                if (bidSig.numberOfArguments != 2 || bidSig.methodReturnType[0] != '@') continue;
+                id bid = ((id(*)(id,SEL))objc_msgSend)(app,bidGetter);
+                if ([bid isKindOfClass:NSString.class] && [bid length]) return bid;
+            } @catch (__unused NSException *e) { }
         }
     }
     return nil;

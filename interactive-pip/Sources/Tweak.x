@@ -378,6 +378,7 @@ static NSArray *DPInjectedShortcutItems(void) {
     if ([DPWindowManager shared].mode == DPPresentationModeNone) return;
 
     NSString *bid = DPBundleIDFromObject(arg);
+    [[DPWindowManager shared] noteForegroundApplicationChanged:bid];
     if ([[DPWindowManager shared] shouldSuppressFullscreenForBundleID:bid]) {
         NSLog(@"[InteractivePiP] frontDisplay 补救回桌面: %@", bid);
         [[DPWindowManager shared] handlePotentialFullscreenActivationForBundleID:bid];
