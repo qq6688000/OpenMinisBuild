@@ -53,6 +53,9 @@
 @property (nonatomic, weak, nullable) DPFloatingWindow *focusedWindow;
 @property (nonatomic, assign) BOOL deviceLocked;
 @property (nonatomic, assign) BOOL sessionParked;
+@property (nonatomic) BOOL floatingHiddenOnHome;
+@property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
+- (void)hideFloatingOnHome;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
 @property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
 @property (nonatomic, weak, nullable) id switcherContentController;
@@ -200,6 +203,7 @@
     if (self.deviceLocked) return;
     // While parked in the app switcher, passive foreground callbacks must not
     // yank the session back. Only an explicit activation restores it.
+    if (self.floatingHiddenOnHome) return;
     if (self.sessionParked) return;
     // Never resurrect a chrome-only overlay: it covers the home screen with
     // nothing inside, which is exactly the "stuck on split screen" symptom.
@@ -258,6 +262,8 @@
     }
     if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return;
 
+    [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
+    self.floatingHiddenOnHome = NO;
     if (self.sessionParked) [self restoreParkedSession];
     [self install];
 
@@ -857,6 +863,8 @@
     for (DPFloatingWindow *w in self.mutableFloatingWindows)
         if ([w.bundleID isEqualToString:bundleID]) second = w;
     if (!second || ![self.mutableFloatingWindows containsObject:first]) return;
+    [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
+    self.floatingHiddenOnHome = NO;
     self.splitWindows = @[first, second];
     for (DPFloatingWindow *w in self.splitWindows) {
         [w.layer removeAllAnimations];
@@ -1198,9 +1206,9 @@
         NSString *fg = [self2 foregroundBundleID];
         // If a hosted app is still foreground, this was an app switch / open — keep the session.
         if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
-        // Floating windows persist above Home; only split groups are parked.
         if (self2.mode == DPPresentationModeFloating) {
-            [self2 bringOverlayToFront];
+            if (!fg.length || [fg isEqualToString:@"com.apple.springboard"])
+                [self2 hideFloatingOnHome];
             return;
         }
         NSLog(@"[InteractivePiP] 上滑回桌面 -> 挂到后台任务列表 (fg=%@)", fg ?: @"(none)");
@@ -1256,14 +1264,42 @@
     NSLog(@"[InteractivePiP] 从后台任务列表恢复会话");
 }
 
+// Keep floating hosts alive while Home is visible; only hide our overlay.
+// A single low-frequency timer exists only during this hidden state, does no
+// rendering or scene mutation, and stops after resume/close/split transition.
+- (void)hideFloatingOnHome {
+    if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
+    self.floatingHiddenOnHome = YES;
+    self.overlayWindow.hidden = YES;
+    if (self.floatingHomeTimer) return;
+    NSUInteger generation = self.sessionGeneration;
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer timerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *tick) {
+        __strong typeof(weakSelf) self2 = weakSelf;
+        if (!self2 || self2.sessionGeneration != generation ||
+            self2.mode != DPPresentationModeFloating || !self2.mutableFloatingWindows.count) {
+            [tick invalidate];
+            self2.floatingHomeTimer = nil;
+            self2.floatingHiddenOnHome = NO;
+            return;
+        }
+        if (self2.deviceLocked) return;
+        NSString *foreground = [self2 foregroundBundleID];
+        if (!foreground.length || [foreground isEqualToString:@"com.apple.springboard"]) return;
+        [tick invalidate];
+        self2.floatingHomeTimer = nil;
+        self2.floatingHiddenOnHome = NO;
+        [self2 bringOverlayToFront];
+    }];
+    timer.tolerance = 0.08;
+    self.floatingHomeTimer = timer;
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+}
+
 - (void)handleUserHome {
     if (self.internalHomeReturn || self.switcherRestorePending || NSProcessInfo.processInfo.systemUptime < self.switcherRestoreGraceUntil) return;
     if (self.mode == DPPresentationModeFloating) {
-        NSUInteger generation = self.sessionGeneration;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.sessionGeneration == generation && !self.deviceLocked && self.mode == DPPresentationModeFloating)
-                [self bringOverlayToFront];
-        });
+        [self hideFloatingOnHome];
         return;
     }
     if (self.mode == DPPresentationModeSplit && self.splitWindows.count == 2) {
