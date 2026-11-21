@@ -3,6 +3,25 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
+// Only describes known private initializers; no private class is implemented.
+@interface DPSceneLayerContainerABI : UIView
+- (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
+- (instancetype)initWithScene:(id)scene;
+@end
+
+static void DPInvalidateHostView(UIView *host, NSString *stage) {
+    SEL sel = NSSelectorFromString(@"invalidate");
+    if (!host || ![host respondsToSelector:sel]) return;
+    NSMethodSignature *sig = [host methodSignatureForSelector:sel];
+    if (sig.numberOfArguments != 2 || sig.methodReturnType[0] != 'v') return;
+    @try {
+        ((void(*)(id,SEL))objc_msgSend)(host,sel);
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] host teardown stage=%@ host=%p class=%@ exception=%@ reason=%@",
+              stage, host, NSStringFromClass(host.class), e.name, e.reason);
+    }
+}
+
 @interface DPSceneHost ()
 @property (nonatomic, copy, readwrite) NSString *bundleID;
 @property (nonatomic, strong, readwrite) UIView *view;
@@ -787,18 +806,26 @@
     Class containerClass = NSClassFromString(@"_UISceneLayerHostContainerView");
     if (!scene || !containerClass) return nil;
 
+    SEL detailedInit = NSSelectorFromString(@"initWithScene:debugDescription:");
+    SEL sceneInit = NSSelectorFromString(@"initWithScene:");
+    NSMethodSignature *sig = nil;
+    BOOL detailed = NO;
+    for (NSString *name in @[@"initWithScene:debugDescription:", @"initWithScene:"]) {
+        SEL candidate = NSSelectorFromString(name);
+        NSMethodSignature *test = [containerClass instanceMethodSignatureForSelector:candidate];
+        NSUInteger count = [name isEqualToString:@"initWithScene:"] ? 3 : 4;
+        if (!test || test.numberOfArguments != count || test.methodReturnType[0] != '@') continue;
+        BOOL valid = YES;
+        for (NSUInteger i = 2; i < count; i++) if ([test getArgumentTypeAtIndex:i][0] != '@') valid = NO;
+        if (valid) { sig = test; detailed = count == 4; break; }
+    }
+    if (!sig) return nil; // Never allocate an object that cannot be initialized.
+    UIView *container = nil;
+    BOOL transferred = NO;
     @try {
-        id allocated = [containerClass alloc];
-        id container = nil;
-        SEL detailedInit = NSSelectorFromString(@"initWithScene:debugDescription:");
-        SEL sceneInit = NSSelectorFromString(@"initWithScene:");
-        if ([allocated respondsToSelector:detailedInit]) {
-            container = ((id (*)(id, SEL, id, id))objc_msgSend)(allocated, detailedInit,
-                                                                 scene, @"DualPane");
-        } else if ([allocated respondsToSelector:sceneInit]) {
-            container = ((id (*)(id, SEL, id))objc_msgSend)(allocated, sceneInit, scene);
-        }
-        if (![container isKindOfClass:[UIView class]]) return nil;
+        DPSceneLayerContainerABI *receiver = (DPSceneLayerContainerABI *)[containerClass alloc];
+        container = detailed ? [receiver initWithScene:scene debugDescription:@"DualPane"] : [receiver initWithScene:scene];
+        if (![container isKindOfClass:UIView.class]) return nil;
 
         UIView *containerView = (UIView *)container;
         CGSize size = self.nativeSceneSize;
@@ -857,15 +884,14 @@
                            (unsigned long)created, layerManager ? 1 : 0, containerScene ? 1 : 0];
         if (created > 0) {
             NSLog(@"[InteractivePiP] layer container attached %@ layers=%@", self.bundleID, @(created));
+            transferred = YES;
             return containerView;
         }
-
-        SEL invalidate = NSSelectorFromString(@"invalidate");
-        if ([container respondsToSelector:invalidate]) {
-            ((void (*)(id, SEL))objc_msgSend)(container, invalidate);
-        }
     } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] layer container failed %@: %@", self.bundleID, e);
+        NSLog(@"[InteractivePiP] layer container failed %@: %@ reason=%@", self.bundleID, e.name, e.reason);
+    } @finally {
+        // Covers zero hosts AND exceptions after partially creating host layers.
+        if (!transferred && container) DPInvalidateHostView(container, @"construction-failed");
     }
     return nil;
 }
@@ -1465,6 +1491,7 @@
         _observingLayerManager = NO;
         _observedLayerManager = nil;
     }
+    DPInvalidateHostView(_hostView, @"owner-dealloc");
     id assertion = _processAssertion;
     if (assertion) {
         SEL invalidate = NSSelectorFromString(@"invalidate");
@@ -1504,6 +1531,7 @@
     }
 
     if (self.hostView != hostView) {
+        DPInvalidateHostView(self.hostView, @"replace");
         [self.hostView removeFromSuperview];
     }
     self.hostView = hostView;
@@ -1811,6 +1839,7 @@
     [self clearExternalSceneHosts];
     [self stopSceneKeepAlive];
     [self releaseProcessAssertion];
+    DPInvalidateHostView(self.hostView, @"retry");
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.retainedSceneController = nil;
@@ -1863,12 +1892,7 @@
             }
         }
     }
-    SEL invalidateHost = NSSelectorFromString(@"invalidate");
-    if ([self.hostView respondsToSelector:invalidateHost]) {
-        @try {
-            ((void (*)(id, SEL))objc_msgSend)(self.hostView, invalidateHost);
-        } @catch (__unused NSException *e) {}
-    }
+    DPInvalidateHostView(self.hostView, @"close");
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.retainedSceneController = nil;
