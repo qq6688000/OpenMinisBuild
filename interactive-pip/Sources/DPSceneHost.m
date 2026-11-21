@@ -1596,6 +1596,18 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
 
+    // Fallback cover-scale only: nativeSceneSize is captured at attach time
+    // (usually portrait). When the overlay rotates, the hosted scene canvas
+    // rotates too, but this cached size is never refreshed. Without this fix a
+    // landscape pane (~426x393) divides by a portrait canvas (393x852), so
+    // scale=MAX gives 1.08 and crops most of the app vertically. Align the
+    // cached canvas axis to the current target axis before scaling.
+    if (!referenceAccepted) {
+        BOOL targetLandscape = target.width > target.height;
+        BOOL canvasLandscape = canvas.width > canvas.height;
+        if (targetLandscape != canvasLandscape) canvas = CGSizeMake(canvas.height, canvas.width);
+    }
+
     // Accepted reference sizing uses an unscaled pane-sized presentation.
     // While awaiting a commit, fit the last accepted canvas without cover crop.
     // Unavailable paths retain the old cover fallback, explicitly not real reflow.
