@@ -1629,6 +1629,15 @@ static id DPSwitcherObjectValue(id obj, SEL sel) {
     return ((id(*)(id, SEL))objc_msgSend)(obj, sel);
 }
 
+- (BOOL)isSwitcherGroupDisplayItem:(id)item {
+    if (!self.activeSwitcherCard || !self.switcherGroupIdentifier.length ||
+        ![item isKindOfClass:NSClassFromString(@"SBDisplayItem")]) return NO;
+    @try {
+        id tag = DPSwitcherObjectValue(item, NSSelectorFromString(@"uniqueIdentifier"));
+        return [tag isKindOfClass:[NSString class]] && [self.switcherGroupIdentifier isEqualToString:tag];
+    } @catch (__unused NSException *e) { return NO; }
+}
+
 - (BOOL)isSwitcherCard:(id)layout {
     id card = self.activeSwitcherCard;
     if (!layout || !card || ![layout isKindOfClass:[card class]]) return NO;

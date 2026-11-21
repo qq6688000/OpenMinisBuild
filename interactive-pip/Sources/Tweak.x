@@ -683,28 +683,54 @@ static id DPTransitionObject(id object, SEL getter) {
     return ((id(*)(id, SEL))objc_msgSend)(object, getter);
 }
 
+static char DPGroupRequestKey;
+
+%group DPGroupRequestBinding
+%hook SBSwitcherTransitionRequest
+- (void)setActivatingDisplayItem:(id)item {
+    if ([NSThread isMainThread]) {
+        DPWindowManager *wm = [DPWindowManager shared];
+        id card = [wm isSwitcherGroupDisplayItem:item] ? [wm currentSwitcherLayout] : nil;
+        if (card || objc_getAssociatedObject(self, &DPGroupRequestKey)) {
+            objc_setAssociatedObject(self, &DPGroupRequestKey, card, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    %orig;
+}
+%end
+%end
+
+static BOOL DPHasGroupRequestBinding(void) {
+    Class cls = NSClassFromString(@"SBSwitcherTransitionRequest");
+    NSMethodSignature *sig = [cls instanceMethodSignatureForSelector:@selector(setActivatingDisplayItem:)];
+    return sig.numberOfArguments == 3 && sig.methodReturnType[0] == 'v' && [sig getArgumentTypeAtIndex:2][0] == '@';
+}
+
+static id DPGroupTransitionTarget(id request, DPWindowManager *wm) {
+    if (!request || ![wm currentSwitcherLayout]) return nil;
+    @try {
+        id bound = objc_getAssociatedObject(request, &DPGroupRequestKey);
+        if (bound == [wm currentSwitcherLayout]) return bound;
+        id ctx = DPTransitionObject(request, @selector(transitionContext));
+        id item = DPTransitionObject(request, @selector(activatingDisplayItem));
+        if ([wm isSwitcherGroupDisplayItem:item] || [wm isSwitcherGroupDisplayItem:DPTransitionObject(ctx, @selector(activatingDisplayItem))]) return [wm currentSwitcherLayout];
+        id target = DPTransitionObject(request, @selector(toAppLayout));
+        if ([wm isSwitcherCard:target]) return target;
+        target = DPTransitionObject(ctx, @selector(toAppLayout));
+        if ([wm isSwitcherCard:target]) return target;
+    } @catch (__unused NSException *e) { }
+    return nil;
+}
+
 %group DPGroupReturnTransition
 %hook SBMainSwitcherControllerCoordinator
 - (void)switcherContentController:(id)controller performTransitionWithRequest:(id)request gestureInitiated:(BOOL)gesture {
     DPWindowManager *wm = [DPWindowManager shared];
-    [wm noteSwitcherActivationCandidate:request source:@"coordinator-transition"];
-    id target = nil;
     if ([NSThread isMainThread]) {
-        wm = [DPWindowManager shared];
-        if ([wm currentSwitcherLayout]) {
-            @try {
-                SEL toLayout = NSSelectorFromString(@"toAppLayout");
-                target = DPTransitionObject(request, toLayout);
-                if (!target) {
-                    id context = DPTransitionObject(request, NSSelectorFromString(@"transitionContext"));
-                    target = DPTransitionObject(context, toLayout);
-                }
-                if (![wm isSwitcherCard:target]) target = nil;
-            } @catch (__unused NSException *e) { target = nil; }
-        }
+        id target = DPGroupTransitionTarget(request, wm);
+        if (target) [wm activateSwitcherCard:target];
+        else [wm noteSwitcherActivationCandidate:request source:@"coordinator-unmatched"];
     }
-    // Arm before the original: its synchronous Home callbacks must not park again.
-    if (target) [wm activateSwitcherCard:target];
     %orig;
 }
 %end
@@ -716,19 +742,11 @@ static id DPTransitionObject(id object, SEL getter) {
 %hook SBFluidSwitcherViewController
 - (void)switcherContentController:(id)controller performTransitionWithRequest:(id)request gestureInitiated:(BOOL)gesture {
     DPWindowManager *wm = [DPWindowManager shared];
-    [wm noteSwitcherActivationCandidate:request source:@"fluid-transition"];
-    id target = nil;
-    if ([NSThread isMainThread] && [wm currentSwitcherLayout]) {
-        @try {
-            target = DPTransitionObject(request, NSSelectorFromString(@"toAppLayout"));
-            if (!target) {
-                id context = DPTransitionObject(request, NSSelectorFromString(@"transitionContext"));
-                target = DPTransitionObject(context, NSSelectorFromString(@"toAppLayout"));
-            }
-            if (![wm isSwitcherCard:target]) target = nil;
-        } @catch (__unused NSException *e) { target = nil; }
+    if ([NSThread isMainThread]) {
+        id target = DPGroupTransitionTarget(request, wm);
+        if (target) [wm activateSwitcherCard:target];
+        else [wm noteSwitcherActivationCandidate:request source:@"fluid-unmatched"];
     }
-    if (target) [wm activateSwitcherCard:target];
     %orig;
 }
 - (void)switcherContentController:(id)controller bringAppLayoutToFront:(id)layout {
@@ -763,6 +781,7 @@ static BOOL DPHasGroupReturnTransition(void) {
             NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 无 hook", NSProcessInfo.processInfo.processName);
         } else {
         [DPSettings shared];
+        if (DPHasGroupRequestBinding()) { %init(DPGroupRequestBinding); }
         if (DPHasGroupReturnTransition()) { %init(DPGroupReturnTransition); }
         if (DPHasGroupReturnTransitionForClass(@"SBFluidSwitcherViewController")) { %init(DPFluidGroupReturnTransition); }
         %init(_ungrouped);
