@@ -879,25 +879,15 @@
     [divider addGestureRecognizer:tap];
     UIView *seam = [[UIView alloc] initWithFrame:CGRectZero];
     seam.tag = 0x5D1;
-    // Card-style seam (matches the native switcher): a light neutral grey gap
-    // that lets the wallpaper show through, not a hard black bar.
-    seam.backgroundColor = [UIColor colorWithWhite:0.62 alpha:0.55];
-    seam.layer.cornerRadius = 0;
+    // Divider styled like the iOS home indicator: a solid white rounded bar
+    // running along the seam, 5pt thick with a soft radius and no shadow.
+    seam.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.92];
+    seam.layer.cornerRadius = 2.5;
+    seam.layer.cornerCurve = kCACornerCurveContinuous;
     seam.userInteractionEnabled = NO;
     seam.alpha = 1.0;
     [divider addSubview:seam];
     divider.backgroundColor = [UIColor clearColor];
-
-    // The system home indicator is hidden under our full-bleed panes. Draw one
-    // grabber in the same place it would naturally sit: pinned to the bottom
-    // edge of the upper pane (i.e. just above the seam), matching its geometry.
-    UIView *grabber = [[UIView alloc] initWithFrame:CGRectZero];
-    grabber.tag = 0x5D2;
-    grabber.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.86];
-    grabber.layer.cornerRadius = 2.5;
-    grabber.layer.cornerCurve = kCACornerCurveContinuous;
-    grabber.userInteractionEnabled = NO;
-    [self.overlayRoot addSubview:grabber];
 
     UIPanGestureRecognizer *drag = [[UIPanGestureRecognizer alloc]
         initWithTarget:self action:@selector(handleSplitDrag:)];
@@ -922,7 +912,7 @@
     BOOL sideBySide = b.size.width >= b.size.height;
     // Card-style split: each pane keeps a rounded card edge and a narrow gap
     // between them shows the backdrop, like the native app switcher cards.
-    const CGFloat seamW = 10.0;                    // visible gap between cards
+    const CGFloat seamW = 5.0;                     // white bar thickness
     const CGFloat cardGap = seamW / 2.0;           // inset each card by half the gap
     const CGFloat cardRadius = 26.0;               // matches native switcher corner
     const CGFloat touch = 28.0;                    // invisible draggable strip over the seam
@@ -953,18 +943,6 @@
         [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
     }
     // one thin dark line, centered in the transparent touch strip
-    {
-        // Native home-indicator bar: 134pt wide, 5pt tall, 8pt above the edge.
-        const CGFloat gw = 134.0, gh = 5.0, inset = 8.0;
-        UIView *grabber = [self.overlayRoot viewWithTag:0x5D2];
-        if (grabber) {
-            CGFloat cy = sideBySide ? (b.size.height - inset - gh)
-                                    : (a.size.height - inset - gh);
-            CGFloat cx = sideBySide ? (b.size.width - gw) / 2.0
-                                    : (b.size.width - gw) / 2.0;
-            grabber.frame = CGRectMake(cx, cy, gw, gh);
-        }
-    }
     UIView *line = [self.splitDivider viewWithTag:0x5D1];
     if (line) {
         if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, -b.size.height, seamW, h.size.height + b.size.height * 2.0);
@@ -1001,7 +979,7 @@
         [w layoutIfNeeded]; [w commitSceneLayout];
     }
     [self.splitDivider removeFromSuperview]; self.splitDivider = nil;
-    [[self.overlayRoot viewWithTag:0x5D2] removeFromSuperview];
+
 
     self.splitWindows = nil; [self.savedFrames removeAllObjects]; self.duoMode = NO;
     self.mode = self.mutableFloatingWindows.count ? DPPresentationModeFloating : DPPresentationModeNone;
