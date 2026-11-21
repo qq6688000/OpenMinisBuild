@@ -879,12 +879,12 @@
     [divider addGestureRecognizer:tap];
     UIView *seam = [[UIView alloc] initWithFrame:CGRectZero];
     seam.tag = 0x5D1;
-    // Card-style seam (matches the native switcher): the gap shows the blurred
-    // backdrop through a soft dark tint instead of a hard black bar.
-    seam.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+    // Card-style seam (matches the native switcher): a light neutral grey gap
+    // that lets the wallpaper show through, not a hard black bar.
+    seam.backgroundColor = [UIColor colorWithWhite:0.62 alpha:0.55];
     seam.layer.cornerRadius = 0;
     seam.userInteractionEnabled = NO;
-    seam.alpha = 0.9;
+    seam.alpha = 1.0;
     [divider addSubview:seam];
     divider.backgroundColor = [UIColor clearColor];
 
@@ -911,7 +911,7 @@
     BOOL sideBySide = b.size.width >= b.size.height;
     // Card-style split: each pane keeps a rounded card edge and a narrow gap
     // between them shows the backdrop, like the native app switcher cards.
-    const CGFloat seamW = 14.0;                    // visible gap between cards
+    const CGFloat seamW = 10.0;                    // visible gap between cards
     const CGFloat cardGap = seamW / 2.0;           // inset each card by half the gap
     const CGFloat cardRadius = 26.0;               // matches native switcher corner
     const CGFloat touch = 28.0;                    // invisible draggable strip over the seam
