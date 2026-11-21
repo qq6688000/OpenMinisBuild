@@ -84,6 +84,8 @@
 @property (nonatomic, assign) BOOL duoMode;
 @property (nonatomic, assign) BOOL creatingSplit;
 - (void)layoutSplit;
+- (void)synchronizeOverlayGeometry;
+- (void)layoutOverlayContent;
 - (void)pairWindow:(DPFloatingWindow *)first withBundleID:(NSString *)bundleID;
 
 - (void)openFloatingWithBundleID:(NSString *)bundleID reusingHost:(nullable DPSceneHost *)reusableHost;
@@ -175,7 +177,7 @@
     // Start hidden: an empty overlay must never cover home or lock screen.
     win.hidden = YES;
 
-    UIViewController *rootVC = [[UIViewController alloc] init];
+    DPOverlayRootViewController *rootVC = [[DPOverlayRootViewController alloc] init];
     DPPassthroughView *root = [[DPPassthroughView alloc] initWithFrame:win.bounds];
     root.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     root.backgroundColor = [UIColor clearColor];
@@ -184,6 +186,10 @@
 
     self.overlayWindow = win;
     self.overlayRoot = root;
+    __weak typeof(self) weakSelf = self;
+    rootVC.geometryDidChange = ^{
+        [weakSelf layoutOverlayContent];
+    };
 
     NSLog(@"[InteractivePiP] 顶层窗口已安装 level=%.0f", win.windowLevel);
 }
@@ -224,10 +230,10 @@
         UIWindowScene *scene = self.switcherRestorePending && saved.activationState == UISceneActivationStateForegroundActive && saved ? saved : [self activeWindowScene];
         if (scene && self.overlayWindow.windowScene != scene) {
             self.overlayWindow.windowScene = scene;
-            self.overlayWindow.frame = scene.coordinateSpace.bounds;
-            self.overlayRoot.frame = self.overlayWindow.bounds;
         }
     }
+    // Refresh even when the scene object is unchanged (rotation / restore).
+    [self synchronizeOverlayGeometry];
     // 不抢 keyWindow，只确保可见
     self.overlayWindow.hidden = NO;
 }
@@ -793,19 +799,40 @@
 - (void)hostedKeyboardWillShow { /* Never steal keyboard focus on a notification. */ }
 - (void)hostedKeyboardWillHide { [self restorePreviousKeyWindow]; }
 
-- (void)handleOrientationChange {
-    if (self.overlayWindow) {
-        CGRect bounds = [UIScreen mainScreen].bounds;
-        if (@available(iOS 13.0, *)) {
-            UIWindowScene *scene = self.overlayWindow.windowScene ?: [self activeWindowScene];
-            if (scene) bounds = scene.coordinateSpace.bounds;
-        }
-        self.overlayWindow.frame = bounds;
-        self.overlayRoot.frame = self.overlayWindow.bounds;
+- (void)synchronizeOverlayGeometry {
+    DPPassthroughWindow *window = self.overlayWindow;
+    if (!window) return;
+    // A scene's coordinate space is already interface-oriented. Screen bounds
+    // are only a fallback for a window that has no scene; never swap axes.
+    CGRect bounds = window.screen.bounds;
+    if (@available(iOS 13.0, *)) {
+        UIWindowScene *scene = window.windowScene;
+        if (scene) bounds = scene.coordinateSpace.bounds;
     }
+    if (!CGRectIsEmpty(bounds) && !CGRectIsInfinite(bounds) &&
+        !CGRectEqualToRect(window.frame, bounds)) {
+        window.frame = bounds;
+    }
+    [window setNeedsLayout];
+    [window layoutIfNeeded];
+    // UIKit rotates/sizes the controller view. Assigning its frame from the
+    // window's bounds is invalid while its rotation transform is nonidentity.
+    [self.overlayRoot setNeedsLayout];
+    [self.overlayRoot layoutIfNeeded];
+}
+
+- (void)handleOrientationChange {
+    [self synchronizeOverlayGeometry];
+    [self layoutOverlayContent];
+    [self bringOverlayToFront];
+}
+
+- (void)layoutOverlayContent {
+    // Called again by the root controller after UIKit's actual geometry update,
+    // so an early orientation notification cannot leave stale portrait panes.
+    if (!self.overlayRoot || CGRectIsEmpty(self.overlayRoot.bounds)) return;
     if (self.duoMode && self.splitWindows.count == 2) {
         [self layoutSplit];
-        [self bringOverlayToFront];
         return;
     }
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
@@ -819,7 +846,6 @@
         [w commitSceneLayout];
     }
     if (self.splitWindows.count == 2) [self layoutSplit];
-    [self bringOverlayToFront];
 }
 
 
@@ -950,11 +976,11 @@
     for (DPFloatingWindow *w in self.splitWindows) {
         [w setNeedsLayout]; [w layoutIfNeeded]; [w commitSceneLayout];
     }
-    // one thin dark line, centered in the transparent touch strip
+    // Keep the 10pt white seam inside the root's actual split extent.
     UIView *line = [self.splitDivider viewWithTag:0x5D1];
     if (line) {
-        if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, -b.size.height, seamW, h.size.height + b.size.height * 2.0);
-        else line.frame = CGRectMake(-b.size.width, (touch - seamW) / 2.0, h.size.width + b.size.width * 2.0, seamW);
+        if (sideBySide) line.frame = CGRectMake((touch - seamW) / 2.0, 0, seamW, h.size.height);
+        else line.frame = CGRectMake(0, (touch - seamW) / 2.0, h.size.width, seamW);
     }
     [self.overlayRoot bringSubviewToFront:self.splitDivider];
     [self updateSessionControls];

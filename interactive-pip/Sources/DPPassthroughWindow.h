@@ -7,6 +7,11 @@ NS_ASSUME_NONNULL_BEGIN
 @interface DPPassthroughWindow : UIWindow
 @end
 
+/// UIKit owns this controller's rotation transform and root-view geometry.
+@interface DPOverlayRootViewController : UIViewController
+@property (nonatomic, copy, nullable) void (^geometryDidChange)(void);
+@end
+
 /// 空白区域触摸穿透的根视图。
 @interface DPPassthroughView : UIView
 @end

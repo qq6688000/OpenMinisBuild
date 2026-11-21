@@ -2,12 +2,29 @@
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <math.h>
+#import <string.h>
 
 // Only describes known private initializers; no private class is implemented.
 @interface DPSceneLayerContainerABI : UIView
 - (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
 - (instancetype)initWithScene:(id)scene;
 @end
+
+// PV 0x760b8 targets SBSceneViewController, never FBScene. Do not accept
+// forwarding-only selectors or ABI-compatible-looking, differently typed structs.
+static BOOL DPReferenceMethod(id target, SEL sel, const char *ret,
+                              const char * const *args, NSUInteger count) {
+    Method method = target ? class_getInstanceMethod(object_getClass(target), sel) : NULL;
+    if (!method || ![target respondsToSelector:sel]) return NO;
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    if (!sig || sig.numberOfArguments != count + 2 || strcmp(sig.methodReturnType, ret) ||
+        strcmp([sig getArgumentTypeAtIndex:0], @encode(id)) ||
+        strcmp([sig getArgumentTypeAtIndex:1], @encode(SEL))) return NO;
+    for (NSUInteger i = 0; i < count; ++i)
+        if (strcmp([sig getArgumentTypeAtIndex:i + 2], args[i])) return NO;
+    return YES;
+}
 
 static void DPInvalidateHostView(UIView *host, NSString *stage) {
     SEL sel = NSSelectorFromString(@"invalidate");
@@ -71,6 +88,14 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 - (BOOL)layerHasExternalSceneID:(id)layer;
 @property (nonatomic, strong, nullable) id retainedSceneController; // 防止 VC 被释放
 - (void)layoutHostView;
+- (void)scheduleReferenceSizeRelayout;
+- (void)applyReferenceSizeRelayout;
+- (void)resetReferenceSizeRelayout;
+@property (nonatomic, copy, readwrite, nullable) NSString *referenceSizeDiag;
+@property (nonatomic, assign) CGSize acceptedReferenceSize;
+@property (nonatomic, assign) BOOL referenceSizePending;
+@property (nonatomic, assign) BOOL referenceSizeFailed;
+@property (nonatomic, assign) NSUInteger referenceSizeGeneration;
 @end
 
 @implementation DPSceneHost
@@ -952,6 +977,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 
     // 1) Ask FrontBoard for a real scene view. It owns the remote scene's
     //    presentation layer, which is what input/keyboard pairing needs.
+    self.retainedSceneController = nil;
     UIView *sceneView = [self newSceneViewForScene:scene size:ref];
     if (sceneView) {
         self.hostIsSceneView = YES;
@@ -1010,11 +1036,13 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             __unsafe_unretained id result = nil;
             [inv getReturnValue:&result];
             UIView *v = (UIView *)result;
+            id controller = nil;
             if (![v isKindOfClass:[UIView class]] && [v respondsToSelector:@selector(view)]) {
-                self.retainedSceneController = v;
+                controller = v;
                 v = ((UIView *(*)(id, SEL))objc_msgSend)(v, @selector(view));
             }
             if ([v isKindOfClass:[UIView class]] && v.frame.size.height > 1) {
+                self.retainedSceneController = controller;
                 self.hostViewDiag = [NSString stringWithFormat:@"ok %@ -> %@", name, NSStringFromClass([v class])];
                 return v;
             }
@@ -1534,6 +1562,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         DPInvalidateHostView(self.hostView, @"replace");
         [self.hostView removeFromSuperview];
     }
+    [self resetReferenceSizeRelayout];
+    self.referenceSizeDiag = @"reference: not requested";
     self.hostView = hostView;
     self.scene = scene;
     self.lastCommittedSceneSize = CGSizeZero;
@@ -1561,16 +1591,21 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     if (!self.hostView) return;
 
     CGSize target = self.view.bounds.size;
-    CGSize canvas = self.nativeSceneSize;
+    BOOL referenceAccepted = self.acceptedReferenceSize.width > 0 && self.acceptedReferenceSize.height > 0;
+    CGSize canvas = referenceAccepted ? self.acceptedReferenceSize : self.nativeSceneSize;
     if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
 
-    // 0.7.5 original: uniform cover-scale into the pane (aspect fill).
+    // Accepted reference sizing uses an unscaled pane-sized presentation.
+    // While awaiting a commit, fit the last accepted canvas without cover crop.
+    // Unavailable paths retain the old cover fallback, explicitly not real reflow.
+    // 0.7.5 original fallback: uniform cover-scale into the pane (aspect fill).
     // Keeps app aspect ratio (no stretch), fills pane, clips overflow.
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
     self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    CGFloat scale = MAX(target.width / canvas.width, target.height / canvas.height);
+    CGFloat scale = referenceAccepted ? MIN(target.width / canvas.width, target.height / canvas.height)
+                                      : MAX(target.width / canvas.width, target.height / canvas.height);
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
@@ -1803,6 +1838,104 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 - (void)commitHostedFrame {
     if (self.live && self.scene) {
         [self updateSceneSettingsWithSize:self.view.bounds.size];
+        [self scheduleReferenceSizeRelayout];
+    }
+}
+
+- (void)resetReferenceSizeRelayout {
+    self.referenceSizeGeneration += 1;
+    self.referenceSizePending = NO;
+    self.referenceSizeFailed = NO;
+    self.acceptedReferenceSize = CGSizeZero;
+    self.referenceSizeDiag = nil;
+}
+
+// Coalesce commits; at most one costly controller mutation per 125 ms.
+// A weak capture plus generation fence prevents work after replacement/teardown.
+- (void)scheduleReferenceSizeRelayout {
+    if (![NSThread isMainThread] || self.invalidated || !self.live || self.referenceSizePending ||
+        self.referenceSizeFailed || self.view.alpha == 0.0) return;
+    self.referenceSizePending = YES;
+    NSUInteger generation = self.referenceSizeGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.125 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) owner = weakSelf;
+        if (!owner || owner.invalidated || generation != owner.referenceSizeGeneration) return;
+        owner.referenceSizePending = NO;
+        if (owner.live && owner.view.alpha > 0.0) [owner applyReferenceSizeRelayout];
+    });
+}
+
+- (void)applyReferenceSizeRelayout {
+    if (!self.scene || !self.hostView || self.hostView.superview != self.view) return;
+    CGSize size = self.view.bounds.size;
+    if (!isfinite(size.width) || !isfinite(size.height) || size.width < 2 || size.height < 2 ||
+        size.width > 8192 || size.height > 8192 || self.referenceSizeFailed) return;
+    id controller = self.retainedSceneController;
+    Class expected = NSClassFromString(@"SBSceneViewController");
+    // Only use a controller already returned by our scene-view factory and
+    // owning this exact host view. PV's switcher overlay controller is NOT ours.
+    @try {
+        if (!expected || ![controller isKindOfClass:expected] ||
+            !DPReferenceMethod(controller, @selector(view), @encode(id), NULL, 0)) {
+            self.referenceSizeFailed = YES;
+            self.referenceSizeDiag = @"fallback: no owned SBSceneViewController (not real reflow)";
+            return;
+        }
+        if (((id(*)(id,SEL))objc_msgSend)(controller, @selector(view)) != self.hostView) {
+            self.referenceSizeFailed = YES;
+            self.referenceSizeDiag = @"fallback: controller/view mismatch (not real reflow)";
+            return;
+        }
+        SEL getter = NSSelectorFromString(@"contentReferenceSize");
+        SEL content = NSSelectorFromString(@"contentOrientation");
+        SEL container = NSSelectorFromString(@"containerOrientation");
+        SEL setter = NSSelectorFromString(@"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
+        const char *args[] = { @encode(CGSize), @encode(NSInteger), @encode(NSInteger) };
+        BOOL triple = DPReferenceMethod(controller, setter, @encode(void), args, 3) &&
+                      DPReferenceMethod(controller, content, @encode(NSInteger), NULL, 0) &&
+                      DPReferenceMethod(controller, container, @encode(NSInteger), NULL, 0);
+        if (!triple) {
+            content = NSSelectorFromString(@"contentInterfaceOrientation");
+            setter = NSSelectorFromString(@"setContentReferenceSize:withInterfaceOrientation:");
+        }
+        if (!DPReferenceMethod(controller, getter, @encode(CGSize), NULL, 0) ||
+            (!triple && (!DPReferenceMethod(controller, setter, @encode(void), args, 2) ||
+                         !DPReferenceMethod(controller, content, @encode(NSInteger), NULL, 0)))) {
+            self.referenceSizeFailed = YES;
+            self.referenceSizeDiag = @"fallback: reference-size ABI unavailable (not real reflow)";
+            return;
+        }
+        // Preserve controller orientations exactly, as PV does; never force portrait.
+        NSInteger orientation = ((NSInteger(*)(id,SEL))objc_msgSend)(controller, content);
+        NSInteger containerOrientation = triple ? ((NSInteger(*)(id,SEL))objc_msgSend)(controller, container) : 0;
+        if (orientation < 1 || orientation > 4 || (triple && (containerOrientation < 1 || containerOrientation > 4))) {
+            self.referenceSizeDiag = @"fallback: controller orientation unknown";
+            return;
+        }
+        CGSize before = ((CGSize(*)(id,SEL))objc_msgSend)(controller, getter);
+        NSUInteger generation = self.referenceSizeGeneration;
+        if (!CGSizeEqualToSize(before, size)) {
+            if (triple) ((void(*)(id,SEL,CGSize,NSInteger,NSInteger))objc_msgSend)(controller, setter, size, orientation, containerOrientation);
+            else ((void(*)(id,SEL,CGSize,NSInteger))objc_msgSend)(controller, setter, size, orientation);
+        }
+        if (self.invalidated || generation != self.referenceSizeGeneration || !self.live) return;
+        CGSize after = ((CGSize(*)(id,SEL))objc_msgSend)(controller, getter);
+        if (!CGSizeEqualToSize(after, size)) {
+            self.referenceSizeFailed = YES;
+            self.acceptedReferenceSize = CGSizeZero;
+            [self layoutHostView];
+            self.referenceSizeDiag = @"fallback: reference-size readback rejected; client reflow unverified";
+            return;
+        }
+        self.acceptedReferenceSize = after;
+        self.referenceSizeDiag = [NSString stringWithFormat:@"reference accepted %@; client reflow unverified", NSStringFromCGSize(after)];
+        [self layoutHostView];
+    } @catch (NSException *e) {
+        self.referenceSizeFailed = YES;
+        self.acceptedReferenceSize = CGSizeZero;
+        self.referenceSizeDiag = [NSString stringWithFormat:@"fallback: reference-size exception %@", e.name];
+        [self layoutHostView];
     }
 }
 
@@ -1810,7 +1943,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     if (!self.scene || size.width < 1 || size.height < 1) return;
     if (CGSizeEqualToSize(size, self.lastCommittedSceneSize)) return;
     // Keep scene full-screen: a half-screen setFrame is invalid on iOS 16 and
-    // kills the hosted pid. Scale the host view uniformly into the pane.
+    // kills the hosted pid. Controller reference sizing is a separate guarded
+    // path; failure retains the explicitly non-reflow visual fallback.
     if ([self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO]) {
         self.lastCommittedSceneSize = size;
         self.layoutDiag = [NSString stringWithFormat:@"view=%@ pane=%d",
@@ -1820,6 +1954,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 
 - (void)setSuspended:(BOOL)suspended {
     self.view.alpha = suspended ? 0.0 : 1.0;
+    if (!suspended) [self scheduleReferenceSizeRelayout];
     if (suspended) {
         [self stopSceneKeepAlive];
     } else {
@@ -1843,6 +1978,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.retainedSceneController = nil;
+    [self resetReferenceSizeRelayout];
     self.live = NO;
     self.scene = nil;
     self.lastCommittedSceneSize = CGSizeZero;
@@ -1896,6 +2032,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.retainedSceneController = nil;
+    [self resetReferenceSizeRelayout];
     [self.view removeFromSuperview];
     self.scene = nil;
     self.sceneHandle = nil;
