@@ -25,6 +25,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;
+/// 静态侧栏模式停/复场景音频（不动进程断言）。
+- (void)setSceneAudible:(BOOL)audible;
 - (void)retryAttach;
 - (void)invalidate;
 /// App 大图标（edge shelf 卡片占位用）。

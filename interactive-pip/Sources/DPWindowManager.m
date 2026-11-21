@@ -1300,6 +1300,9 @@ static BOOL DPSystemSwitcherVisible(void) {
             manager.floatingHomeTimer = nil;
             DPFloatingWindow *selected = manager.mutableFloatingWindows[index];
             [manager reattachSceneHostForWindow:selected];
+            if (![DPSettings shared].shelfLivePreview) {
+                for (DPFloatingWindow *w in manager.mutableFloatingWindows) [w.sceneHost setSceneAudible:YES];
+            }
             for (DPFloatingWindow *window in manager.mutableFloatingWindows) {
                 window.alpha = 1;
                 [window.sceneHost setSuspended:NO];
@@ -1427,6 +1430,9 @@ static BOOL DPSystemSwitcherVisible(void) {
     self.edgeShelf.hidden = YES;
     // Return scene views borrowed by the shelf before resuming panes.
     [self reattachAllFloatingSceneHosts];
+    if (![DPSettings shared].shelfLivePreview) {
+        for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSceneAudible:YES];
+    }
     for (DPFloatingWindow *window in self.mutableFloatingWindows) {
         window.alpha = 1;
         [window.sceneHost setSuspended:NO];
@@ -1463,7 +1469,12 @@ static BOOL DPSystemSwitcherVisible(void) {
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
-    if (![DPSettings shared].shelfLivePreview) [self captureShelfThumbnails];
+    if (![DPSettings shared].shelfLivePreview) {
+        // Screenshot mode: the scene stays alive but inactive -> mute it so
+        // the app behind the static card stops playing audio.
+        [self captureShelfThumbnails];
+        for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSceneAudible:NO];
+    }
     self.overlayWindow.hidden = YES;
     [self updateEdgeShelf];
     if (self.floatingHomeTimer) return;
