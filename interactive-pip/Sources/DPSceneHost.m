@@ -1824,8 +1824,35 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         [self stopSceneKeepAlive];
     } else {
         [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
-    [self startObservingLayerManager];
-    [self startSceneKeepAlive];
+        [self startObservingLayerManager];
+        [self startSceneKeepAlive];
+    }
+}
+
+// 静态侧栏模式下，画面是截图但场景仍 active，App 会继续出声。
+// 只切 scene 的 setSceneActive / setUIApplicationSceneActive 标志停音频，
+// 不碰 foreground/backgrounded（避免触发 didEnterBackground 状态丢失），
+// 不 suspend、不动进程断言，回弹时能立刻恢复。
+- (void)setSceneAudible:(BOOL)audible {
+    id settings = [self settingsCopyForScene:self.scene];
+    if (!settings) return;
+    if (self.settingsScene != self.scene) {
+        if (self.settingsScene && self.originalSettings) [self submitSettings:self.originalSettings toScene:self.settingsScene];
+        self.settingsScene = self.scene;
+        self.originalSettings = [self settingsCopyForScene:self.scene];
+    }
+    @try {
+        SEL setActive = NSSelectorFromString(@"setSceneActive:");
+        if ([settings respondsToSelector:setActive]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setActive, audible);
+        }
+        SEL setUiActive = NSSelectorFromString(@"setUIApplicationSceneActive:");
+        if ([settings respondsToSelector:setUiActive]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(settings, setUiActive, audible);
+        }
+        [self submitSettings:settings toScene:self.scene];
+    } @catch (__unused NSException *e) {
+        NSLog(@"[InteractivePiP] setSceneAudible failed %@", self.bundleID);
     }
 }
 
