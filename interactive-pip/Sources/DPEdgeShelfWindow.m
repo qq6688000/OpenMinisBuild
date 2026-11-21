@@ -2,10 +2,13 @@
 #import "DPEdgeShelfGeometry.h"
 
 // Visual/interaction reference: ZengNiu (曾牛分屏 v1.7.4), Sources/ZNSEdgeShelf.m
-// and ZNSWindowManagerPart02/03.inc. Adapted to Duo's paired cached previews.
+// Adapted for Duo: cards embed the live scene views directly (real-time
+// content), each card driving its own hosted-frame relayout.
 @interface DPEdgeShelfSurface : UIView
 @property (nonatomic, copy) NSArray<UIButton *> *cards;
+@property (nonatomic, copy) NSArray *liveViews;      // external views, one per card
 @property (nonatomic, copy) void (^restore)(NSUInteger index);
+@property (nonatomic, copy) void (^cardLayout)(NSUInteger index, CGRect frame);
 @end
 
 @implementation DPEdgeShelfSurface
@@ -29,20 +32,25 @@
                                            space.size.height, (unsigned)self.cards.count, (unsigned)i);
         card.hidden = r.width < 1 || r.height < 1;
         card.frame = CGRectMake(r.x, r.y, r.width, r.height);
-        UIView *preview = card.subviews.firstObject;
-        preview.bounds = card.bounds;
-        preview.center = CGPointMake(r.width / 2, r.height / 2);
-        preview.layer.cornerRadius = MIN(11, r.width * .2);
-        CATransform3D camera = CATransform3DIdentity;
-        if (!UIAccessibilityIsReduceMotionEnabled() && r.width >= 1) {
-            camera.m34 = -1.0 / (3 * r.width);
-            camera = CATransform3DScale(camera, .96, .96, 1);
-            camera = CATransform3DRotate(camera, (landscape ? 18 : 12) * M_PI / 180, 0, 1, 0);
+        UIView *content = card.subviews.firstObject;
+        content.frame = card.bounds;
+        content.layer.cornerRadius = MIN(11, r.width * .2);
+        if (i < self.liveViews.count && self.liveViews[i] == content) {
+            // Live embedded scene view: relayout its hosted frame to the card
+            // size so the scene's cover-scale follows the card exactly.
+            if (self.cardLayout) self.cardLayout(i, card.bounds);
+        } else {
+            CATransform3D camera = CATransform3DIdentity;
+            if (!UIAccessibilityIsReduceMotionEnabled() && r.width >= 1) {
+                camera.m34 = -1.0 / (3 * r.width);
+                camera = CATransform3DScale(camera, .96, .96, 1);
+                camera = CATransform3DRotate(camera, (landscape ? 18 : 12) * M_PI / 180, 0, 1, 0);
+            }
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            content.layer.transform = camera;
+            [CATransaction commit];
         }
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        preview.layer.transform = camera;
-        [CATransaction commit];
     }
 }
 - (void)cardTapped:(UIButton *)sender {
@@ -56,27 +64,29 @@
     UIView *hit = [super hitTest:point withEvent:event];
     return [hit isKindOfClass:UIButton.class] ? hit : nil;
 }
-- (void)configureWithNames:(NSArray<NSString *> *)names images:(NSArray *)images
-                   restore:(void (^)(NSUInteger))restore {
+- (void)configureWithNames:(NSArray<NSString *> *)names views:(NSArray *)views
+                   restore:(void (^)(NSUInteger))restore
+               cardLayout:(void (^)(NSUInteger, CGRect))cardLayout {
     self.backgroundColor = UIColor.clearColor;
     self.opaque = NO;
     self.windowLevel = UIWindowLevelNormal + 1;
     DPEdgeShelfSurface *surface = [[DPEdgeShelfSurface alloc] initWithFrame:self.bounds];
     surface.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     surface.restore = restore;
+    surface.cardLayout = cardLayout;
     NSMutableArray *cards = [NSMutableArray arrayWithCapacity:names.count];
     for (NSUInteger i = 0; i < names.count; ++i) {
         UIButton *card = [UIButton buttonWithType:UIButtonTypeCustom];
         card.tag = i;
         card.accessibilityLabel = names[i];
-        card.accessibilityHint = @"恢复双应用分屏";
+        card.accessibilityHint = @"恢复悬浮窗";
         [card addTarget:surface action:@selector(cardTapped:) forControlEvents:UIControlEventTouchUpInside];
-        id image = i < images.count ? images[i] : nil;
-        UIView *preview;
-        if ([image isKindOfClass:UIImage.class]) {
-            UIImageView *thumb = [[UIImageView alloc] initWithImage:image];
-            thumb.contentMode = UIViewContentModeScaleAspectFill;
-            preview = thumb;
+        UIView *content = nil;
+        id candidate = (i < views.count) ? views[i] : nil;
+        if ([candidate isKindOfClass:[UIView class]]) {
+            // Live scene view: embed directly; the card drives its relayout.
+            content = candidate;
+            content.contentMode = UIViewContentModeScaleAspectFill;
         } else {
             UILabel *label = [UILabel new];
             label.text = names[i];
@@ -85,18 +95,19 @@
             label.textAlignment = NSTextAlignmentCenter;
             label.numberOfLines = 3;
             label.lineBreakMode = NSLineBreakByTruncatingTail;
-            preview = label;
+            content = label;
         }
-        preview.backgroundColor = UIColor.blackColor;
-        preview.clipsToBounds = YES;
-        preview.userInteractionEnabled = NO;
-        preview.isAccessibilityElement = NO;
-        [card addSubview:preview];
+        content.backgroundColor = UIColor.blackColor;
+        content.clipsToBounds = YES;
+        content.userInteractionEnabled = NO;
+        content.isAccessibilityElement = NO;
+        [card addSubview:content];
         [surface addSubview:card];
         [cards addObject:card];
     }
     surface.cards = cards;
-    // No transparent button/control covering gaps or the rest of SpringBoard.
+    surface.liveViews = views;
+    // No transparent control covering gaps or the rest of SpringBoard.
     UIViewController *controller = [UIViewController new];
     controller.view = surface;
     self.rootViewController = controller;
