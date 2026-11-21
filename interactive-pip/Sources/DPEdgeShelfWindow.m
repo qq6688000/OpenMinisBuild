@@ -2,11 +2,12 @@
 #import "DPEdgeShelfGeometry.h"
 
 // Visual/interaction reference: ZengNiu (曾牛分屏 v1.7.4), Sources/ZNSEdgeShelf.m
-// Adapted for Duo: cards embed the live scene views directly (real-time
-// content), each card driving its own hosted-frame relayout.
+// Adapted for Duo. Two content modes:
+//  live  - cards embed the scene views directly (real-time content);
+//  image - cards show a thumbnail captured before hiding (0.7.68 route).
 @interface DPEdgeShelfSurface : UIView
 @property (nonatomic, copy) NSArray<UIButton *> *cards;
-@property (nonatomic, copy) NSArray *liveViews;      // external views, one per card
+@property (nonatomic, copy) NSArray *liveViews;      // external views, live mode only
 @property (nonatomic, copy) void (^restore)(NSUInteger index);
 @property (nonatomic, copy) void (^cardLayout)(NSUInteger index, CGRect frame);
 @end
@@ -40,6 +41,7 @@
             // size so the scene's cover-scale follows the card exactly.
             if (self.cardLayout) self.cardLayout(i, card.bounds);
         } else {
+            // Static thumbnail (or label fallback): apply a slight perspective.
             CATransform3D camera = CATransform3DIdentity;
             if (!UIAccessibilityIsReduceMotionEnabled() && r.width >= 1) {
                 camera.m34 = -1.0 / (3 * r.width);
@@ -64,15 +66,23 @@
     UIView *hit = [super hitTest:point withEvent:event];
     return [hit isKindOfClass:UIButton.class] ? hit : nil;
 }
-- (void)configureWithNames:(NSArray<NSString *> *)names views:(NSArray *)views
-                   restore:(void (^)(NSUInteger))restore
-               cardLayout:(void (^)(NSUInteger, CGRect))cardLayout {
+- (void)setupShellWithNames:(NSArray<NSString *> *)names restore:(void (^)(NSUInteger))restore {
     self.backgroundColor = UIColor.clearColor;
     self.opaque = NO;
     self.windowLevel = UIWindowLevelNormal + 1;
     DPEdgeShelfSurface *surface = [[DPEdgeShelfSurface alloc] initWithFrame:self.bounds];
     surface.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     surface.restore = restore;
+    surface.cards = @[];
+    UIViewController *controller = [UIViewController new];
+    controller.view = surface;
+    self.rootViewController = controller;
+}
+- (void)configureWithNames:(NSArray<NSString *> *)names views:(NSArray *)views
+                   restore:(void (^)(NSUInteger))restore
+               cardLayout:(void (^)(NSUInteger, CGRect))cardLayout {
+    [self setupShellWithNames:names restore:restore];
+    DPEdgeShelfSurface *surface = (DPEdgeShelfSurface *)self.rootViewController.view;
     surface.cardLayout = cardLayout;
     NSMutableArray *cards = [NSMutableArray arrayWithCapacity:names.count];
     for (NSUInteger i = 0; i < names.count; ++i) {
@@ -84,32 +94,61 @@
         UIView *content = nil;
         id candidate = (i < views.count) ? views[i] : nil;
         if ([candidate isKindOfClass:[UIView class]]) {
-            // Live scene view: embed directly; the card drives its relayout.
-            content = candidate;
+            content = candidate;                  // live scene view, embedded directly
             content.contentMode = UIViewContentModeScaleAspectFill;
         } else {
-            UILabel *label = [UILabel new];
-            label.text = names[i];
-            label.textColor = UIColor.whiteColor;
-            label.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
-            label.textAlignment = NSTextAlignmentCenter;
-            label.numberOfLines = 3;
-            label.lineBreakMode = NSLineBreakByTruncatingTail;
-            content = label;
+            content = [self fallbackLabelForName:names[i]];
         }
-        content.backgroundColor = UIColor.blackColor;
-        content.clipsToBounds = YES;
-        content.userInteractionEnabled = NO;
-        content.isAccessibilityElement = NO;
+        [self dressContent:content];
         [card addSubview:content];
         [surface addSubview:card];
         [cards addObject:card];
     }
     surface.cards = cards;
     surface.liveViews = views;
-    // No transparent control covering gaps or the rest of SpringBoard.
-    UIViewController *controller = [UIViewController new];
-    controller.view = surface;
-    self.rootViewController = controller;
+}
+- (void)configureWithNames:(NSArray<NSString *> *)names images:(NSArray *)images
+                   restore:(void (^)(NSUInteger))restore {
+    [self setupShellWithNames:names restore:restore];
+    DPEdgeShelfSurface *surface = (DPEdgeShelfSurface *)self.rootViewController.view;
+    NSMutableArray *cards = [NSMutableArray arrayWithCapacity:names.count];
+    for (NSUInteger i = 0; i < names.count; ++i) {
+        UIButton *card = [UIButton buttonWithType:UIButtonTypeCustom];
+        card.tag = i;
+        card.accessibilityLabel = names[i];
+        card.accessibilityHint = @"恢复悬浮窗";
+        [card addTarget:surface action:@selector(cardTapped:) forControlEvents:UIControlEventTouchUpInside];
+        UIView *content = nil;
+        id candidate = (i < images.count) ? images[i] : nil;
+        if ([candidate isKindOfClass:[UIImage class]]) {
+            UIImageView *iv = [[UIImageView alloc] initWithImage:candidate];
+            iv.contentMode = UIViewContentModeScaleAspectFill;
+            content = iv;
+        } else {
+            content = [self fallbackLabelForName:names[i]];
+        }
+        [self dressContent:content];
+        [card addSubview:content];
+        [surface addSubview:card];
+        [cards addObject:card];
+    }
+    surface.cards = cards;
+    surface.liveViews = @[];   // no embedded views -> layoutSubviews applies perspective
+}
+- (UILabel *)fallbackLabelForName:(NSString *)name {
+    UILabel *label = [UILabel new];
+    label.text = name;
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 3;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    return label;
+}
+- (void)dressContent:(UIView *)content {
+    content.backgroundColor = UIColor.blackColor;
+    content.clipsToBounds = YES;
+    content.userInteractionEnabled = NO;
+    content.isAccessibilityElement = NO;
 }
 @end

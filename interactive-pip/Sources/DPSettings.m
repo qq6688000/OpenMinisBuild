@@ -135,6 +135,11 @@ static NSString *DPPreferencesPath(void) {
     return [self boolForKey:@"allowLandscape" default:YES];
 }
 
+// 侧栏卡片画面：开=嵌入实时场景 view，关=隐藏前截一张缩略图。
+- (BOOL)shelfLivePreview {
+    return [self boolForKey:@"shelfLivePreview" default:YES];
+}
+
 - (NSInteger)maxFloatingWindows {
     NSInteger n = [self integerForKey:@"maxFloatingWindows" default:2];
     return MIN(4, MAX(1, n));

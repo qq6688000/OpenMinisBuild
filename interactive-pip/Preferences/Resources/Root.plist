@@ -192,6 +192,20 @@
 			<key>defaults</key>
 			<string>com.seagull.interactivepip</string>
 			<key>key</key>
+			<string>shelfLivePreview</string>
+			<key>label</key>
+			<string>侧栏实时画面</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.seagull.interactivepip/settings.changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.seagull.interactivepip</string>
+			<key>key</key>
 			<string>showBorder</string>
 			<key>label</key>
 			<string>显示边框</string>

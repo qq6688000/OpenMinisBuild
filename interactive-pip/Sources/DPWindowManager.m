@@ -64,8 +64,10 @@
 @property (nonatomic, strong, nullable) NSTimer *switcherPreviewTimer;
 @property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
 @property (nonatomic, assign) NSUInteger shelfWindowCount;
+@property (nonatomic, copy, nullable) NSArray *shelfImages;
 - (void)reattachSceneHostForWindow:(DPFloatingWindow *)window;
 - (void)reattachAllFloatingSceneHosts;
+- (void)captureShelfThumbnails;
 @property (nonatomic) NSUInteger homeGestureSerial;
 @property (nonatomic) BOOL homeGestureSettling;
 - (void)updateEdgeShelf;
@@ -1281,22 +1283,18 @@ static BOOL DPSystemSwitcherVisible(void) {
         // cardLayout re-drives setHostedFrame so the scene re-scales to the card.
         NSArray<DPFloatingWindow *> *floaters = [self.mutableFloatingWindows copy];
         NSMutableArray *names = [NSMutableArray arrayWithCapacity:floaters.count];
-        NSMutableArray *views = [NSMutableArray arrayWithCapacity:floaters.count];
         for (DPFloatingWindow *window in floaters) {
             NSString *bundle = window.bundleID;
             [names addObject:bundle.pathExtension.length ? bundle.pathExtension : bundle];
-            UIView *sceneView = window.sceneHost.view;
-            [views addObject:sceneView ?: [NSNull null]];
         }
         NSUInteger generation = self.sessionGeneration;
         __weak typeof(self) weakSelf = self;
         __weak DPEdgeShelfWindow *weakShelf = shelf;
-        [shelf configureWithNames:names views:views restore:^(NSUInteger index) {
+        // Single-window restore block shared by both modes.
+        void (^restoreBlock)(NSUInteger) = ^(NSUInteger index) {
             __strong typeof(weakSelf) manager = weakSelf;
             if (!manager || !weakShelf || manager.edgeShelf != weakShelf ||
                 manager.sessionGeneration != generation || index >= manager.mutableFloatingWindows.count) return;
-            // Single-window restore: unhide + resume + focus. No switcher
-            // transition request, no parked-session path involved.
             manager.floatingHiddenOnHome = NO;
             [manager.floatingHomeTimer invalidate];
             manager.floatingHomeTimer = nil;
@@ -1310,17 +1308,32 @@ static BOOL DPSystemSwitcherVisible(void) {
             [manager focusWindow:selected];
             [manager updateEdgeShelf];
             NSLog(@"[InteractivePiP] edge shelf restore single window %@", selected.bundleID);
-        } cardLayout:^(NSUInteger index, CGRect frame) {
-            // Card geometry drives the embedded scene's cover-scale, but only
-            // while the view is still embedded in the card (not reattached).
-            __strong typeof(weakSelf) manager = weakSelf;
-            if (!manager || !weakShelf || manager.edgeShelf != weakShelf) return;
-            if (index >= manager.mutableFloatingWindows.count) return;
-            DPFloatingWindow *window = manager.mutableFloatingWindows[index];
-            if (window.sceneHost.view.superview != window.contentContainer) {
-                [window.sceneHost setHostedFrame:frame];
+        };
+        if ([DPSettings shared].shelfLivePreview) {
+            NSMutableArray *views = [NSMutableArray arrayWithCapacity:floaters.count];
+            for (DPFloatingWindow *window in floaters) {
+                UIView *sceneView = window.sceneHost.view;
+                [views addObject:sceneView ?: [NSNull null]];
             }
-        }];
+            [shelf configureWithNames:names views:views restore:restoreBlock
+                           cardLayout:^(NSUInteger index, CGRect frame) {
+                __strong typeof(weakSelf) manager = weakSelf;
+                if (!manager || !weakShelf || manager.edgeShelf != weakShelf) return;
+                if (index >= manager.mutableFloatingWindows.count) return;
+                DPFloatingWindow *window = manager.mutableFloatingWindows[index];
+                if (window.sceneHost.view.superview != window.contentContainer) {
+                    [window.sceneHost setHostedFrame:frame];
+                }
+            }];
+        } else {
+            // Screenshot mode: static thumbnails captured before hiding.
+            NSMutableArray *images = [NSMutableArray arrayWithCapacity:floaters.count];
+            for (NSUInteger i = 0; i < floaters.count; ++i) {
+                id thumb = (i < self.shelfImages.count) ? self.shelfImages[i] : nil;
+                [images addObject:[thumb isKindOfClass:[UIImage class]] ? thumb : [NSNull null]];
+            }
+            [shelf configureWithNames:names images:images restore:restoreBlock];
+        }
         self.edgeShelf = shelf;
     }
     self.edgeShelf.frame = scene.coordinateSpace.bounds;
@@ -1421,9 +1434,36 @@ static BOOL DPSystemSwitcherVisible(void) {
     [self bringOverlayToFront];
 }
 
+- (void)captureShelfThumbnails {
+    // Screenshot-mode previews: captured BEFORE the overlay hides so cards
+    // show the app's real content. Skipped entirely in live-preview mode.
+    NSMutableArray *images = [NSMutableArray arrayWithCapacity:self.mutableFloatingWindows.count];
+    for (DPFloatingWindow *window in self.mutableFloatingWindows) {
+        UIView *view = window.sceneHost.view;
+        UIImage *image = nil;
+        if (view && view.window && !view.window.hidden && view.bounds.size.width >= 2 && view.bounds.size.height >= 2) {
+            @try {
+                CGFloat scale = MIN(1.0, 240.0 / MAX(view.bounds.size.width, view.bounds.size.height));
+                CGSize size = CGSizeMake(view.bounds.size.width * scale, view.bounds.size.height * scale);
+                UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+                format.scale = 1;
+                UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+                __block BOOL drawn = NO;
+                image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+                    drawn = [window drawViewHierarchyInRect:(CGRect){CGPointZero, size} afterScreenUpdates:NO];
+                }];
+                if (!drawn) image = nil;
+            } @catch (__unused NSException *e) { image = nil; }
+        }
+        [images addObject:image ?: [NSNull null]];
+    }
+    self.shelfImages = images;
+}
+
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
+    if (![DPSettings shared].shelfLivePreview) [self captureShelfThumbnails];
     self.overlayWindow.hidden = YES;
     [self updateEdgeShelf];
     if (self.floatingHomeTimer) return;
@@ -1537,6 +1577,13 @@ static BOOL DPSystemSwitcherVisible(void) {
         w.contentOpacity = [DPSettings shared].floatingOpacity;
         w.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
         w.showsBorder = [DPSettings shared].showBorder;
+    }
+    // Preview-mode switch rebuilds the shelf so the new card content shows.
+    if (self.floatingHiddenOnHome && !self.deviceLocked) {
+        if (![DPSettings shared].shelfLivePreview) [self captureShelfThumbnails];
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+        [self updateEdgeShelf];
     }
 }
 
