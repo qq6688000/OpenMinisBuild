@@ -9,6 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, copy, readonly) NSString *bundleID;
 @property (nonatomic, strong, readonly, nullable) DPSceneHost *sceneHost;
+/// 场景 view 的原生挂载点（edge shelf 嵌入后按此挂回）。
+@property (nonatomic, strong, readonly, nullable) UIView *contentContainer;
 @property (nonatomic, assign) CGFloat contentOpacity;
 @property (nonatomic, assign) CGFloat cornerRadiusValue;
 @property (nonatomic, assign) BOOL showsBorder;
