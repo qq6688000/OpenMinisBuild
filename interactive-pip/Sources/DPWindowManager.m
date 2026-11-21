@@ -1198,6 +1198,11 @@
         NSString *fg = [self2 foregroundBundleID];
         // If a hosted app is still foreground, this was an app switch / open — keep the session.
         if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
+        // Floating windows persist above Home; only split groups are parked.
+        if (self2.mode == DPPresentationModeFloating) {
+            [self2 bringOverlayToFront];
+            return;
+        }
         NSLog(@"[InteractivePiP] 上滑回桌面 -> 挂到后台任务列表 (fg=%@)", fg ?: @"(none)");
         [self2 parkSessionInAppSwitcher];
     });
@@ -1253,6 +1258,14 @@
 
 - (void)handleUserHome {
     if (self.internalHomeReturn || self.switcherRestorePending || NSProcessInfo.processInfo.systemUptime < self.switcherRestoreGraceUntil) return;
+    if (self.mode == DPPresentationModeFloating) {
+        NSUInteger generation = self.sessionGeneration;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.sessionGeneration == generation && !self.deviceLocked && self.mode == DPPresentationModeFloating)
+                [self bringOverlayToFront];
+        });
+        return;
+    }
     if (self.mode == DPPresentationModeSplit && self.splitWindows.count == 2) {
         [self parkSessionInAppSwitcher];
     } else {
