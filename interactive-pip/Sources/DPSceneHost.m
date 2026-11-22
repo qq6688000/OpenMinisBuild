@@ -2617,6 +2617,30 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
 
+    // 0.7.138: never let the cached canvas fight the live screen orientation. After
+    // a rotation the scene may still report the old reference size, and that is what
+    // made the landscape pane clip the app sideways. Derive the canvas aspect from
+    // the CURRENT screen and keep the cached short/long edges only as the base.
+    CGSize screenNow = [UIScreen mainScreen].bounds.size;
+    if (@available(iOS 13.0, *)) {
+        UIWindowScene *ws = self.view.window.windowScene;
+        if (ws) screenNow = ws.coordinateSpace.bounds.size;
+    }
+    if (screenNow.width > 2 && screenNow.height > 2) {
+        BOOL screenLandscape = screenNow.width > screenNow.height;
+        CGFloat longEdge = MAX(canvas.width, canvas.height);
+        CGFloat shortEdge = MIN(canvas.width, canvas.height);
+        // the app's own reference size is the authority for the aspect; only rotate
+        // it when the canvas orientation disagrees with the screen
+        CGSize desired = screenLandscape ? CGSizeMake(longEdge, shortEdge)
+                                         : CGSizeMake(shortEdge, longEdge);
+        if (fabs(desired.width - canvas.width) > 0.5 ||
+            fabs(desired.height - canvas.height) > 0.5) {
+            canvas = desired;
+            self.nativeSceneSize = desired;
+        }
+    }
+
     // 实时重排已生效：App 已按窗格尺寸重绘，画布就是窗格，无需 cover-scale。
     // 0.7.123: only trust that while the keyboard mode is on (reflowFrozen). In the
     // small pane we always want the natural canvas + cover-scale, otherwise the app
@@ -2724,7 +2748,10 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         // left the content as a thin strip with huge side bars, and MAX overshot.
         // Drive it by the pane WIDTH (sx) so the content actually spans the pane,
         // letting the extra height (sy > sx) clip symmetrically top and bottom.
-        scale = sx * 0.78;   // 0.7.137: content was still clipped, keep shrinking
+        // 0.7.138: fitting by width overflowed the pane horizontally and clipped the
+        // app's left/right edges. Show the whole screen instead - fit both axes, so
+        // nothing is cut off; the pane simply has equal bars on two sides.
+        scale = MIN(sx, sy);
     }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
