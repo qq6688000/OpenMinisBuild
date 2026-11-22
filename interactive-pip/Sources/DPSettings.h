@@ -26,6 +26,8 @@ typedef NS_ENUM(NSInteger, DPActivationGesture) {
 @property (nonatomic, readonly) BOOL allowLandscape;
 /// 侧栏卡片画面：开=嵌入实时场景 view，关=隐藏前截一张缩略图。
 @property (nonatomic, readonly) BOOL shelfLivePreview;
+/// 实时重排：开=host 按窗格尺寸让 App 重新排版，关=原 cover-scale。
+@property (nonatomic, readonly) BOOL liveReflow;
 @property (nonatomic, readonly) NSInteger maxFloatingWindows;
 @property (nonatomic, readonly) NSArray<NSNumber *> *enabledGestures; // DPActivationGesture
 @property (nonatomic, readonly) NSArray<NSString *> *blacklist;       // bundle IDs

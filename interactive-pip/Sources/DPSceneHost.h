@@ -25,6 +25,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;
+/// 实时重排：按当前窗格尺寸重设 host referenceSize（设置开关控制）。
+- (void)tryLiveReflow;
+/// 设置切换后重置 reflow 状态并重新尝试。
+- (void)resetLiveReflow;
 /// 静态侧栏模式停/复场景音频（不动进程断言）。
 - (void)setSceneAudible:(BOOL)audible;
 - (void)retryAttach;

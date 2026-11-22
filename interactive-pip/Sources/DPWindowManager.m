@@ -1594,6 +1594,8 @@ static BOOL DPSystemSwitcherVisible(void) {
         w.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
         w.showsBorder = [DPSettings shared].showBorder;
     }
+    // 实时重排开关切换：重置各窗口 reflow 状态，按新设置重新尝试/退出。
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost resetLiveReflow];
     // Preview-mode switch rebuilds the shelf so the new card content shows.
     if (self.floatingHiddenOnHome && !self.deviceLocked) {
         if (![DPSettings shared].shelfLivePreview) [self captureShelfThumbnails];

@@ -202,6 +202,20 @@
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.seagull.interactivepip</string>
+			<key>key</key>
+			<string>liveReflow</string>
+			<key>label</key>
+			<string>实时窗口重排</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.seagull.interactivepip/settings.changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
 			<true/>
 			<key>defaults</key>
 			<string>com.seagull.interactivepip</string>

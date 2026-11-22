@@ -1,4 +1,5 @@
 #import "DPSceneHost.h"
+#import "DPSettings.h"
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -11,6 +12,230 @@
 - (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
 - (instancetype)initWithScene:(id)scene;
 @end
+
+// ===== DPC host canvas reflow (port from ZNSplit v1.7.4) =====
+// ─────────────────────────────────────────────────────────────────────────────
+// DPC — host canvas reflow port from ZNSplit v1.7.4 (ZNSSceneSession.m /
+// ZNSSceneGeometry.h / ZNSPrivate.h). Minimal, self-contained, ABI-checked.
+// All private methods are invoked only after exact NSMethodSignature matching.
+// Never call on FBScene — the correct target is the scene host view (UIView).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#import <math.h>
+#import <string.h>
+
+static const char *DPCSkipQualifiers(const char *type) {
+    if (!type) return "";
+    while (*type && strchr("rnNoORV", *type)) ++type;
+    return type;
+}
+static BOOL DPCObjectType(const char *type) {
+    type = DPCSkipQualifiers(type);
+    size_t length = strlen(type);
+    return !strcmp(type, "@") ||
+           (length >= 3 && type[0] == '@' && type[1] == '"' && type[length-1] == '"');
+}
+static BOOL DPCTypeMatches(const char *actual, const char *expected) {
+    actual = DPCSkipQualifiers(actual);
+    return !strcmp(expected, "@") ? DPCObjectType(actual) : !strcmp(actual, expected);
+}
+static NSMethodSignature *DPCSignature(id object, SEL selector) {
+    if (!object || !selector) return nil;
+    @try {
+        Method method = class_getInstanceMethod(object_getClass(object), selector);
+        const char *encoding = method ? method_getTypeEncoding(method) : NULL;
+        if (encoding) return [NSMethodSignature signatureWithObjCTypes:encoding];
+        // Dynamic accessor / forwarding fallback, but only if the object
+        // itself advertises the selector (never synthesize from a property).
+        if (![object respondsToSelector:selector]) return nil;
+        return [object methodSignatureForSelector:selector];
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+static BOOL DPCABI(id object, SEL selector, const char *result,
+                   const char * const *arguments, NSUInteger count) {
+    NSMethodSignature *sig = DPCSignature(object, selector);
+    if (!sig || sig.numberOfArguments != count + 2 ||
+        !DPCTypeMatches(sig.methodReturnType, result)) return NO;
+    for (NSUInteger i = 0; i < count; i++)
+        if (!DPCTypeMatches([sig getArgumentTypeAtIndex:i+2], arguments[i])) return NO;
+    return YES;
+}
+static NSString *DPCSigDescription(id object, SEL selector) {
+    NSMethodSignature *sig = DPCSignature(object, selector);
+    if (!sig) return @"<no signature>";
+    NSMutableString *s = [NSMutableString stringWithFormat:@"ret=%s args=", sig.methodReturnType];
+    for (NSUInteger i = 0; i < sig.numberOfArguments; i++) {
+        if (i) [s appendString:@","];
+        [s appendFormat:@"%s", [sig getArgumentTypeAtIndex:i]];
+    }
+    return s;
+}
+// Write a BOOL through the exact ABI (ARM64 "B", legacy "c"), never via KVC.
+static void DPCSetBool(id object, NSString *name, BOOL value) {
+    SEL sel = NSSelectorFromString(name);
+    const char *boolean[] = {"B"}, *character[] = {"c"};
+    if (DPCABI(object, sel, "v", boolean, 1)) {
+        ((void (*)(id, SEL, bool))objc_msgSend)(object, sel, value);
+    } else if (DPCABI(object, sel, "v", character, 1)) {
+        ((void (*)(id, SEL, signed char))objc_msgSend)(object, sel, value ? 1 : 0);
+    } else {
+        NSLog(@"[InteractivePiP] DPCSetBool unavailable %@ sig=%@", name,
+              DPCSigDescription(object, sel));
+    }
+}
+static BOOL DPCSetter(id object, SEL sel, const char *argType) {
+    const char *args[] = {argType};
+    return DPCABI(object, sel, "v", args, 1);
+}
+static BOOL DPCGetter(id object, SEL sel, const char *retType) {
+    return DPCABI(object, sel, retType, NULL, 0);
+}
+
+// Solve host LOCAL bounds from the existing axis-aligned transform.
+static BOOL DPCGeometryForCanvas(CGSize canvas, CGAffineTransform t,
+                                 CGPoint anchor, CGSize *localSize, CGPoint *position) {
+    if (!localSize || !position || !isfinite(canvas.width) || !isfinite(canvas.height) ||
+        canvas.width <= 0 || canvas.height <= 0 || !isfinite(t.a) || !isfinite(t.b) ||
+        !isfinite(t.c) || !isfinite(t.d) || !isfinite(t.tx) || !isfinite(t.ty) ||
+        !isfinite(anchor.x) || !isfinite(anchor.y)) return NO;
+    CGFloat a = fabs(t.a), b = fabs(t.b), c = fabs(t.c), d = fabs(t.d);
+    CGSize size;
+    const CGFloat eps = 1e-8;
+    if (b < eps && c < eps && a > eps && d > eps) {
+        size = CGSizeMake(canvas.width / a, canvas.height / d);
+    } else if (a < eps && d < eps && b > eps && c > eps) {
+        size = CGSizeMake(canvas.height / b, canvas.width / c);
+    } else {
+        return NO; // intermediate angle / shear: refuse to stretch
+    }
+    CGFloat dx = (0.5 - anchor.x) * size.width;
+    CGFloat dy = (0.5 - anchor.y) * size.height;
+    CGPoint p = CGPointMake(canvas.width  / 2 - t.a * dx - t.c * dy - t.tx,
+                            canvas.height / 2 - t.b * dx - t.d * dy - t.ty);
+    if (!isfinite(size.width) || !isfinite(size.height) ||
+        !isfinite(p.x) || !isfinite(p.y)) return NO;
+    *localSize = size;
+    *position = p;
+    return YES;
+}
+static BOOL DPCAlignHostCanvas(UIView *host, CGSize size) {
+    if (!host || !CATransform3DIsAffine(host.layer.transform)) return NO;
+    CGSize local = CGSizeZero;
+    CGPoint position = CGPointZero;
+    if (!DPCGeometryForCanvas(size, host.transform, host.layer.anchorPoint, &local, &position)) return NO;
+    CGRect bounds = host.bounds;
+    bounds.size = local; // preserve bounds.origin — it is host-internal space
+    if (!CGRectEqualToRect(host.bounds, bounds)) host.bounds = bounds;
+    if (!CGPointEqualToPoint(host.layer.position, position)) host.layer.position = position;
+    return YES;
+}
+static void DPCLogGeometry(UIView *host, const char *stage, CGSize expected, NSInteger orientation) {
+    if (!host) return;
+    CGRect bounds = host.bounds;
+    CGAffineTransform t = host.transform;
+    CGRect proj = CGRectApplyAffineTransform((CGRect){CGPointZero, bounds.size}, t);
+    NSLog(@"[InteractivePiP] DPC geom stage=%s want=%.1fx%.1f ori=%ld bounds=(%.1f,%.1f,%.1fx%.1f) proj=%.1fx%.1f m=[%.3f %.3f %.3f %.3f %.1f %.1f] attached=%d (geometry only)",
+          stage, expected.width, expected.height, (long)orientation,
+          bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
+          proj.size.width, proj.size.height, t.a, t.b, t.c, t.d, t.tx, t.ty,
+          host.superview != nil);
+}
+
+// Main entry. size = oriented App content size for the pane;
+// orientation = UIInterfaceOrientation (Portrait=1, LandscapeRight=4, ...).
+// Returns YES only if readback matches; failure is safe, keep cover-scale.
+static BOOL DPConfigureHostCanvas(UIView *host, CGSize size, NSInteger orientation) {
+    if (!host || !isfinite(size.width) || !isfinite(size.height) ||
+        size.width <= 0 || size.height <= 0) return NO;
+    if (![host isKindOfClass:UIView.class]) return NO;
+    if (![NSThread isMainThread]) {
+        NSLog(@"[InteractivePiP] DPC refused: not main thread");
+        return NO;
+    }
+
+    SEL referenceSizeSel = NSSelectorFromString(@"referenceSize");
+    SEL orientationSel   = NSSelectorFromString(@"orientation");
+    SEL combinedSel      = NSSelectorFromString(@"_updateReferenceSize:andOrientation:");
+    SEL setSizeSel       = NSSelectorFromString(@"setReferenceSize:");
+    SEL setOrientSel     = NSSelectorFromString(@"setOrientation:");
+    SEL contextResizeSel = NSSelectorFromString(@"setResizesHostedContext:");
+
+    // H2: both getters must exist with exact ABI, plus one writable path.
+    if (!DPCGetter(host, referenceSizeSel, @encode(CGSize)) ||
+        !DPCGetter(host, orientationSel, @encode(NSInteger))) {
+        NSLog(@"[InteractivePiP] DPC host lacks ABI-safe getters ref=%@ ori=%@ class=%@",
+              DPCSigDescription(host, referenceSizeSel), DPCSigDescription(host, orientationSel),
+              NSStringFromClass(host.class));
+        return NO;
+    }
+    const char *combinedArgs[] = {@encode(CGSize), @encode(NSInteger)};
+    BOOL combined = DPCABI(host, combinedSel, "v", combinedArgs, 2);
+    BOOL separate = DPCSetter(host, setSizeSel, @encode(CGSize)) &&
+                    DPCSetter(host, setOrientSel, @encode(NSInteger));
+    if (!combined && !separate) {
+        NSLog(@"[InteractivePiP] DPC host lacks canvas updater class=%@ combined=%@ separate=%@/%@",
+              NSStringFromClass(host.class), DPCSigDescription(host, combinedSel),
+              DPCSigDescription(host, setSizeSel), DPCSigDescription(host, setOrientSel));
+        return NO;
+    }
+    BOOL contextResize = DPCSetter(host, contextResizeSel, @encode(BOOL));
+    DPCLogGeometry(host, "before", size, orientation);
+
+    BOOL aligned = NO;
+    @try {
+        // Enable ONLY for this acknowledged transaction and keep it enabled
+        // through alignment/layout so remote context actually reflows.
+        if (contextResize) DPCSetBool(host, @"setResizesHostedContext:", YES);
+
+        if (combined) {
+            ((void (*)(id, SEL, CGSize, NSInteger))objc_msgSend)(
+                host, combinedSel, size, orientation);
+        } else {
+            // Setter order matches ZNS: orientation first, then referenceSize.
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(host, setOrientSel, orientation);
+            ((void (*)(id, SEL, CGSize))objc_msgSend)(host, setSizeSel, size);
+            CGSize wroteSize = ((CGSize (*)(id, SEL))objc_msgSend)(host, referenceSizeSel);
+            NSInteger wroteOrientation = ((NSInteger (*)(id, SEL))objc_msgSend)(host, orientationSel);
+            if (!CGSizeEqualToSize(wroteSize, size) || wroteOrientation != orientation) {
+                NSLog(@"[InteractivePiP] DPC separate setters readback mismatch got=%.1fx%.1f/%ld want=%.1fx%.1f/%ld",
+                      wroteSize.width, wroteSize.height, (long)wroteOrientation,
+                      size.width, size.height, (long)orientation);
+                return NO; // @finally still restores resizesHostedContext
+            }
+        }
+        DPCLogGeometry(host, "after-update", size, orientation);
+
+        // Solve local bounds from the system transform (no frame, no reset).
+        aligned = DPCAlignHostCanvas(host, size);
+        [host setNeedsLayout];
+        [host layoutIfNeeded];
+        aligned = DPCAlignHostCanvas(host, size) && aligned;
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] DPC exception %@: %@", e.name, e.reason);
+        aligned = NO;
+    } @finally {
+        // Always restore: thumbnails / container animations must never resize
+        // the remote App canvas by merely scaling the presentation layer.
+        if (contextResize) DPCSetBool(host, @"setResizesHostedContext:", NO);
+    }
+
+    if (!aligned)
+        NSLog(@"[InteractivePiP] DPC alignment deferred (non-affine transform); system geometry retained");
+    DPCLogGeometry(host, "after-align", size, orientation);
+
+    // Final readback: local metadata only, never a rendered-pixel ACK.
+    CGSize actual = ((CGSize (*)(id, SEL))objc_msgSend)(host, referenceSizeSel);
+    NSInteger applied = ((NSInteger (*)(id, SEL))objc_msgSend)(host, orientationSel);
+    BOOL matches = CGSizeEqualToSize(actual, size) && applied == orientation;
+    NSLog(@"[InteractivePiP] DPC final ref=%.0fx%.0f ori=%ld want=%.0fx%.0f/%ld matched=%d",
+          actual.width, actual.height, (long)applied,
+          size.width, size.height, (long)orientation, matches);
+    return matches;
+}
+
+// ===== end DPC =====
 
 static void DPInvalidateHostView(UIView *host, NSString *stage) {
     SEL sel = NSSelectorFromString(@"invalidate");
@@ -52,6 +277,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) BOOL snapshotAttempted;
 @property (nonatomic, assign) CGSize lastCommittedSceneSize;
 @property (nonatomic, assign) CGSize nativeSceneSize;
+@property (nonatomic, assign) CGSize reflowCanvas; // >0 时实时重排已生效，layoutHostView 用它当画布
+@property (nonatomic, assign) BOOL reflowAttempted;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
@@ -1570,7 +1797,41 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self startObservingLayerManager];
     [self startSceneKeepAlive];
     [self acquireProcessAssertionIfNeeded];
+    [self tryLiveReflow];
     NSLog(@"[InteractivePiP] LIVE attach %@ view=%@", self.bundleID, NSStringFromClass([hostView class]));
+}
+
+// 实时重排：把窗格尺寸作为 referenceSize 传给 host，让远端 App 按小窗重新排版。
+// 只在设置开关打开、且 ABI/readback 全部通过时生效；失败安全退回 cover-scale。
+- (void)tryLiveReflow {
+    if (![DPSettings shared].liveReflow || self.reflowAttempted || !self.hostView) return;
+    self.reflowAttempted = YES;
+    CGSize target = self.view.bounds.size;
+    if (target.width < 2 || target.height < 2) return;
+    NSInteger orientation = target.width > target.height ? UIInterfaceOrientationLandscapeRight
+                                                         : UIInterfaceOrientationPortrait;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.invalidated || !self.hostView || self.hostView.superview != self.view) return;
+        [UIView performWithoutAnimation:^{
+            BOOL ok = DPConfigureHostCanvas(self.hostView, target, orientation);
+            if (ok) {
+                self.reflowCanvas = target;
+                [self layoutHostView];
+                NSLog(@"[InteractivePiP] REFLOW enabled %@ pane=%@", self.bundleID, NSStringFromCGSize(target));
+            } else {
+                self.reflowCanvas = CGSizeZero;
+                NSLog(@"[InteractivePiP] REFLOW unavailable %@, keep cover-scale", self.bundleID);
+            }
+        }];
+    });
+}
+
+// 设置开关切换后重置，使下一次 layout 重新尝试/退出实时重排。
+- (void)resetLiveReflow {
+    self.reflowAttempted = NO;
+    self.reflowCanvas = CGSizeZero;
+    [self layoutHostView];
+    [self tryLiveReflow];
 }
 
 - (void)layoutHostView {
@@ -1580,6 +1841,17 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     CGSize canvas = self.nativeSceneSize;
     if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
+
+    // 实时重排已生效：App 已按窗格尺寸重绘，画布就是窗格，无需 cover-scale。
+    if (self.reflowCanvas.width > 1 && self.reflowCanvas.height > 1) {
+        self.hostView.transform = CGAffineTransformIdentity;
+        self.hostView.bounds = CGRectMake(0, 0, self.reflowCanvas.width, self.reflowCanvas.height);
+        self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+        self.view.clipsToBounds = YES;
+        self.layoutDiag = [NSString stringWithFormat:@"REFLOW view=%@ canvas=%@ sc=1.000",
+                           NSStringFromCGSize(target), NSStringFromCGSize(self.reflowCanvas)];
+        return;
+    }
 
     // 0.7.5 original: uniform cover-scale into the pane (aspect fill).
     // Keeps app aspect ratio (no stretch), fills pane, clips overflow.

@@ -140,6 +140,11 @@ static NSString *DPPreferencesPath(void) {
     return [self boolForKey:@"shelfLivePreview" default:YES];
 }
 
+// 实时重排：开=host 按窗格尺寸让 App 重新排版，关=原 cover-scale。
+- (BOOL)liveReflow {
+    return [self boolForKey:@"liveReflow" default:NO];
+}
+
 - (NSInteger)maxFloatingWindows {
     NSInteger n = [self integerForKey:@"maxFloatingWindows" default:2];
     return MIN(4, MAX(1, n));
