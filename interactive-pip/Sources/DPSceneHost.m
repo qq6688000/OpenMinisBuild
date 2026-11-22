@@ -2715,7 +2715,17 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     CGFloat aspectCanvas = canvas.width / MAX(canvas.height, 1.0);
     CGFloat aspectTarget = target.width / MAX(target.height, 1.0);
     BOOL sameOrientation = ((aspectCanvas > 1.0) == (aspectTarget > 1.0));
-    CGFloat scale = sameOrientation ? MAX(sx, sy) : MIN(sx, sy);
+    CGFloat scale;
+    if (sameOrientation) {
+        // canvas and pane agree: fill the pane, clip the overflow
+        scale = MAX(sx, sy);
+    } else {
+        // 0.7.134: mismatched orientation. MIN alone shrank the screen into a tiny
+        // island and MAX blew it up past the pane. The geometric mean sits between
+        // the two: content is large enough to read, and the clipped overflow on the
+        // long side is symmetric because the view stays centred.
+        scale = sqrt(MAX(sx, sy) * MIN(sx, sy));
+    }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
