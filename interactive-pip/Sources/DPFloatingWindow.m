@@ -405,7 +405,9 @@ static const CGFloat kDPMinHeight = 220.0;
         [self layoutSceneIfNeeded];
     };
     void (^finish)(void) = ^{
-        [self layoutIfNeeded];  // ensure contentContainer.bounds reflects new frame
+        [self layoutIfNeeded];
+        // 动画完成后重新布局：cover-scale 需要 contentContainer.bounds 的最终值
+        [self layoutSceneIfNeeded];
         [self.sceneHost commitHostedFrame];
         if (self.onFrameChanged) self.onFrameChanged(self, self.frame);
     };
