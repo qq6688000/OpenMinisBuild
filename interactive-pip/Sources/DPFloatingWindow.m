@@ -563,6 +563,14 @@ void DPKBLog(NSString *fmt, ...) {
     [host commitHostedFrame];
 }
 
+- (void)setPipCropTop:(CGFloat)top pipHeightFraction:(CGFloat)fraction {
+    self.pipCropTop = MAX(0.0, top);
+    (void)fraction;
+    [self setNeedsLayout];
+    [self layoutIfNeeded];
+    [self commitSceneLayout];
+}
+
 - (void)setPipMode:(BOOL)pip animated:(BOOL)animated {
     if (_pipMode == pip) return;
     _pipMode = pip;
@@ -594,9 +602,16 @@ void DPKBLog(NSString *fmt, ...) {
     self.chromeView.layer.cornerRadius = self.cornerRadiusValue;
     self.titleBar.frame = CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight);
     CGFloat contentY = (self.tiled || _pipMode) ? 0 : kDPTitleBarHeight; // 0.7.154 PiP: content fills the window
-    self.contentContainer.frame = CGRectMake(0, contentY,
-                                             self.bounds.size.width,
-                                             MAX(0, self.bounds.size.height - contentY));
+    CGFloat contentH = MAX(0, self.bounds.size.height - contentY);
+    if (_pipMode && _pipCropTop > 0.0) {
+        // 0.7.155: the app is laid out at full height inside contentH; slide it up so
+        // the requested band is what the window shows, and clip the rest.
+        contentH = MAX(0, self.bounds.size.height);
+    }
+    self.contentContainer.frame = CGRectMake(0, contentY - (_pipMode ? _pipCropTop : 0.0),
+                                             self.bounds.size.width, contentH);
+    self.contentContainer.clipsToBounds = YES;
+    self.chromeView.clipsToBounds = YES;
     self.resizeHandle.frame = CGRectMake(self.bounds.size.width - kDPResizeHandle,
                                          self.bounds.size.height - kDPResizeHandle,
                                          kDPResizeHandle, kDPResizeHandle);

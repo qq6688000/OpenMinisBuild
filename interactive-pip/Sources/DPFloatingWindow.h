@@ -29,6 +29,9 @@ FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
 // 0.7.154: hide the title bar and let the content fill the window (drawing-in-picture look).
 - (void)setPipMode:(BOOL)pip animated:(BOOL)animated;
 @property (nonatomic, readonly) BOOL pipMode;
+// 0.7.155: crop the hosted app so only its video band shows.
+@property (nonatomic) CGFloat pipCropTop;
+- (void)setPipCropTop:(CGFloat)top pipHeightFraction:(CGFloat)fraction;
 - (void)updateNaturalCanvasForCurrentScreen; // 0.7.131 rotation
 /// Round the pane's own chrome + content container while in Duo split.
 /// Never touches the hosted scene layer container's layer.
