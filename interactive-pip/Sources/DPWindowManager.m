@@ -46,6 +46,8 @@
 @property (nonatomic, strong, nullable) UIWindow *prePickerKeyWindow;
 @property (nonatomic, assign) BOOL lastLandscapeState;
 @property (nonatomic, assign) BOOL lastLandscapeKnown;
+@property (nonatomic, strong, nullable) NSTimer *keyboardWatchTimer;
+@property (nonatomic, assign) BOOL keyboardPollVisible;
 @property (nonatomic, assign) BOOL watchingDeviceOrientation; // 0.7.126: picker search needs a key window
 @property (nonatomic, strong) NSMutableSet<NSString *> *mutableHostedBundleIDs;
 @property (nonatomic, strong) NSMutableSet<NSString *> *launchAllowlist; // 临时允许全屏一次
@@ -106,6 +108,12 @@
 - (void)exitPiPMode;
 - (BOOL)window:(DPFloatingWindow *)window containsFirstResponderInView:(UIView *)view;
 - (BOOL)keyboardBelongsToOurWindows;
+- (void)collapseAfterKeyboard;
+- (void)expandForKeyboardIfOurs;
+- (void)pollKeyboardState;
+- (void)stopKeyboardWatch;
+- (void)startKeyboardWatchIfNeeded;
+- (BOOL)systemKeyboardVisible;
 - (void)updateEdgeShelf;
 - (NSArray<UIImage *> *)captureFloatingThumbnails;
 @end
@@ -933,6 +941,93 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     return YES;
 }
 
+// 0.7.168: SpringBoard never receives UIRemoteKeyboard notifications reliably, which
+// is why the bar-driven expand/collapse kept failing. Poll the system keyboard window
+// instead: it is added to the screen when the keyboard comes up and removed on dismiss.
+// Cheap enough at 4 Hz while a floating window is focused.
+- (BOOL)systemKeyboardVisible {
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        NSString *cls = NSStringFromClass(w.class);
+        if (![cls containsString:@"Keyboard"]) continue;
+        if (w.hidden || w.alpha < 0.01) continue;
+        if (CGRectGetHeight(w.bounds) < 40) continue;
+        return YES;
+    }
+    return NO;
+}
+
+- (void)startKeyboardWatchIfNeeded {
+    if (self.keyboardWatchTimer) return;
+    __weak typeof(self) ws = self;
+    NSTimer *t = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+        __strong typeof(ws) self2 = ws;
+        if (!self2) { [timer invalidate]; return; }
+        [self2 pollKeyboardState];
+    }];
+    t.tolerance = 0.1;
+    self.keyboardWatchTimer = t;
+    [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopKeyboardWatch {
+    [self.keyboardWatchTimer invalidate];
+    self.keyboardWatchTimer = nil;
+    self.keyboardPollVisible = NO;
+}
+
+- (void)pollKeyboardState {
+    BOOL visible = [self systemKeyboardVisible];
+    if (visible == self.keyboardPollVisible) return;
+    self.keyboardPollVisible = visible;
+    NSLog(@"[InteractivePiP] keyboard poll visible=%d", visible);
+    if (visible) {
+        [self expandForKeyboardIfOurs];
+    } else {
+        [self collapseAfterKeyboard];
+    }
+}
+
+// Poll-driven expand: same target selection as the notification path.
+- (void)expandForKeyboardIfOurs {
+    if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) return;
+    if (self.splitWindows.count) return;
+    if (self.picker) return;
+    if (self.mutableFloatingWindows.count == 0) return;
+    if (self.pipWindow) [self exitPiPMode];
+
+    DPFloatingWindow *target = nil;
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.isTiled) continue;
+        if ([self window:w containsFirstResponderInView:w]) { target = w; break; }
+    }
+    if (!target && self.focusedWindow &&
+        [self.floatingWindows containsObject:self.focusedWindow] && !self.focusedWindow.isTiled) {
+        target = self.focusedWindow;
+    }
+    if (!target) {
+        for (DPFloatingWindow *w in self.floatingWindows) {
+            if (w.isTiled) continue;
+            if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
+        }
+    }
+    if (target) {
+        [target expandForKeyboardAnimated:YES];
+        NSLog(@"[InteractivePiP] keyboard expand %@", target.bundleID);
+    }
+}
+
+- (void)collapseAfterKeyboard {
+    DPFloatingWindow *target = nil;
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.isTiled) continue;
+        if (w.keyboardExpanded) { target = w; break; }
+    }
+    if (target) {
+        [target collapseForKeyboardAnimated:YES];
+        NSLog(@"[InteractivePiP] keyboard collapse %@", target.bundleID);
+    }
+}
+
 - (void)hostedKeyboardWillShow {
     DPKBLog(@"WM show notify windows=%lu split=%lu",
             (unsigned long)self.floatingWindows.count, (unsigned long)self.splitWindows.count);
@@ -1119,6 +1214,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 - (void)focusWindow:(DPFloatingWindow *)window {
     if (![self.mutableFloatingWindows containsObject:window]) return;
+    [self startKeyboardWatchIfNeeded];   // 0.7.168: poll the keyboard while we have focus
     if (self.focusedWindow != window) [self restorePreviousKeyWindow];
     self.focusedWindow = window;
     for (DPFloatingWindow *other in self.mutableFloatingWindows) {
