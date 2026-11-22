@@ -791,18 +791,33 @@
 }
 
 - (void)hostedKeyboardWillShow {
-    // 键盘弹出 -> 把当前聚焦的浮窗放大到近似全屏（视频里的行为）。
+    // 键盘弹出 -> 把活跃浮窗放大到近似全屏。不依赖 focusedWindow（直接弹出
+    // 的浮窗可能没经过 focus 路径），而是找最上层的一个非分屏窗口。
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
-    DPFloatingWindow *w = self.focusedWindow;
-    if (!w || w.isTiled) return;
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) return;
-    [w expandForKeyboardAnimated:YES];
+    if (self.splitWindows.count) return; // 分屏态不干预
+    DPFloatingWindow *target = nil;
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.isTiled) continue;
+        if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
+    }
+    if (target) [target expandForKeyboardAnimated:YES];
 }
 
 - (void)hostedKeyboardWillHide {
-    // 键盘收起 -> 还原到弹出前的浮窗 frame；同时维持原有的 key window 归还逻辑。
-    DPFloatingWindow *w = self.focusedWindow;
-    if (w && !w.isTiled) [w collapseForKeyboardAnimated:YES];
+    // 键盘收起 -> 还原到弹出前的 frame。
+    if (self.splitWindows.count) { [self restorePreviousKeyWindow]; return; }
+    DPFloatingWindow *target = nil;
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.isTiled) continue;
+        if (w.keyboardExpanded) { target = w; break; }
+    }
+    if (!target) {
+        for (DPFloatingWindow *w in self.floatingWindows) {
+            if (!w.isTiled) { target = w; break; }
+        }
+    }
+    if (target) [target collapseForKeyboardAnimated:YES];
     [self restorePreviousKeyWindow];
 }
 
