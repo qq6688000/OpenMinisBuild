@@ -4,6 +4,7 @@
 #import "DPAppPicker.h"
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
+#import "DPEdgeShelfWindow.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -60,7 +61,17 @@
 @property (nonatomic, copy, nullable) NSString *switcherBuildStatus;
 @property (nonatomic, weak, nullable) id switcherContentController;
 @property (nonatomic) BOOL switcherRefreshScheduled;
-@property (nonatomic) NSUInteger switcherPreviewRefreshGeneration;
+@property (nonatomic, strong, nullable) NSTimer *switcherPreviewTimer;
+@property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
+@property (nonatomic, assign) NSUInteger shelfWindowCount;
+@property (nonatomic, copy, nullable) NSArray *shelfImages;
+- (void)reattachSceneHostForWindow:(DPFloatingWindow *)window;
+- (void)reattachAllFloatingSceneHosts;
+- (void)captureShelfThumbnails;
+@property (nonatomic) NSUInteger homeGestureSerial;
+@property (nonatomic) BOOL homeGestureSettling;
+- (void)updateEdgeShelf;
+- (void)cancelSwitcherPreview;
 @property (nonatomic) NSUInteger switcherGestureEpoch;
 @property (nonatomic) BOOL switcherRestorePending;
 @property (nonatomic) NSTimeInterval switcherRestoreGraceUntil;
@@ -88,7 +99,6 @@
 
 - (void)openFloatingWithBundleID:(NSString *)bundleID reusingHost:(nullable DPSceneHost *)reusableHost;
 - (void)makeOverlayKeyWindow;
-- (void)makeOverlayKeyWindowInternal;
 - (void)ensureOverlayVisible;
 - (void)restorePreviousKeyWindow;
 - (id)sharedRemoteKeyboards;
@@ -130,8 +140,18 @@
                                                    selector:@selector(hostedKeyboardWillShow)
                                                        name:UIKeyboardWillShowNotification
                                                      object:nil];
+        // 0.7.86: refresh the on-screen diagnostics panel whenever a reflow
+        // diagnostic is emitted (replaces the 0.7.50-removed panel).
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                   selector:@selector(reflowDiagChanged)
+                                                       name:@"DPReflowDiagChanged"
+                                                     object:nil];
     }
     return self;
+}
+
+- (void)reflowDiagChanged {
+    [self showKeyboardDiagnostics];
 }
 
 - (NSArray<DPFloatingWindow *> *)floatingWindows {
@@ -229,30 +249,8 @@
             self.overlayRoot.frame = self.overlayWindow.bounds;
         }
     }
-    // 0.7.77: the overlay must own the keyboard input session, so it has to be
-    // the key window once it holds a live pane. Remember the previous key so
-    // restorePreviousKeyWindow can hand it back.
+    // 不抢 keyWindow，只确保可见
     self.overlayWindow.hidden = NO;
-    [self makeOverlayKeyWindowInternal];
-}
-
-// Never call back into ensureOverlayVisible/bringOverlayToFront from here.
-- (void)makeOverlayKeyWindowInternal {
-    if (!self.overlayWindow || self.deviceLocked || self.overlayWindow.hidden) return;
-    if (@available(iOS 13.0, *)) {
-        // The key window must belong to the same scene as the overlay.
-        if (!self.overlayWindow.windowScene) return;
-    }
-    if (self.overlayWindow.isKeyWindow) return;
-    UIWindow *current = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIWindow *w in self.overlayWindow.windowScene.windows) {
-            if (w.isKeyWindow) { current = w; break; }
-        }
-    }
-    if (current && current != self.overlayWindow) self.keyWindowBeforeHostedInput = current;
-    [self.overlayWindow makeKeyWindow];
-    NSLog(@"[InteractivePiP] overlay 成为 keyWindow (prev=%@)", self.keyWindowBeforeHostedInput);
 }
 
 - (UIView *)contentParent {
@@ -382,7 +380,7 @@
 
     [parent addSubview:window];
     [self.mutableFloatingWindows addObject:window];
-    // 0.7.77: no key hand-back on open; bringOverlayToFront re-keys below.
+    if (self.focusedWindow != window) [self restorePreviousKeyWindow];
     self.focusedWindow = window;
     self.mode = DPPresentationModeFloating;
     [self bringOverlayToFront];
@@ -414,6 +412,8 @@
 
 - (void)closeFloatingWindow:(DPFloatingWindow *)window animated:(BOOL)animated {
     if (!window) return;
+    // Return a scene view borrowed by the shelf before tearing the window down.
+    [self reattachSceneHostForWindow:window];
     if ([self.splitWindows containsObject:window]) [self leaveSplit];
     if (self.focusedWindow == window) { [self restorePreviousKeyWindow]; self.focusedWindow = nil; }
     if (window.bundleID) {
@@ -427,6 +427,13 @@
         [self restorePreviousKeyWindow];
     }
     [self updateSessionControls];
+    // A window closed while hidden on Home changes the shelf's card set.
+    // Cards are built once per shelf instance, so force a rebuild.
+    if (self.edgeShelf) {
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+        if (self.floatingHiddenOnHome && self.mode == DPPresentationModeFloating) [self updateEdgeShelf];
+    }
 }
 
 - (void)dismissAllAnimated:(BOOL)animated {
@@ -702,9 +709,38 @@
 }
 
 - (void)showKeyboardDiagnostics {
-    // Diagnostics panel removed in the 0.7.50 release build; all switcher and
-    // keyboard hooks stay intact, this call is now a no-op.
-    if (self.diagLabel) { [self.diagLabel removeFromSuperview]; self.diagLabel = nil; }
+    // 0.7.86: restore the on-screen diagnostics panel (removed in 0.7.50) so
+    // the user can SEE the reflow/host state without a Mac or Filza. This is
+    // the same approach as the 0.7.48 build: a label pinned to the overlay
+    // root, always topmost.
+    if (!self.overlayRoot) return;
+    NSMutableString *text = [NSMutableString string];
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        DPSceneHost *h = w.sceneHost;
+        if (!h) continue;
+        [text appendFormat:@"[%@]\nhostDiag=%@\nlayout=%@\n",
+         w.bundleID ?: @"?", h.hostViewDiag ?: @"-", h.layoutDiag ?: @"-"];
+    }
+    if (!text.length) {
+        if (self.diagLabel) { [self.diagLabel removeFromSuperview]; self.diagLabel = nil; }
+        return;
+    }
+    if (!self.diagLabel) {
+        UILabel *lb = [[UILabel alloc] init];
+        lb.textColor = [UIColor colorWithRed:1.0 green:0.5 blue:0.5 alpha:1.0];
+        lb.font = [UIFont systemFontOfSize:10 weight:UIFontWeightBold];
+        lb.numberOfLines = 0;
+        lb.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
+        lb.userInteractionEnabled = NO;
+        self.diagLabel = lb;
+        [self.overlayRoot addSubview:lb];
+    }
+    self.diagLabel.text = text;
+    CGRect b = self.overlayRoot.bounds;
+    CGFloat w = MIN(b.size.width - 8, 300);
+    CGFloat h = MIN(b.size.height * 0.35, 110);
+    self.diagLabel.frame = CGRectMake((b.size.width - w) / 2.0, 6, w, h);
+    [self.overlayRoot bringSubviewToFront:self.diagLabel];
 }
 
 - (void)prepareForHostedInput {
@@ -721,15 +757,7 @@
 - (void)prepareForTouchInView:(UIView *)view {
     for (UIView *v = view; v; v = v.superview) {
         if ([v isKindOfClass:[DPFloatingWindow class]] && [self.mutableFloatingWindows containsObject:(id)v]) {
-            DPFloatingWindow *touched = (DPFloatingWindow *)v;
-            [self focusWindow:touched];
-            // 0.7.75: a touch inside the pane is the last chance to make the
-            // hosted scene interactive before the app opens its own input
-            // session. Without this the first tap on a text field did nothing
-            // until the window was reopened.
-            if ([touched.sceneHost isLive]) {
-                [touched.sceneHost prepareForInput];
-            }
+            [self focusWindow:(DPFloatingWindow *)v];
             return;
         }
     }
@@ -782,6 +810,12 @@
 
 - (void)handleDeviceLock {
     self.deviceLocked = YES;
+    self.homeGestureSerial++;
+    self.homeGestureSettling = NO;
+    self.switcherGestureEpoch++;
+    self.switcherRestorePending = NO;
+    self.edgeShelf.hidden = YES;
+    [self cancelSwitcherPreview];
     // Mirrors PanoramicView -[PVTaskSession cancelPendingSelectionOnLock]:
     // stop any in-flight interactive resize/drag, but KEEP the hosted pair.
     // Tearing down the scene here (windowScene = nil / dismissAll) is what made
@@ -801,11 +835,11 @@
 }
 
 - (void)handleDeviceUnlock {
+    if (!self.deviceLocked) return;
     self.deviceLocked = NO;
-    // Keep hidden until a real activation; bringOverlayToFront will re-show it.
+    // Keep live hosts suspended until explicit activation. Only the parked cards may return.
     self.overlayWindow.hidden = YES;
-    // Do NOT resume here: session is rebuilt on next explicit activation, which
-    // avoids replaying the hosted scene onto the home/lock screen.
+    [self updateEdgeShelf];
 }
 
 - (void)ensureOverlayVisible {
@@ -814,18 +848,11 @@
     [self bringOverlayToFront];
 }
 
-- (void)makeOverlayKeyWindow {
-    [self ensureOverlayVisible];
-    [self makeOverlayKeyWindowInternal];
-}
+- (void)makeOverlayKeyWindow { [self ensureOverlayVisible]; }
 
 - (void)restorePreviousKeyWindow {
     [self configureRemoteKeyboardsForHostedInput:NO];
-    UIWindow *previous = self.keyWindowBeforeHostedInput;
     self.keyWindowBeforeHostedInput = nil;
-    if (previous && previous.windowScene && !previous.hidden) {
-        [previous makeKeyWindow];
-    }
 }
 
 - (void)hostedKeyboardWillShow { /* Never steal keyboard focus on a notification. */ }
@@ -840,6 +867,10 @@
         }
         self.overlayWindow.frame = bounds;
         self.overlayRoot.frame = self.overlayWindow.bounds;
+    }
+    if (self.sessionParked) {
+        [self updateEdgeShelf];
+        return;
     }
     if (self.duoMode && self.splitWindows.count == 2) {
         [self layoutSplit];
@@ -865,10 +896,7 @@
 
 - (void)focusWindow:(DPFloatingWindow *)window {
     if (![self.mutableFloatingWindows containsObject:window]) return;
-    // 0.7.77: do NOT hand the key window back when only the focus moves
-    // between our own panes. That transient gave the keyboard input session
-    // away and killed it mid-tap, which is why the keyboard only showed up
-    // after reopening the window.
+    if (self.focusedWindow != window) [self restorePreviousKeyWindow];
     self.focusedWindow = window;
     for (DPFloatingWindow *other in self.mutableFloatingWindows) {
         [other setActive:(other == window) animated:NO];
@@ -892,6 +920,12 @@
     if (!first || !bundleID.length || [first.bundleID isEqualToString:bundleID]) return;
     if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return;
     [self leaveSplit];
+    // Unfreeze any shelf-muted apps before they re-enter a live split.
+    if (![DPSettings shared].shelfLivePreview) {
+        for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSceneAudible:YES];
+    }
+    // Scene views borrowed by the shelf must return before entering a split.
+    [self reattachAllFloatingSceneHosts];
     // Make room without evicting the chosen first app when max windows is 1.
     for (DPFloatingWindow *w in [self.mutableFloatingWindows copy]) {
         if (w != first && ![w.bundleID isEqualToString:bundleID])
@@ -1005,6 +1039,13 @@
 // absent so the two panes behave like two physical displays.
 
 - (void)leaveSplit {
+    BOOL wasParked = self.sessionParked;
+    self.sessionParked = NO;
+    self.homeGestureSerial++;
+    self.homeGestureSettling = NO;
+    self.edgeShelf.hidden = YES;
+    self.edgeShelf = nil;
+    [self cancelSwitcherPreview];
     BOOL hadCard = self.activeSwitcherCard != nil;
     self.switcherPaneImages = nil;
     self.switcherGroupIdentifier = nil;
@@ -1032,6 +1073,7 @@
 
     self.splitWindows = nil; [self.savedFrames removeAllObjects]; self.duoMode = NO;
     self.mode = self.mutableFloatingWindows.count ? DPPresentationModeFloating : DPPresentationModeNone;
+    if (wasParked && self.mode == DPPresentationModeFloating) [self hideFloatingOnHome];
     [self updateSessionControls];
 }
 
@@ -1142,33 +1184,6 @@
             [self2 bringOverlayToFront];
         }
         if (onAttached && self2 && generation == self2.sessionGeneration && !self2.deviceLocked) onAttached();
-        if (success && self2 && generation == self2.sessionGeneration && !self2.deviceLocked) {
-            __strong DPSceneHost *strongHost = weakHost;
-            if (strongHost) {
-                // 0.7.75 keyboard fix: the first focusWindow ran BEFORE the
-                // attach finished, so prepareForInput hit its !live early
-                // return and never enabled interaction on the LIVE scene.
-                // Re-run it here AND a few more times shortly after, because
-                // the hosted scene may still be settling (the orientation /
-                // presentation transaction lands a beat later); a single late
-                // call still missed on device.
-                for (NSNumber *delay in @[@0.0, @0.05, @0.15, @0.35, @0.80, @1.50]) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                                 (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{
-                        __strong typeof(weakSelf) self3 = weakSelf;
-                        __strong DPSceneHost *h = strongHost;
-                        if (!self3 || !h || generation != self3.sessionGeneration || self3.deviceLocked) return;
-                        if (!h.isLive) return;
-                        [h prepareForInput];
-                        if (self3.focusedWindow && self3.focusedWindow.sceneHost == h) {
-                            [self3 prepareForHostedInput];
-                        }
-                    });
-                }
-                NSLog(@"[InteractivePiP] attach 后补输入准备(重试) %@", bundleID);
-            }
-        }
         NSLog(@"[InteractivePiP] scene attach %@ success=%d attempts=%@",
               bundleID, success, @(attempts));
     };
@@ -1258,78 +1273,184 @@
     }
 }
 
+// Read existing SpringBoard visibility state without adding a switcher hook.
+static BOOL DPSystemSwitcherVisible(void) {
+    for (NSString *name in @[@"SBMainSwitcherControllerCoordinator", @"SBMainSwitcherViewController"]) {
+        Class cls = NSClassFromString(name);
+        SEL shared = @selector(sharedInstance);
+        if (![cls respondsToSelector:shared]) continue;
+        id controller = ((id (*)(id, SEL))objc_msgSend)(cls, shared);
+        for (NSString *key in @[@"isMainSwitcherVisible", @"isAnySwitcherVisible"]) {
+            SEL sel = NSSelectorFromString(key);
+            NSMethodSignature *sig = [controller methodSignatureForSelector:sel];
+            const char *type = sig.methodReturnType;
+            if (sig.numberOfArguments == 2 && type && (type[0] == 'B' || type[0] == 'c') &&
+                ((BOOL (*)(id, SEL))objc_msgSend)(controller, sel)) return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)updateEdgeShelf {
+    // Shelf is a FLOATING-window feature only. The split pair keeps its native
+    // Switcher group card; parking a split never surfaces this shelf.
+    if (!self.floatingHiddenOnHome || self.mode != DPPresentationModeFloating ||
+        self.deviceLocked || self.switcherRestorePending || self.homeGestureSettling || ![DPSettings shared].isEnabled) {
+        self.edgeShelf.hidden = YES;
+        return;
+    }
+    NSString *fg = [self foregroundBundleID];
+    if ((fg.length && ![fg isEqualToString:@"com.apple.springboard"]) || DPSystemSwitcherVisible()) {
+        self.edgeShelf.hidden = YES;
+        return;
+    }
+    UIWindowScene *scene = self.switcherHomeScene;
+    if (!scene || scene.activationState != UISceneActivationStateForegroundActive) scene = [self activeWindowScene];
+    if (!scene || scene.activationState != UISceneActivationStateForegroundActive || scene.screen != UIScreen.mainScreen) {
+        self.edgeShelf.hidden = YES;
+        return;
+    }
+    if (self.edgeShelf && self.shelfWindowCount != self.mutableFloatingWindows.count) {
+        // A floating window was closed (or added) while hidden: stale cards
+        // would otherwise keep pointing at released windows. Force rebuild.
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+    }
+    if (self.edgeShelf.windowScene != scene) {
+        self.edgeShelf.hidden = YES;
+        DPEdgeShelfWindow *shelf = [[DPEdgeShelfWindow alloc] initWithWindowScene:scene];
+        shelf.hidden = YES;
+        // Every floating window gets one card; the hidden-on-Home state may
+        // hold several single windows, and the split pair never appears here.
+        // Cards embed the live scene views directly: real-time content, and
+        // cardLayout re-drives setHostedFrame so the scene re-scales to the card.
+        NSArray<DPFloatingWindow *> *floaters = [self.mutableFloatingWindows copy];
+        NSMutableArray *names = [NSMutableArray arrayWithCapacity:floaters.count];
+        for (DPFloatingWindow *window in floaters) {
+            NSString *bundle = window.bundleID;
+            [names addObject:bundle.pathExtension.length ? bundle.pathExtension : bundle];
+        }
+        NSUInteger generation = self.sessionGeneration;
+        __weak typeof(self) weakSelf = self;
+        __weak DPEdgeShelfWindow *weakShelf = shelf;
+        // Single-window restore block shared by both modes.
+        void (^restoreBlock)(NSUInteger) = ^(NSUInteger index) {
+            __strong typeof(weakSelf) manager = weakSelf;
+            if (!manager || !weakShelf || manager.edgeShelf != weakShelf ||
+                manager.sessionGeneration != generation || index >= manager.mutableFloatingWindows.count) return;
+            manager.floatingHiddenOnHome = NO;
+            [manager.floatingHomeTimer invalidate];
+            manager.floatingHomeTimer = nil;
+            DPFloatingWindow *selected = manager.mutableFloatingWindows[index];
+            // Unfreeze BEFORE reattaching so the app renders into the pane.
+            if (![DPSettings shared].shelfLivePreview) {
+                for (DPFloatingWindow *w in manager.mutableFloatingWindows) [w.sceneHost setSceneAudible:YES];
+            }
+            [manager reattachSceneHostForWindow:selected];
+            for (DPFloatingWindow *window in manager.mutableFloatingWindows) {
+                window.alpha = 1;
+                [window.sceneHost setSuspended:NO];
+            }
+            manager.overlayWindow.hidden = NO;
+            [manager focusWindow:selected];
+            [manager updateEdgeShelf];
+            NSLog(@"[InteractivePiP] edge shelf restore single window %@", selected.bundleID);
+        };
+        if ([DPSettings shared].shelfLivePreview) {
+            NSMutableArray *views = [NSMutableArray arrayWithCapacity:floaters.count];
+            for (DPFloatingWindow *window in floaters) {
+                UIView *sceneView = window.sceneHost.view;
+                [views addObject:sceneView ?: [NSNull null]];
+            }
+            [shelf configureWithNames:names views:views restore:restoreBlock
+                           cardLayout:^(NSUInteger index, CGRect frame) {
+                __strong typeof(weakSelf) manager = weakSelf;
+                if (!manager || !weakShelf || manager.edgeShelf != weakShelf) return;
+                if (index >= manager.mutableFloatingWindows.count) return;
+                DPFloatingWindow *window = manager.mutableFloatingWindows[index];
+                if (window.sceneHost.view.superview != window.contentContainer) {
+                    [window.sceneHost setHostedFrame:frame];
+                }
+            }];
+        } else {
+            // Screenshot mode: static thumbnails captured before hiding.
+            NSMutableArray *images = [NSMutableArray arrayWithCapacity:floaters.count];
+            for (NSUInteger i = 0; i < floaters.count; ++i) {
+                id thumb = (i < self.shelfImages.count) ? self.shelfImages[i] : nil;
+                [images addObject:[thumb isKindOfClass:[UIImage class]] ? thumb : [NSNull null]];
+            }
+            [shelf configureWithNames:names images:images restore:restoreBlock];
+        }
+        self.edgeShelf = shelf;
+    }
+    self.edgeShelf.frame = scene.coordinateSpace.bounds;
+    self.edgeShelf.hidden = NO;
+}
+
+// Re-embed a live scene view that the edge shelf had borrowed: attachSceneHost
+// is idempotent and re-drives frame + setHostedFrame, restoring pane scaling.
+- (void)reattachSceneHostForWindow:(DPFloatingWindow *)window {
+    if (!window || !window.sceneHost) return;
+    if (window.sceneHost.view.superview == window.contentContainer) return;
+    [window attachSceneHost:window.sceneHost];
+}
+
+- (void)reattachAllFloatingSceneHosts {
+    for (DPFloatingWindow *window in self.mutableFloatingWindows) {
+        [self reattachSceneHostForWindow:window];
+    }
+}
+
 - (void)handleHomeGestureEnded {
-    // Called when a FluidSwitcher pan gesture ends. Decide asynchronously
-    // whether it was a "swipe to Home": session still alive AND the foreground
-    // app is no longer one we host (nil / SpringBoard / another app) => Home.
-    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn || self.switcherRestorePending || NSProcessInfo.processInfo.systemUptime < self.switcherRestoreGraceUntil) return;
+    if (self.mode == DPPresentationModeNone || self.deviceLocked || self.internalHomeReturn ||
+        self.switcherRestorePending || NSProcessInfo.processInfo.systemUptime < self.switcherRestoreGraceUntil) return;
+    [self cancelSwitcherPreview];
+    self.homeGestureSettling = YES;
+    self.edgeShelf.hidden = YES;
+    NSUInteger serial = ++self.homeGestureSerial;
     NSUInteger epoch = self.switcherGestureEpoch;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.32 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) self2 = weakSelf;
-        if (!self2 || generation != self2.sessionGeneration || self2.deviceLocked) return;
-        if (self2.mode == DPPresentationModeNone || self2.switcherRestorePending || self2.switcherGestureEpoch != epoch) return;
-        NSString *fg = [self2 foregroundBundleID];
-        // If a hosted app is still foreground, this was an app switch / open — keep the session.
-        if (fg.length && [self2.mutableHostedBundleIDs containsObject:fg]) return;
-        if (self2.mode == DPPresentationModeFloating) {
-            if (!fg.length || [fg isEqualToString:@"com.apple.springboard"])
-                [self2 hideFloatingOnHome];
-            return;
+        __strong typeof(weakSelf) manager = weakSelf;
+        if (!manager || serial != manager.homeGestureSerial) return;
+        manager.homeGestureSettling = NO;
+        if (generation != manager.sessionGeneration || manager.deviceLocked ||
+            manager.switcherRestorePending || manager.switcherGestureEpoch != epoch) return;
+        NSString *fg = [manager foregroundBundleID];
+        BOOL home = !fg.length || [fg isEqualToString:@"com.apple.springboard"];
+        if (manager.mode == DPPresentationModeFloating && home && !DPSystemSwitcherVisible()) {
+            [manager hideFloatingOnHome];
+        } else if (manager.mode == DPPresentationModeSplit) {
+            // Split pair keeps the native Switcher group card only; no shelf.
+            if (home) [manager parkSessionInAppSwitcher];
+            if (!manager.sessionParked) [manager scheduleSwitcherPreviewRefresh];
         }
-        NSLog(@"[InteractivePiP] 上滑回桌面 -> 挂到后台任务列表 (fg=%@)", fg ?: @"(none)");
-        [self2 parkSessionInAppSwitcher];
     });
 }
 
 - (void)parkSessionInAppSwitcher {
-    if (self.sessionParked || self.switcherRestorePending) return;
+    if (self.sessionParked || self.switcherRestorePending || self.deviceLocked || self.splitWindows.count != 2) return;
     self.switcherHomeScene = self.overlayWindow.windowScene ?: self.switcherHomeScene;
-    // No on-park capture: previews are pre-rendered while idle (scheduleSwitcherPreviewRefresh).
-    // Keep the whole session alive but take it off screen entirely, so the home
-    // screen and the app switcher stay visually clean. Nothing is torn down:
-    // scenes stay hosted and resume instantly on the next activation.
     self.sessionParked = YES;
-    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
-        [w.sceneHost setSuspended:YES];
-    }
-    // Hide the overlay completely. Lowering the level and keeping it visible
-    // left a solid black rectangle (tiled panes use a black background) sitting
-    // on top of the home screen. The session itself stays alive in memory, so
-    // nothing has to be rebuilt when the user comes back.
-    self.overlayRoot.transform = CGAffineTransformIdentity;
+    [self cancelSwitcherPreview];
+    // Hide before touching live hosts; retain the split geometry and the already
+    // registered Switcher group. No re-tile, host layout, refresh, or capture on Home.
     self.overlayWindow.hidden = YES;
-    self.overlayWindow.windowLevel = UIWindowLevelNormal;
-    // Drop the black tile backdrop too, just in case the window is shown by
-    // anything else before we restore it properly.
-    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
-        [w setTiled:NO];
-        w.alpha = 0.0;
-    }
-    [self updateSessionControls];
-    if (self.activeSwitcherCard) [self requestSwitcherGroupRefresh];
-    NSLog(@"[InteractivePiP] 会话已停靠后台任务列表，窗口数=%lu",
-          (unsigned long)self.mutableFloatingWindows.count);
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSuspended:YES];
 }
 
 - (void)restoreParkedSession {
-    if (!self.sessionParked) return;
+    if (!self.sessionParked || self.deviceLocked || self.splitWindows.count != 2) return;
+    self.homeGestureSerial++;
+    self.homeGestureSettling = NO;
+    self.edgeShelf.hidden = YES;
+    self.edgeShelf = nil;
     self.sessionParked = NO;
-    self.overlayRoot.transform = CGAffineTransformIdentity;
-    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
-    self.overlayWindow.hidden = NO;
-    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
-        w.alpha = 1.0;
-        [w.sceneHost setSuspended:NO];
-    }
-    if (self.duoMode) {
-        for (DPFloatingWindow *w in self.splitWindows) { w.tiled = YES; }
-        [self layoutSplit];
-    }
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSuspended:NO];
+    if (self.duoMode) [self layoutSplit];
     [self bringOverlayToFront];
-    NSLog(@"[InteractivePiP] 从后台任务列表恢复会话");
 }
 
 // Keep floating hosts alive while Home is visible; only hide our overlay.
@@ -1340,11 +1461,22 @@
         dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
         return;
     }
+    if (self.sessionParked) {
+        if (bundleID.length && ![bundleID isEqualToString:@"com.apple.springboard"]) self.edgeShelf.hidden = YES;
+        else [self updateEdgeShelf];
+        return;
+    }
     if (!self.floatingHiddenOnHome || self.deviceLocked || self.mode != DPPresentationModeFloating || !self.mutableFloatingWindows.count) return;
     // Empty means no foreground application, not evidence that Home was left.
     if (!bundleID.length || [bundleID isEqualToString:@"com.apple.springboard"]) return;
     [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
     self.floatingHiddenOnHome = NO;
+    self.edgeShelf.hidden = YES;
+    // Unfreeze before reattaching (frozen app cannot render into the pane).
+    if (![DPSettings shared].shelfLivePreview) {
+        for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSceneAudible:YES];
+    }
+    [self reattachAllFloatingSceneHosts];
     for (DPFloatingWindow *window in self.mutableFloatingWindows) {
         window.alpha = 1;
         [window.sceneHost setSuspended:NO];
@@ -1352,10 +1484,43 @@
     [self bringOverlayToFront];
 }
 
+- (void)captureShelfThumbnails {
+    // Screenshot-mode previews: captured BEFORE the overlay hides so cards
+    // show the app's real content. Skipped entirely in live-preview mode.
+    NSMutableArray *images = [NSMutableArray arrayWithCapacity:self.mutableFloatingWindows.count];
+    for (DPFloatingWindow *window in self.mutableFloatingWindows) {
+        UIView *view = window.sceneHost.view;
+        UIImage *image = nil;
+        if (view && view.window && !view.window.hidden && view.bounds.size.width >= 2 && view.bounds.size.height >= 2) {
+            @try {
+                CGFloat scale = MIN(1.0, 240.0 / MAX(view.bounds.size.width, view.bounds.size.height));
+                CGSize size = CGSizeMake(view.bounds.size.width * scale, view.bounds.size.height * scale);
+                UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+                format.scale = 1;
+                UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+                __block BOOL drawn = NO;
+                image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+                    drawn = [window drawViewHierarchyInRect:(CGRect){CGPointZero, size} afterScreenUpdates:NO];
+                }];
+                if (!drawn) image = nil;
+            } @catch (__unused NSException *e) { image = nil; }
+        }
+        [images addObject:image ?: [NSNull null]];
+    }
+    self.shelfImages = images;
+}
+
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
+    if (![DPSettings shared].shelfLivePreview) {
+        // Screenshot mode: the scene stays alive but inactive -> mute it so
+        // the app behind the static card stops playing audio.
+        [self captureShelfThumbnails];
+        for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost setSceneAudible:NO];
+    }
     self.overlayWindow.hidden = YES;
+    [self updateEdgeShelf];
     if (self.floatingHomeTimer) return;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
@@ -1385,8 +1550,8 @@
         return;
     }
     if (self.mode == DPPresentationModeSplit && self.splitWindows.count == 2) {
-        [self parkSessionInAppSwitcher];
-    } else {
+        [self handleHomeGestureEnded];
+    } else if (self.mode != DPPresentationModeNone) {
         [self dismissAllAnimated:NO];
     }
 }
@@ -1467,6 +1632,15 @@
         w.contentOpacity = [DPSettings shared].floatingOpacity;
         w.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
         w.showsBorder = [DPSettings shared].showBorder;
+    }
+    // 实时重排开关切换：重置各窗口 reflow 状态，按新设置重新尝试/退出。
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) [w.sceneHost resetLiveReflow];
+    // Preview-mode switch rebuilds the shelf so the new card content shows.
+    if (self.floatingHiddenOnHome && !self.deviceLocked) {
+        if (![DPSettings shared].shelfLivePreview) [self captureShelfThumbnails];
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+        [self updateEdgeShelf];
     }
 }
 
@@ -1760,25 +1934,32 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
     return NO;
 }
 
+- (void)cancelSwitcherPreview {
+    [self.switcherPreviewTimer invalidate];
+    self.switcherPreviewTimer = nil;
+}
+
 - (void)scheduleSwitcherPreviewRefresh {
-    if (!self.activeSwitcherCard || self.splitWindows.count != 2 || self.sessionParked) return;
-    // Debounce: layoutSplit runs every frame while dragging the divider; only
-    // the last scheduled refresh may actually capture (earlier ones are voided).
-    NSUInteger refreshGeneration = ++self.switcherPreviewRefreshGeneration;
+    [self cancelSwitcherPreview];
+    if (self.splitWindows.count != 2 || self.sessionParked || self.deviceLocked || self.homeGestureSettling) return;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) self2 = weakSelf;
-        if (!self2 || self2.sessionParked || self2.deviceLocked) return;
-        if (self2.sessionGeneration != generation || !self2.activeSwitcherCard || self2.splitWindows.count != 2) return;
-        if (self2.switcherPreviewRefreshGeneration != refreshGeneration) return;
-        [self2 captureSwitcherPaneImages];
-        NSLog(@"[InteractivePiP] idle preview refresh panes=%lu", (unsigned long)self2.switcherPaneImages.count);
-    });
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1.2 repeats:NO block:^(NSTimer *tick) {
+        __strong typeof(weakSelf) manager = weakSelf;
+        if (!manager || manager.switcherPreviewTimer != tick) return;
+        manager.switcherPreviewTimer = nil;
+        if (manager.sessionGeneration != generation || manager.sessionParked || manager.deviceLocked ||
+            manager.homeGestureSettling || manager.switcherRestorePending || manager.splitWindows.count != 2 ||
+            manager.overlayWindow.hidden || DPSystemSwitcherVisible()) return;
+        [manager captureSwitcherPaneImages];
+    }];
+    timer.tolerance = .2;
+    self.switcherPreviewTimer = timer;
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
 }
 
 - (void)captureSwitcherPaneImages {
-    if (!self.activeSwitcherCard || self.sessionParked || self.splitWindows.count != 2) return;
+    if (self.sessionParked || self.splitWindows.count != 2) return;
     NSMutableArray *images = [NSMutableArray arrayWithCapacity:2];
     for (DPFloatingWindow *window in self.splitWindows) {
         UIView *view = window.sceneHost.view;
@@ -1851,5 +2032,6 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
     }
     return pv;
 }
+
 
 @end

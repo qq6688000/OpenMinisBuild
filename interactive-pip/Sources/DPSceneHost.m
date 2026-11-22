@@ -65,6 +65,10 @@ static void DPDiag(NSString *fmt, ...) {
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                 [host performSelector:@selector(setReflowDiagText:) withObject:line];
 #pragma clang diagnostic pop
+                // 0.7.86: also ask the window manager to refresh its overlay
+                // diagnostics panel (the 0.7.48-style on-screen diag).
+                [[NSNotificationCenter defaultCenter] postNotificationName:
+                 @"DPReflowDiagChanged" object:nil];
             } @catch (__unused NSException *e) {}
         });
     }
