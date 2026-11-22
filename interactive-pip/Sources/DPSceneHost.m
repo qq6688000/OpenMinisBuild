@@ -3007,7 +3007,8 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 }
 
 - (void)setReflowFrozen:(BOOL)frozen {
-    self.reflowFrozen = frozen;
+    if (_reflowFrozen == frozen) return;
+    _reflowFrozen = frozen;   // write the ivar directly: self.reflowFrozen = x recurses into this same method
     if (!frozen) {
         // keyboard collapsed: allow a rebuild to settle back to the small pane
         self.reflowNeedsCommit = YES;
