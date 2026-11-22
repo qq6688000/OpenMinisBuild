@@ -126,8 +126,9 @@ static const CGFloat kDPMinHeight = 220.0;
                                                                      self.bounds.size.width,
                                                                      self.bounds.size.height - kDPTitleBarHeight)];
     self.contentContainer.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // 深灰底，避免空白时看起来像「蓝屏」
-    self.contentContainer.backgroundColor = [UIColor colorWithRed:0.10 green:0.11 blue:0.13 alpha:1.0];
+    // 清透背景：cover-scale 下 host view 完全覆盖时深灰不会露出；
+    // 若 host view 有黑边则改为 clearColor 而非深灰，避免黑色矩形。
+    self.contentContainer.backgroundColor = [UIColor clearColor];
     self.contentContainer.clipsToBounds = YES;
     [self.chromeView addSubview:self.contentContainer];
 
