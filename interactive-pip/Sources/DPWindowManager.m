@@ -42,6 +42,7 @@
 @property (nonatomic, strong, readwrite) NSMutableArray<DPFloatingWindow *> *mutableFloatingWindows;
 @property (nonatomic, assign, readwrite) DPPresentationMode mode;
 @property (nonatomic, strong, nullable) DPAppPicker *picker;
+@property (nonatomic, strong, nullable) UIWindow *prePickerKeyWindow; // 0.7.126: picker search needs a key window
 @property (nonatomic, strong) NSMutableSet<NSString *> *mutableHostedBundleIDs;
 @property (nonatomic, strong) NSMutableSet<NSString *> *launchAllowlist; // 临时允许全屏一次
 @property (nonatomic, assign) BOOL suppressLaunch;
@@ -287,6 +288,14 @@
         self.picker = nil;
     }
     UIView *parent = [self contentParent];
+    // 0.7.126: the picker has a UISearchBar. A UITextField can only become first
+    // responder while its window is key, and our overlay deliberately never takes
+    // key status - that is why tapping the search field did nothing and the
+    // keyboard never came up. Take key for the picker and hand it back after.
+    if (self.overlayWindow && !self.overlayWindow.isKeyWindow) {
+        self.prePickerKeyWindow = [self currentKeyWindow];
+        [self.overlayWindow makeKeyWindow];
+    }
     self.picker = [[DPAppPicker alloc] init];
     __weak typeof(self) weakSelf = self;
     [self.picker presentInView:parent
@@ -294,8 +303,25 @@
                      blacklist:[DPSettings shared].blacklist
                     completion:^(NSString *bundleID) {
         weakSelf.picker = nil;
+        [weakSelf restorePrePickerKeyWindow];
         if (completion) completion(bundleID);
     }];
+}
+
+// 0.7.126: key-window juggling for the app picker's search field.
+- (UIWindow *)currentKeyWindow {
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) return w;
+    }
+    return nil;
+}
+
+- (void)restorePrePickerKeyWindow {
+    UIWindow *saved = self.prePickerKeyWindow;
+    self.prePickerKeyWindow = nil;
+    if (saved && !saved.isHidden) {
+        [saved makeKeyWindow];
+    }
 }
 
 #pragma mark - Open
@@ -796,6 +822,10 @@
 - (void)hostedKeyboardWillShow {
     DPKBLog(@"WM show notify windows=%lu split=%lu",
             (unsigned long)self.floatingWindows.count, (unsigned long)self.splitWindows.count);
+    // 0.7.126: the app picker owns its own UISearchBar. Expanding a floating
+    // window here would steal the responder chain and the search keyboard never
+    // appears, so leave everything alone while the picker is on screen.
+    if (self.picker) { DPKBLog(@"WM show:skip picker"); return; }
     // 键盘弹出 -> 把活跃浮窗放大到近似全屏。不依赖 focusedWindow（直接弹出
     // 的浮窗可能没经过 focus 路径），而是找最上层的一个非分屏窗口。
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
@@ -817,6 +847,9 @@
 }
 
 - (void)hostedKeyboardWillHide {
+    // 0.7.126: never touch the key window while the picker is up - that is the
+    // picker's own search keyboard closing.
+    if (self.picker) { DPKBLog(@"WM hide:skip picker"); return; }
     // 键盘收起 -> 还原到弹出前的 frame。
     if (self.splitWindows.count) { [self restorePreviousKeyWindow]; return; }
     DPFloatingWindow *target = nil;
