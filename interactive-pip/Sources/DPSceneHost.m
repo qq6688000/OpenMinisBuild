@@ -1690,6 +1690,11 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 }
 
 - (UIView *)hostViewFromFBScene:(id)scene {
+    return [self hostViewFromFBScene:scene atSize:self.view.bounds.size];
+}
+
+- (UIView *)hostViewFromFBScene:(id)scene atSize:(CGSize)pane {
+
     if (!scene) return nil;
 
     // 0.7.78: when the user enables live reflow, ask FrontBoard for a host that
@@ -1698,7 +1703,6 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     // container has no referenceSize ABI, so the DPC probe bailed out and the
     // pane silently stayed on cover-scale.
     if ([DPSettings shared].liveReflow) {
-        CGSize pane = self.view.bounds.size;
         DPDiag(@"reflow enter bundle=%@ pane=%@ liveReflow=1",
                self.bundleID, NSStringFromCGSize(pane));
         if (pane.width >= 2 && pane.height >= 2) {
@@ -3009,10 +3013,32 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 - (void)setReflowFrozen:(BOOL)frozen {
     if (_reflowFrozen == frozen) return;
     _reflowFrozen = frozen;   // write the ivar directly: self.reflowFrozen = x recurses into this same method
-    if (!frozen) {
-        // allow the next layout pass to rebuild at whatever pane size is current
-        self.reflowNeedsCommit = YES;
-        self.reflowCommitPendingAt = CACurrentMediaTime() - 1.0;
+    if (frozen) {
+        // Keyboard is up and the window goes fullscreen: the pane is now ~the
+        // real device size, so live reflow renders at natural proportions.
+        CGSize pane = self.view.bounds.size;
+        if (pane.width > 2 && pane.height > 2) {
+            self.reflowCanvas = pane;
+            self.hostViewDiag = [NSString stringWithFormat:
+                @"REFLOW-OK cfg=1 kbmode=1 pane=%@", NSStringFromCGSize(pane)];
+        }
+    } else {
+        // Back in the small floating pane. Live reflow would make QQ lay itself
+        // out for a narrow width and blow the font size up, so drop back to the
+        // cover-scale canvas: the app keeps its natural layout and the whole
+        // phone screen is scaled into the pane.
+        self.reflowCanvas = CGSizeZero;
+        self.hostIsSceneView = NO;
+        self.hostViewDiag = [NSString stringWithFormat:
+            @"cover-scale kbmode=0 class=%@",
+            self.hostView ? NSStringFromClass(self.hostView.class) : @"(nil)"];
+        // ALSO rebuild at the natural (full screen) reference size, otherwise the
+        // remote app keeps the narrow keyboard-era layout and only gets scaled,
+        // which makes the text look oversized in the small pane.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.invalidated || self.reflowFrozen) return;
+            [self rebuildAtNaturalSize];
+        });
     }
 }
 
@@ -3020,9 +3046,36 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 // The remote app only ever re-lays-out when the host is created through the
 // FrontBoard factory with a reference size, so a fullscreen pane needs a brand
 // new host - patching bounds afterwards just letterboxes the old layout.
+// 0.7.122: rebuild the host at the scene's NATURAL (full screen) size so the
+// remote app lays itself out exactly like it would full screen; the small pane
+// then just cover-scales that. Keeps fonts at normal proportions.
+- (void)rebuildAtNaturalSize {
+    if (!self.hostView || self.invalidated) return;
+    CGSize natural = self.nativeSceneSize;
+    if (natural.width < 2 || natural.height < 2) natural = [UIScreen mainScreen].bounds.size;
+    UIView *fresh = nil;
+    @try {
+        fresh = [self hostViewFromFBScene:self.scene atSize:natural];
+    } @catch (__unused NSException *e) { fresh = nil; }
+    if (fresh && fresh != self.hostView) {
+        [self attachHostView:fresh scene:self.scene];
+        self.lastSubmittedPaneSize = CGSizeZero;
+    }
+    DPDiag(@"natural rebuild size=%@ ok=%d", NSStringFromCGSize(natural), fresh != nil);
+    [self layoutHostView];
+}
+
 - (void)rebuildHostAtCurrentSize {
     if (!self.hostView || self.invalidated) return;
     CGSize pane = self.view.bounds.size;
+    // middle of the keyboard animation self.view.bounds is still the small pane;
+    // for the keyboard mode we always want the full screen reference size.
+    if (self.reflowFrozen) {
+        CGSize screen = [UIScreen mainScreen].bounds.size;
+        if (self.view.window.windowScene) screen = self.view.window.windowScene.coordinateSpace.bounds.size;
+        if (screen.width > 2 && screen.height > 2) pane = screen;
+        self.reflowCanvas = pane;
+    }
     if (pane.width < 2 || pane.height < 2) return;
     UIView *fresh = nil;
     @try {
