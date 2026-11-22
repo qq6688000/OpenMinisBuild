@@ -102,6 +102,10 @@
 - (void)restorePreviousKeyWindow;
 - (id)sharedRemoteKeyboards;
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
+- (void)enterPiPMode;
+- (void)exitPiPMode;
+- (void)updateEdgeShelf;
+- (NSArray<UIImage *> *)captureFloatingThumbnails;
 @end
 
 static BOOL DPDuoSystemSwitcherVisible(void) {
@@ -1461,6 +1465,10 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
         return;
+    }
+    // 0.7.156: leaving PiP when a real app comes to the foreground.
+    if (self.pipWindow && bundleID.length && ![bundleID isEqualToString:@"com.apple.springboard"]) {
+        [self exitPiPMode];
     }
     if (!self.floatingHiddenOnHome || self.deviceLocked || self.mode != DPPresentationModeFloating || !self.mutableFloatingWindows.count) return;
     // Empty means no foreground application, not evidence that Home was left.

@@ -575,8 +575,10 @@ void DPKBLog(NSString *fmt, ...) {
     if (_pipMode == pip) return;
     _pipMode = pip;
     void (^apply)(void) = ^{
-        self.titleBar.alpha = pip ? 0.0 : 1.0;
-        self.titleBar.userInteractionEnabled = !pip;
+        // 0.7.156: the bar stays visible (semi transparent) so close / split /
+        // fullscreen are always reachable; a hidden bar left the window stuck.
+        self.titleBar.alpha = pip ? 0.86 : 1.0;
+        self.titleBar.userInteractionEnabled = YES;
         // content slides up under where the bar used to be
         [self setNeedsLayout];
         [self layoutIfNeeded];
@@ -599,9 +601,10 @@ void DPKBLog(NSString *fmt, ...) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.chromeView.frame = self.bounds;
+    self.titleBar.hidden = NO;
     self.chromeView.layer.cornerRadius = self.cornerRadiusValue;
     self.titleBar.frame = CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight);
-    CGFloat contentY = (self.tiled || _pipMode) ? 0 : kDPTitleBarHeight; // 0.7.154 PiP: content fills the window
+    CGFloat contentY = self.tiled ? 0 : kDPTitleBarHeight; // 0.7.156: PiP keeps the bar so controls stay usable
     CGFloat contentH = MAX(0, self.bounds.size.height - contentY);
     if (_pipMode && _pipCropTop > 0.0) {
         // 0.7.155: the app is laid out at full height inside contentH; slide it up so
