@@ -1018,6 +1018,44 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     DPHostRequester *req = [[DPHostRequester alloc] init];
     self.hostRequester = req;
 
+    // 0.7.97: THE FACTORY THAT ACTUALLY EXISTS.
+    // The on-screen method dump proved the handle class on iOS 16.4.1 exposes
+    // ONLY the separate-orientation variant - ZNSplit's line 1177:
+    //     [self.handle newSceneViewWithReferenceSize:size
+    //         contentOrientation:orientation
+    //         containerOrientation:orientation hostRequester:requester]
+    // Every earlier build probed the ":orientation:hostRequester:" variant alone,
+    // so hasFactory read 0 and the factory never ran. Try this one FIRST.
+    SEL viewSelSep = NSSelectorFromString(
+        @"newSceneViewWithReferenceSize:contentOrientation:containerOrientation:hostRequester:");
+    DPDiag(@"reflow has newSceneViewWithReferenceSize:contentOrientation:... = %d",
+           [handle respondsToSelector:viewSelSep]);
+    if ([handle respondsToSelector:viewSelSep]) {
+        NSMethodSignature *sig = [handle methodSignatureForSelector:viewSelSep];
+        if (sig) {
+            @try {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                inv.target = handle;
+                inv.selector = viewSelSep;
+                [inv setArgument:&s atIndex:2];
+                [inv setArgument:&orientation atIndex:3];
+                [inv setArgument:&orientation atIndex:4];
+                [inv setArgument:&req atIndex:5];
+                [inv invoke];
+                __unsafe_unretained id result = nil;
+                [inv getReturnValue:&result];
+                UIView *v = [self viewFromMaybeController:result];
+                if (v) {
+                    NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize(separate) OK %@",
+                          self.bundleID);
+                    return v;
+                }
+            } @catch (NSException *e) {
+                NSLog(@"[InteractivePiP] newSceneView(separate) 异常: %@", e);
+            }
+        }
+    }
+
     // 0.7.85: only the ZNS VIEW factory is correct. Trying the
     // newSceneViewControllerForReferenceSize:* factories first returns a
     // UIViewController's .view, which has NO referenceSize ABI, so
@@ -1592,8 +1630,14 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
             } else {
                 DPDiag(@"reflow factory nil, cover-scale fallback");
                 NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
-                BOOL hasFactory = handle && [handle respondsToSelector:
-                    NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:")];
+                // 0.7.97: probe BOTH factory variants - iOS 16.4.1 only exposes
+                // the contentOrientation:containerOrientation: one.
+                BOOL hasFactory = handle &&
+                    ([handle respondsToSelector:
+                        NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:")] ||
+                     [handle respondsToSelector:
+                        NSSelectorFromString(
+                            @"newSceneViewWithReferenceSize:contentOrientation:containerOrientation:hostRequester:")]);
                 self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ hasFactory=%d pane=%@",
                                      handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
                                      hasFactory, NSStringFromCGSize(pane)];
