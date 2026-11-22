@@ -679,9 +679,39 @@
 }
 
 - (void)showKeyboardDiagnostics {
-    // Diagnostics panel removed in the 0.7.50 release build; all switcher and
-    // keyboard hooks stay intact, this call is now a no-op.
-    if (self.diagLabel) { [self.diagLabel removeFromSuperview]; self.diagLabel = nil; }
+    [self.diagLabel removeFromSuperview];
+    self.diagLabel = nil;
+    if (!self.overlayRoot) return;
+
+    // Collect diagnostics from every floating window + scene host
+    NSMutableString *text = [NSMutableString string];
+    [text appendFormat:@"[KeyboardReflow] overlay=%@\n",
+     NSStringFromCGRect(self.overlayWindow.frame)];
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        DPSceneHost *h = w.sceneHost;
+        [text appendFormat:@"%@ frame=%@ hv=%@ sup=%@\n",
+         (w.bundleID ?: @"?").lastPathComponent,
+         NSStringFromCGRect(w.frame),
+         NSStringFromCGRect(h.view.bounds),
+         NSStringFromCGRect(h.view.superview.bounds)];
+        [text appendFormat:@"  layout=%@\n  host=%@\n",
+         h.layoutDiag ?: @"-", h.hostViewDiag ?: @"-"];
+    }
+
+    UILabel *lb = [[UILabel alloc] init];
+    lb.numberOfLines = 0;
+    lb.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
+    lb.textColor = [UIColor colorWithRed:1 green:0.4 blue:0.4 alpha:0.9];
+    lb.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
+    lb.text = text;
+    [lb sizeToFit];
+    CGRect b = self.overlayRoot.bounds;
+    lb.frame = CGRectMake(4, b.size.height - lb.frame.size.height - 4,
+                          MIN(lb.frame.size.width, b.size.width - 8),
+                          lb.frame.size.height);
+    lb.userInteractionEnabled = NO;
+    [self.overlayRoot addSubview:lb];
+    self.diagLabel = lb;
 }
 
 - (void)prepareForHostedInput {
@@ -801,7 +831,14 @@
         if (w.isTiled) continue;
         if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
     }
-    if (target) [target expandForKeyboardAnimated:YES];
+    if (target) {
+        [target expandForKeyboardAnimated:YES];
+        __weak typeof(self) ws = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [ws showKeyboardDiagnostics];
+        });
+    }
 }
 
 - (void)hostedKeyboardWillHide {
@@ -817,7 +854,14 @@
             if (!w.isTiled) { target = w; break; }
         }
     }
-    if (target) [target collapseForKeyboardAnimated:YES];
+    if (target) {
+        [target collapseForKeyboardAnimated:YES];
+        __weak typeof(self) ws = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [ws showKeyboardDiagnostics];
+        });
+    }
     [self restorePreviousKeyWindow];
 }
 
