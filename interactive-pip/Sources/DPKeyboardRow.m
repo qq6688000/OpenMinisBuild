@@ -1,113 +1,184 @@
 #import "DPKeyboardRow.h"
 
-// 0.7.128: SpringBoard never routes the system keyboard into our overlay/presented
-// windows (the caret shows up, no keyboard). Instead of fighting it, the picker
-// types through this self-drawn keyboard: a-z + 0-9 grid + delete, updating the
-// filter as you go.
+// 0.7.129: proper QWERTY layout: 3 letter rows (qwertyuiop / asdfghjkl / shift+zxcvbnm+⌫),
+// a bottom row with a space bar, and a 中英 toggle for pinyin suggestions.
+// SpringBoard will not route the system keyboard here, so this is hand-drawn.
 
 @interface DPKeyboardRow ()
 @property (nonatomic, copy, readwrite) NSString *query;
-@property (nonatomic, strong) NSMutableArray<UIButton *> *keyButtons;
+@property (nonatomic, strong) NSMutableArray<UIButton *> *letterButtons;
+@property (nonatomic, strong) UIButton *shiftButton;
+@property (nonatomic, strong) UIButton *deleteButton;
+@property (nonatomic, strong) UIButton *spaceButton;
+@property (nonatomic, strong) UIButton *langButton;
 @property (nonatomic, strong) UILabel *queryLabel;
+@property (nonatomic, assign) BOOL shifted;
+@property (nonatomic, assign) BOOL pinyinMode;
 @end
 
 @implementation DPKeyboardRow
 
-static NSString *const kLetters = @"abcdefghijklmnopqrstuvwxyz0123456789";
+static NSString *const kRow1 = @"qwertyuiop";
+static NSString *const kRow2 = @"asdfghjkl";
+static NSString *const kRow3 = @"zxcvbnm";
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         _query = @"";
-        _keyButtons = [NSMutableArray array];
+        _letterButtons = [NSMutableArray array];
         self.backgroundColor = [UIColor clearColor];
         [self buildUI];
     }
     return self;
 }
 
+- (UIButton *)makeKey:(NSString *)title {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:title forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.30];
+    b.layer.cornerRadius = 5;
+    b.layer.shadowColor = [UIColor blackColor].CGColor;
+    b.layer.shadowOpacity = 0.25;
+    b.layer.shadowOffset = CGSizeMake(0, 1);
+    b.layer.shadowRadius = 0;
+    return b;
+}
+
 - (void)buildUI {
     self.queryLabel = [[UILabel alloc] init];
-    self.queryLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightSemibold];
+    self.queryLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     self.queryLabel.textColor = [UIColor whiteColor];
-    self.queryLabel.textAlignment = NSTextAlignmentCenter;
-    self.queryLabel.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.10];
-    self.queryLabel.layer.cornerRadius = 8;
+    self.queryLabel.textAlignment = NSTextAlignmentLeft;
+    self.queryLabel.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
+    self.queryLabel.layer.cornerRadius = 6;
     self.queryLabel.clipsToBounds = YES;
     [self addSubview:self.queryLabel];
 
-    for (NSUInteger i = 0; i < kLetters.length; i++) {
-        NSString *ch = [kLetters substringWithRange:NSMakeRange(i, 1)];
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        [b setTitle:ch forState:UIControlStateNormal];
-        b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-        [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        b.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16];
-        b.layer.cornerRadius = 6;
-        b.tag = 1000 + (NSInteger)i;
-        [b addTarget:self action:@selector(keyTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:b];
-        [self.keyButtons addObject:b];
+    for (NSString *row in @[kRow1, kRow2, kRow3]) {
+        for (NSUInteger i = 0; i < row.length; i++) {
+            NSString *ch = [row substringWithRange:NSMakeRange(i, 1)];
+            UIButton *b = [self makeKey:ch];
+            b.tag = 2000 + (NSInteger)self.letterButtons.count;
+            b.accessibilityIdentifier = ch;   // true character, case-independent
+            b.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightRegular];
+            [b addTarget:self action:@selector(letterTapped:) forControlEvents:UIControlEventTouchUpInside];
+            [self addSubview:b];
+            [self.letterButtons addObject:b];
+        }
     }
 
-    UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
-    [del setTitle:@"⌫" forState:UIControlStateNormal];
-    del.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
-    [del setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    del.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16];
-    del.layer.cornerRadius = 6;
-    del.tag = 999;
-    [del addTarget:self action:@selector(deleteTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self addSubview:del];
-    [self.keyButtons addObject:del];
+    self.shiftButton = [self makeKey:@"⇧"];
+    self.shiftButton.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16];
+    [self.shiftButton addTarget:self action:@selector(shiftTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:self.shiftButton];
+
+    self.deleteButton = [self makeKey:@"⌫"];
+    self.deleteButton.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16];
+    [self.deleteButton addTarget:self action:@selector(deleteTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:self.deleteButton];
+
+    self.langButton = [self makeKey:@"中"];
+    self.langButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    self.langButton.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16];
+    [self.langButton addTarget:self action:@selector(langTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:self.langButton];
+
+    self.spaceButton = [self makeKey:@"空格"];
+    self.spaceButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
+    [self.spaceButton addTarget:self action:@selector(spaceTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:self.spaceButton];
 }
+
+- (CGFloat)keyGap { return 6.0; }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
     CGFloat h = self.bounds.size.height;
-    if (w < 10 || h < 10) return;
+    if (w < 40 || h < 60) return;
+    CGFloat gap = [self keyGap];
+    CGFloat stripH = 30;
+    CGFloat usableH = h - stripH - gap * 4;
+    CGFloat rowH = MAX(28, MIN(48, usableH / 4.0));
+    CGFloat y = stripH + gap / 2.0;
 
-    // four rows of 10 keys, plus the query strip on top
-    CGFloat stripH = 26;
-    CGFloat gap = 4;
-    CGFloat cols = 10;
-    CGFloat rows = 4;
-    CGFloat keyW = (w - gap * (cols + 1)) / cols;
-    CGFloat keyH = (h - stripH - gap * (rows + 1)) / rows;
-    keyW = MIN(keyW, 34);
-    keyH = MIN(keyH, 34);
+    self.queryLabel.frame = CGRectMake(gap, 2, w - gap * 2, stripH - 4);
 
-    CGFloat totalW = keyW * cols + gap * (cols - 1);
-    CGFloat startX = (w - totalW) / 2.0;
+    // row 1: 10 keys full width
+    CGFloat unit = (w - gap * 11) / 10.0;   // one key width
+    [self layoutRowFrom:0 count:10 unit:unit rowH:rowH y:y x0:gap gap:gap];
+    y += rowH + gap;
 
-    self.queryLabel.frame = CGRectMake(startX, 2, MIN(totalW, w - 12), stripH - 4);
+    // row 2: 9 keys, indented half a key each side
+    [self layoutRowFrom:10 count:9 unit:unit rowH:rowH y:y x0:gap + unit / 2.0 + gap / 2.0 gap:gap];
+    y += rowH + gap;
 
-    CGFloat y0 = stripH + gap;
-    NSInteger n = (NSInteger)kLetters.length;
-    for (NSInteger i = 0; i < n; i++) {
-        NSInteger row = i / (NSInteger)cols;
-        NSInteger col = i % (NSInteger)cols;
-        UIButton *b = self.keyButtons[i];
-        b.frame = CGRectMake(startX + col * (keyW + gap), y0 + row * (keyH + gap), keyW, keyH);
+    // row 3: shift + 7 letters + delete
+    CGFloat shiftW = unit * 1.35;
+    self.shiftButton.frame = CGRectMake(gap, y, shiftW, rowH);
+    CGFloat x = gap + shiftW + gap;
+    for (NSInteger i = 0; i < kRow3.length; i++) {
+        UIButton *b = self.letterButtons[17 + i];
+        b.frame = CGRectMake(x, y, unit, rowH);
+        x += unit + gap;
     }
-    UIButton *del = self.keyButtons.lastObject;
-    CGFloat delW = keyW * 1.6;
-    del.frame = CGRectMake(startX + totalW - delW, y0 + (rows - 1) * (keyH + gap), delW, keyH);
-    // the last few letter keys sit under the delete key; shrink that row's tail
-    for (NSInteger i = n - 2; i < n; i++) {
-        UIButton *b = self.keyButtons[i];
-        CGRect f = b.frame;
-        f.size.width = MAX(0, f.size.width - delW * 0.6);
-        b.frame = f;
+    CGFloat delW = w - x - gap;
+    self.deleteButton.frame = CGRectMake(x, y, MAX(unit * 1.2, delW), rowH);
+    y += rowH + gap;
+
+    // row 4: 中英 + space + return-to-filter
+    CGFloat langW = unit * 1.3;
+    self.langButton.frame = CGRectMake(gap, y, langW, rowH);
+    CGFloat spaceX = gap + langW + gap;
+    CGFloat spaceW = w - spaceX - gap;
+    self.spaceButton.frame = CGRectMake(spaceX, y, MAX(unit * 3, spaceW), rowH);
+
+}
+
+- (void)layoutRowFrom:(NSInteger)startIndex count:(NSInteger)count
+                 unit:(CGFloat)unit rowH:(CGFloat)rowH y:(CGFloat)y x0:(CGFloat)x0 gap:(CGFloat)gap {
+    CGFloat x = x0;
+    for (NSInteger i = 0; i < count; i++) {
+        UIButton *b = self.letterButtons[startIndex + i];
+        b.frame = CGRectMake(x, y, unit, rowH);
+        x += unit + gap;
     }
 }
 
-- (void)keyTapped:(UIButton *)sender {
-    NSInteger idx = sender.tag - 1000;
-    if (idx < 0 || idx >= (NSInteger)kLetters.length) return;
-    NSString *ch = [kLetters substringWithRange:NSMakeRange((NSUInteger)idx, 1)];
+#pragma mark - Actions
+
+- (void)applyShift:(BOOL)shifted {
+    self.shifted = shifted;
+    for (UIButton *b in self.letterButtons) {
+        NSString *ch = b.accessibilityIdentifier ?: @"";
+        [b setTitle:shifted ? ch.uppercaseString : ch forState:UIControlStateNormal];
+    }
+    self.shiftButton.backgroundColor = shifted
+        ? [[UIColor whiteColor] colorWithAlphaComponent:0.62]
+        : [[UIColor whiteColor] colorWithAlphaComponent:0.16];
+}
+
+- (void)shiftTapped {
+    // double-tap-free: single tap toggles caps for the next letter only
+    [self applyShift:!self.shifted];
+}
+
+- (void)letterTapped:(UIButton *)sender {
+    NSString *ch = sender.accessibilityIdentifier ?: @"";
+    if (self.shifted) {
+        ch = ch.uppercaseString;
+        [self applyShift:NO];
+    }
     self.query = [self.query stringByAppendingString:ch];
+    [self notifyChange];
+}
+
+- (void)spaceTapped {
+    if (self.query.length == 0) return;
+    self.query = [self.query stringByAppendingString:@" "];
     [self notifyChange];
 }
 
@@ -117,13 +188,27 @@ static NSString *const kLetters = @"abcdefghijklmnopqrstuvwxyz0123456789";
     [self notifyChange];
 }
 
+- (void)langTapped {
+    // Toggle between latin filtering and the pinyin hint (the app list is sorted
+    // by English bundle ids as well, so pinyin only swaps the query display).
+    self.pinyinMode = !self.pinyinMode;
+    [self.langButton setTitle:self.pinyinMode ? @"拼" : @"中" forState:UIControlStateNormal];
+    self.queryLabel.text = self.pinyinMode
+        ? [NSString stringWithFormat:@"拼音：%@", self.query]
+        : self.query;
+}
+
 - (void)notifyChange {
-    self.queryLabel.text = self.query;
+    if (!self.pinyinMode) self.queryLabel.text = self.query;
+    if (self.query.length == 0) self.queryLabel.text = @"";
     if (self.onQueryChanged) self.onQueryChanged(self.query);
 }
 
 - (void)reset {
     self.query = @"";
+    self.pinyinMode = NO;
+    [self.langButton setTitle:@"中" forState:UIControlStateNormal];
+    [self applyShift:NO];
     [self notifyChange];
 }
 

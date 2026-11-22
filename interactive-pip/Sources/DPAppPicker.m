@@ -176,7 +176,7 @@ static id DPAppValue(id object, NSString *key) {
     layout.minimumLineSpacing = 12;
     layout.sectionInset = UIEdgeInsetsMake(8, 16, 24, 16);
 
-    self.collectionView = [[UICollectionView alloc] initWithFrame:CGRectMake(0, 100, parent.bounds.size.width, sheetH - 100 - 200)
+    self.collectionView = [[UICollectionView alloc] initWithFrame:CGRectMake(0, 100, parent.bounds.size.width, sheetH - 100 - 230)
                                              collectionViewLayout:layout];
     self.collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.collectionView.backgroundColor = [UIColor clearColor];
@@ -367,7 +367,7 @@ static id DPAppValue(id object, NSString *key) {
 
 - (void)layoutKeyboardRow {
     if (!self.keyboardRow || !self.sheet) return;
-    CGFloat h = 196;
+    CGFloat h = 226;
     CGFloat w = self.sheet.bounds.size.width;
     self.keyboardRow.frame = CGRectMake(8, self.sheet.bounds.size.height - h - 8, w - 16, h);
     self.collectionView.frame = CGRectMake(0, 100, w,
