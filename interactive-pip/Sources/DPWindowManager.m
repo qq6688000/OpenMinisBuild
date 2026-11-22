@@ -1541,7 +1541,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     [w setTiled:NO];
     [w setPipMode:YES animated:NO];   // 0.7.154: drop the title bar, content fills the window
     // 0.7.155: slide the app up so the video band sits in this 16:9 strip.
-    [w setPipCropTop:floor(pipH * 0.35) pipHeightFraction:0.35];
+    [w setPipCropTop:floor(pipH * 0.42) pipHeightFraction:0.42];
     self.overlayRoot.backgroundColor = [UIColor clearColor];
     w.backgroundColor = [UIColor clearColor];
     w.alpha = 1.0;

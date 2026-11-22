@@ -110,7 +110,7 @@ void DPKBLog(NSString *fmt, ...) {
 
     self.titleBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight)];
     self.titleBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    self.titleBar.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.25];
+    self.titleBar.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.42]; // 0.7.158 readable over video
     [self.chromeView addSubview:self.titleBar];
 
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(44, 0, self.bounds.size.width - 120, kDPTitleBarHeight)];
@@ -575,10 +575,12 @@ void DPKBLog(NSString *fmt, ...) {
     if (_pipMode == pip) return;
     _pipMode = pip;
     void (^apply)(void) = ^{
-        // 0.7.156: the bar stays visible (semi transparent) so close / split /
-        // fullscreen are always reachable; a hidden bar left the window stuck.
-        self.titleBar.alpha = pip ? 0.86 : 1.0;
+        // 0.7.158: always fully visible - a translucent bar was invisible over bright
+        // video and the window became impossible to move or close.
+        self.titleBar.alpha = 1.0;
+        self.titleBar.hidden = NO;
         self.titleBar.userInteractionEnabled = YES;
+        [self.chromeView bringSubviewToFront:self.titleBar];
         // content slides up under where the bar used to be
         [self setNeedsLayout];
         [self layoutIfNeeded];
@@ -619,6 +621,11 @@ void DPKBLog(NSString *fmt, ...) {
                                          self.bounds.size.height - kDPResizeHandle,
                                          kDPResizeHandle, kDPResizeHandle);
     [self bringSubviewToFront:self.resizeHandle];
+    // 0.7.158: the hosted content is a sibling that gets added later; re-assert the
+    // title bar on top so close / tile / fullscreen stay tappable in PiP mode too.
+    self.titleBar.hidden = NO;
+    self.titleBar.alpha = 1.0;
+    [self.chromeView bringSubviewToFront:self.titleBar];
     [self layoutSceneIfNeeded];
 }
 
