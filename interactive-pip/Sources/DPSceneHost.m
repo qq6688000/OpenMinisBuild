@@ -107,7 +107,13 @@ static BOOL DPCObjectType(const char *type) {
 }
 static BOOL DPCTypeMatches(const char *actual, const char *expected) {
     actual = DPCSkipQualifiers(actual);
-    return !strcmp(expected, "@") ? DPCObjectType(actual) : !strcmp(actual, expected);
+    if (!strcmp(expected, "@")) return DPCObjectType(actual);
+    // A completion block encodes as "@?" (sometimes "^?"). Accept both instead
+    // of requiring a byte-exact spelling: the 0.7.100 run reported the exact
+    // updateSettings: selector as no-updateSettings while the selector existed.
+    if (expected[0] == '@' && expected[1] == '?')
+        return actual[0] == '@' || (actual[0] == '^' && actual[1] == '?');
+    return !strcmp(actual, expected);
 }
 static NSMethodSignature *DPCSignature(id object, SEL selector) {
     if (!object || !selector) return nil;
@@ -200,7 +206,7 @@ static void DPCPrepareSceneHost(UIView *v) {
     SEL rzSel = NSSelectorFromString(@"setResizesHostedContext:");
     DPCPrepResize = DPCSetter(v, rzSel, "B") || DPCSetter(v, rzSel, "c");
     SEL dmSel = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
-    const char *dmArgs[] = {@encode(NSInteger), "@", "@"};
+    const char *dmArgs[] = {@encode(NSInteger), "@", "@?"};
     DPCPrepMode4 = DPCABI(v, dmSel, "v", dmArgs, 3);
     DPCSetBool(v, @"setPlaceholderContentEnabled:", NO);
     DPCSetBool(v, @"setResizesHostedContext:", NO);
@@ -296,15 +302,26 @@ static BOOL DPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
         NSSelectorFromString(@"setDeviceOrientation:"), dev);
     id immutable = ((id (*)(id, SEL))objc_msgSend)(desired, @selector(copy));
     SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
-    const char *uArgs[] = {"@", "@", "@"};
-    if (!DPCABI(scene, upd, "v", uArgs, 3) && !DPCABI(scene, upd, "@", uArgs, 3)) {
-        *diag = @"no-updateSettings";
-        return NO;
+    const char *uArgs[] = {"@", "@", "@?"};
+    if (DPCABI(scene, upd, "v", uArgs, 3) || DPCABI(scene, upd, "@", uArgs, 3)) {
+        ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, immutable, nil, nil);
+        *diag = [NSString stringWithFormat:@"sent3 frame=%@", NSStringFromCGRect(
+            CGRectMake(0, 0, pane.width, pane.height))];
+        return YES;
     }
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, immutable, nil, nil);
-    *diag = [NSString stringWithFormat:@"sent frame=%@", NSStringFromCGRect(
-        CGRectMake(0, 0, pane.width, pane.height))];
-    return YES;
+    // Fallback: the 2-argument form also exists in SpringBoard, and the real
+    // block spelling is reported so the next on-device read is conclusive.
+    SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
+    const char *uArgs2[] = {"@", "@"};
+    if (DPCABI(scene, upd2, "v", uArgs2, 2) || DPCABI(scene, upd2, "@", uArgs2, 2)) {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(scene, upd2, immutable, nil);
+        *diag = [NSString stringWithFormat:@"sent2 frame=%@", NSStringFromCGRect(
+            CGRectMake(0, 0, pane.width, pane.height))];
+        return YES;
+    }
+    *diag = [NSString stringWithFormat:@"no-updateSettings sig=%@",
+             DPCSigDescription(scene, upd)];
+    return NO;
 }
 
 // Solve host LOCAL bounds from the existing axis-aligned transform.
