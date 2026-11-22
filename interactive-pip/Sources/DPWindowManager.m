@@ -88,6 +88,7 @@
 
 - (void)openFloatingWithBundleID:(NSString *)bundleID reusingHost:(nullable DPSceneHost *)reusableHost;
 - (void)makeOverlayKeyWindow;
+- (void)makeOverlayKeyWindowInternal;
 - (void)ensureOverlayVisible;
 - (void)restorePreviousKeyWindow;
 - (id)sharedRemoteKeyboards;
@@ -228,8 +229,30 @@
             self.overlayRoot.frame = self.overlayWindow.bounds;
         }
     }
-    // 不抢 keyWindow，只确保可见
+    // 0.7.77: the overlay must own the keyboard input session, so it has to be
+    // the key window once it holds a live pane. Remember the previous key so
+    // restorePreviousKeyWindow can hand it back.
     self.overlayWindow.hidden = NO;
+    [self makeOverlayKeyWindowInternal];
+}
+
+// Never call back into ensureOverlayVisible/bringOverlayToFront from here.
+- (void)makeOverlayKeyWindowInternal {
+    if (!self.overlayWindow || self.deviceLocked || self.overlayWindow.hidden) return;
+    if (@available(iOS 13.0, *)) {
+        // The key window must belong to the same scene as the overlay.
+        if (!self.overlayWindow.windowScene) return;
+    }
+    if (self.overlayWindow.isKeyWindow) return;
+    UIWindow *current = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIWindow *w in self.overlayWindow.windowScene.windows) {
+            if (w.isKeyWindow) { current = w; break; }
+        }
+    }
+    if (current && current != self.overlayWindow) self.keyWindowBeforeHostedInput = current;
+    [self.overlayWindow makeKeyWindow];
+    NSLog(@"[InteractivePiP] overlay 成为 keyWindow (prev=%@)", self.keyWindowBeforeHostedInput);
 }
 
 - (UIView *)contentParent {
@@ -359,7 +382,7 @@
 
     [parent addSubview:window];
     [self.mutableFloatingWindows addObject:window];
-    if (self.focusedWindow != window) [self restorePreviousKeyWindow];
+    // 0.7.77: no key hand-back on open; bringOverlayToFront re-keys below.
     self.focusedWindow = window;
     self.mode = DPPresentationModeFloating;
     [self bringOverlayToFront];
@@ -791,11 +814,18 @@
     [self bringOverlayToFront];
 }
 
-- (void)makeOverlayKeyWindow { [self ensureOverlayVisible]; }
+- (void)makeOverlayKeyWindow {
+    [self ensureOverlayVisible];
+    [self makeOverlayKeyWindowInternal];
+}
 
 - (void)restorePreviousKeyWindow {
     [self configureRemoteKeyboardsForHostedInput:NO];
+    UIWindow *previous = self.keyWindowBeforeHostedInput;
     self.keyWindowBeforeHostedInput = nil;
+    if (previous && previous.windowScene && !previous.hidden) {
+        [previous makeKeyWindow];
+    }
 }
 
 - (void)hostedKeyboardWillShow { /* Never steal keyboard focus on a notification. */ }
@@ -835,7 +865,10 @@
 
 - (void)focusWindow:(DPFloatingWindow *)window {
     if (![self.mutableFloatingWindows containsObject:window]) return;
-    if (self.focusedWindow != window) [self restorePreviousKeyWindow];
+    // 0.7.77: do NOT hand the key window back when only the focus moves
+    // between our own panes. That transient gave the keyboard input session
+    // away and killed it mid-tap, which is why the keyboard only showed up
+    // after reopening the window.
     self.focusedWindow = window;
     for (DPFloatingWindow *other in self.mutableFloatingWindows) {
         [other setActive:(other == window) animated:NO];
