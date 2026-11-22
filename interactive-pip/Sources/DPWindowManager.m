@@ -1461,6 +1461,20 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 // Keep floating hosts alive while Home is visible; only hide our overlay.
 // A single low-frequency timer exists only during this hidden state, does no
 // rendering or scene mutation, and stops after resume/close/split transition.
+// 0.7.157: leave the small over-the-home window and restore a normal floating window.
+// (0.7.156 declared it but the body never made it into the file - switching apps then
+// crashed SpringBoard with an unrecognized selector.)
+- (void)exitPiPMode {
+    DPFloatingWindow *w = self.pipWindow;
+    self.pipWindow = nil;
+    if (!w) return;
+    [w setPipMode:NO animated:YES];
+    [w setPipCropTop:0 pipHeightFraction:0];
+    self.floatingHiddenOnHome = NO;
+    [self bringOverlayToFront];
+    NSLog(@"[InteractivePiP] exit PiP %@", w.bundleID);
+}
+
 - (void)noteForegroundApplicationChanged:(NSString *)bundleID {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
