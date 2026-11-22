@@ -1,13 +1,475 @@
 #import "DPSceneHost.h"
+#import "DPSettings.h"
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <signal.h>
+#import <unistd.h>
+#import <errno.h>
+
+// 0.7.79: FrontBoard calls these methods on the hostRequester object. Passing a
+// plain NSString (as every earlier build did) made
+// -newSceneViewWithReferenceSize:... throw or return nil, which silently fell
+// back to the pixel-only layer container - the reason live reflow never
+// engaged. ZNSplit passes a real object with the same two methods.
+@interface DPHostRequester : NSObject
+@property (nonatomic, copy) NSString *presentationIdentifier;
+@end
+
+@implementation DPHostRequester
+- (instancetype)init {
+    if ((self = [super init])) {
+        _presentationIdentifier = [@"com.seagull.interactivepip.host."
+                                   stringByAppendingString:NSUUID.UUID.UUIDString];
+    }
+    return self;
+}
+- (NSString *)sceneViewPresentationIdentifier:(id)view {
+    (void)view;
+    return self.presentationIdentifier;
+}
+- (long long)sceneViewPresentationPriority:(id)view {
+    (void)view;
+    return 1;
+}
+@end
+
+// 0.7.92: ZNSGet-style dynamic getter (objc_msgSend, not KVC valueForKey).
+static id DPObjcGet(id object, NSString *key);
+// 0.7.102: forward declaration so layoutHostView can resubmit scene settings
+// whenever the pane grows (it was sized at factory time and never again).
+static BOOL DPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag);
+
+// 0.7.83: REFLOW diagnostics go BOTH to a file (Filza) AND to an on-screen
+// label in the floating window, so the user can screenshot the result without
+// touching a Mac or Filza.
+static __weak id gDPDiagHost; // DPSceneHost currently showing diag
+static void DPDiag(NSString *fmt, ...) {
+    @autoreleasepool {
+        va_list ap; va_start(ap, fmt);
+        NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
+        va_end(ap);
+        NSString *entry = [NSString stringWithFormat:@"[%.3f] %@\n",
+                           CFAbsoluteTimeGetCurrent(), line];
+        NSString *path = @"/var/mobile/Documents/duo-reflow.log";
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (!fh) {
+            [entry writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        } else {
+            @try {
+                [fh seekToEndOfFile];
+                [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+                [fh closeFile];
+            } @catch (__unused NSException *e) {}
+        }
+        // Mirror to the on-screen label (latest active host).
+        id host = gDPDiagHost;
+        if (!host || ![host respondsToSelector:@selector(setReflowDiagText:)]) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                [host performSelector:@selector(setReflowDiagText:) withObject:line];
+#pragma clang diagnostic pop
+                // 0.7.86: also ask the window manager to refresh its overlay
+                // diagnostics panel (the 0.7.48-style on-screen diag).
+                [[NSNotificationCenter defaultCenter] postNotificationName:
+                 @"DPReflowDiagChanged" object:nil];
+            } @catch (__unused NSException *e) {}
+        });
+    }
+}
 
 // Only describes known private initializers; no private class is implemented.
 @interface DPSceneLayerContainerABI : UIView
 - (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
 - (instancetype)initWithScene:(id)scene;
 @end
+
+// ===== DPC host canvas reflow (port from ZNSplit v1.7.4) =====
+// ─────────────────────────────────────────────────────────────────────────────
+// DPC — host canvas reflow port from ZNSplit v1.7.4 (ZNSSceneSession.m /
+// ZNSSceneGeometry.h / ZNSPrivate.h). Minimal, self-contained, ABI-checked.
+// All private methods are invoked only after exact NSMethodSignature matching.
+// Never call on FBScene — the correct target is the scene host view (UIView).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#import <math.h>
+#import <string.h>
+
+static const char *DPCSkipQualifiers(const char *type) {
+    if (!type) return "";
+    while (*type && strchr("rnNoORV", *type)) ++type;
+    return type;
+}
+static BOOL DPCObjectType(const char *type) {
+    type = DPCSkipQualifiers(type);
+    size_t length = strlen(type);
+    return !strcmp(type, "@") ||
+           (length >= 3 && type[0] == '@' && type[1] == '"' && type[length-1] == '"');
+}
+static BOOL DPCTypeMatches(const char *actual, const char *expected) {
+    actual = DPCSkipQualifiers(actual);
+    if (!strcmp(expected, "@")) return DPCObjectType(actual);
+    // A completion block encodes as "@?" (sometimes "^?"). Accept both instead
+    // of requiring a byte-exact spelling: the 0.7.100 run reported the exact
+    // updateSettings: selector as no-updateSettings while the selector existed.
+    if (expected[0] == '@' && expected[1] == '?')
+        return actual[0] == '@' || (actual[0] == '^' && actual[1] == '?');
+    return !strcmp(actual, expected);
+}
+static NSMethodSignature *DPCSignature(id object, SEL selector) {
+    if (!object || !selector) return nil;
+    @try {
+        Method method = class_getInstanceMethod(object_getClass(object), selector);
+        const char *encoding = method ? method_getTypeEncoding(method) : NULL;
+        if (encoding) return [NSMethodSignature signatureWithObjCTypes:encoding];
+        // Dynamic accessor / forwarding fallback, but only if the object
+        // itself advertises the selector (never synthesize from a property).
+        if (![object respondsToSelector:selector]) return nil;
+        return [object methodSignatureForSelector:selector];
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+static BOOL DPCABI(id object, SEL selector, const char *result,
+                   const char * const *arguments, NSUInteger count) {
+    NSMethodSignature *sig = DPCSignature(object, selector);
+    if (!sig || sig.numberOfArguments != count + 2 ||
+        !DPCTypeMatches(sig.methodReturnType, result)) return NO;
+    for (NSUInteger i = 0; i < count; i++)
+        if (!DPCTypeMatches([sig getArgumentTypeAtIndex:i+2], arguments[i])) return NO;
+    return YES;
+}
+static NSString *DPCSigDescription(id object, SEL selector) {
+    NSMethodSignature *sig = DPCSignature(object, selector);
+    if (!sig) return @"<no signature>";
+    NSMutableString *s = [NSMutableString stringWithFormat:@"ret=%s args=", sig.methodReturnType];
+    for (NSUInteger i = 0; i < sig.numberOfArguments; i++) {
+        if (i) [s appendString:@","];
+        [s appendFormat:@"%s", [sig getArgumentTypeAtIndex:i]];
+    }
+    return s;
+}
+// Write a BOOL through the exact ABI (ARM64 "B", legacy "c"), never via KVC.
+static void DPCSetBool(id object, NSString *name, BOOL value) {
+    SEL sel = NSSelectorFromString(name);
+    const char *boolean[] = {"B"}, *character[] = {"c"};
+    if (DPCABI(object, sel, "v", boolean, 1)) {
+        ((void (*)(id, SEL, bool))objc_msgSend)(object, sel, value);
+    } else if (DPCABI(object, sel, "v", character, 1)) {
+        ((void (*)(id, SEL, signed char))objc_msgSend)(object, sel, value ? 1 : 0);
+    } else {
+        NSLog(@"[InteractivePiP] DPCSetBool unavailable %@ sig=%@", name,
+              DPCSigDescription(object, sel));
+    }
+}
+static BOOL DPCSetter(id object, SEL sel, const char *argType) {
+    const char *args[] = {argType};
+    return DPCABI(object, sel, "v", args, 1);
+}
+static BOOL DPCGetter(id object, SEL sel, const char *retType) {
+    return DPCABI(object, sel, retType, NULL, 0);
+}
+
+// 0.7.96: the real iOS 16 path, recovered from PV 1.0.9's own binary.
+//
+// The registered handle has NO scene-view factory on this system (the panel
+// reported hasFactory=0), so the pane host must be handle.sceneContentView,
+// and the size must be pushed into
+// handle.deviceApplicationSceneViewController (SBDeviceApplicationSceneViewController,
+// a subclass of SBSceneViewController). Our own allocated layer container never
+// had either ABI, which is why every DPC probe answered dpc-on-host.
+static id DPCSceneViewController(id handle) {
+    SEL sel = NSSelectorFromString(@"deviceApplicationSceneViewController");
+    if (!handle || ![handle respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(handle, sel);
+}
+static UIView *DPCSceneContentView(id handle) {
+    SEL sel = NSSelectorFromString(@"sceneContentView");
+    if (!handle || ![handle respondsToSelector:sel]) return nil;
+    id v = ((id (*)(id, SEL))objc_msgSend)(handle, sel);
+    return [v isKindOfClass:[UIView class]] ? (UIView *)v : nil;
+}
+// 0.7.98: ZNSplit drives a freshly created host through three more calls before
+// it will render anything. Without setDisplayMode: the host is a live scene
+// view that simply shows nothing - the black pane seen in 0.7.97:
+//     ZNSSetBool(view,@"setPlaceholderContentEnabled:",NO);
+//     ZNSSetBool(view,@"setResizesHostedContext:",NO);
+//     [view setDisplayMode:4 animationFactory:nil completion:nil];
+//     view.userInteractionEnabled = YES;
+static BOOL DPCPrepPlaceholder = NO, DPCPrepResize = NO, DPCPrepMode4 = NO;
+static void DPCPrepareSceneHost(UIView *v) {
+    if (!v) return;
+    // Record whether each private setter actually exists with the exact ABI
+    // before touching it: DPCSetBool is silent, so a failed probe was
+    // indistinguishable from a working call.
+    SEL phSel = NSSelectorFromString(@"setPlaceholderContentEnabled:");
+    DPCPrepPlaceholder = DPCSetter(v, phSel, "B") || DPCSetter(v, phSel, "c");
+    SEL rzSel = NSSelectorFromString(@"setResizesHostedContext:");
+    DPCPrepResize = DPCSetter(v, rzSel, "B") || DPCSetter(v, rzSel, "c");
+    SEL dmSel = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
+    const char *dmArgs[] = {@encode(NSInteger), "@", "@?"};
+    DPCPrepMode4 = DPCABI(v, dmSel, "v", dmArgs, 3);
+    DPCSetBool(v, @"setPlaceholderContentEnabled:", NO);
+    DPCSetBool(v, @"setResizesHostedContext:", NO);
+    if (DPCPrepMode4) {
+        NSInteger mode = 4;
+        ((void (*)(id, SEL, NSInteger, id, id))objc_msgSend)(v, dmSel, mode, nil, nil);
+    }
+    v.userInteractionEnabled = YES;
+}
+static BOOL DPCSetContentReferenceSize(id vc, CGSize size, NSInteger orientation, BOOL *usedCombined) {
+    if (!vc) return NO;
+    SEL sel = NSSelectorFromString(
+        @"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
+    const char *args[] = {@encode(CGSize), @encode(NSInteger), @encode(NSInteger)};
+    if (DPCABI(vc, sel, "v", args, 3)) {
+        ((void (*)(id, SEL, CGSize, NSInteger, NSInteger))objc_msgSend)(
+            vc, sel, size, orientation, orientation);
+        if (usedCombined) *usedCombined = YES;
+        return YES;
+    }
+    // Separate form: (CGSize, NSInteger interfaceOrientation)
+    sel = NSSelectorFromString(@"setContentReferenceSize:withInterfaceOrientation:");
+    const char *args2[] = {@encode(CGSize), @encode(NSInteger)};
+    if (DPCABI(vc, sel, "v", args2, 2)) {
+        ((void (*)(id, SEL, CGSize, NSInteger))objc_msgSend)(vc, sel, size, orientation);
+        return YES;
+    }
+    return NO;
+}
+
+// 0.7.99: the missing piece. ZNSplit clones FBScene.settings, rewrites frame /
+// interfaceOrientation / deviceOrientation / foreground, then SUBMITS the copy
+// through FBScene.updateSettings:withTransitionContext:completion:. Without that
+// submission the scene keeps rendering fullscreen, so the freshly created host
+// view (REFLOW-OK) shows a live but empty scene - exactly the black pane we saw.
+static SEL DPCPresentationGetter(id s) {
+    SEL bSet = NSSelectorFromString(@"setBackgrounded:");
+    SEL bGet = NSSelectorFromString(@"isBackgrounded");
+    if ((DPCSetter(s, bSet, "B") || DPCSetter(s, bSet, "c")) &&
+        (DPCGetter(s, bGet, "B") || DPCGetter(s, bGet, "c"))) return bGet;
+    SEL fSet = NSSelectorFromString(@"setForeground:");
+    SEL fGet = NSSelectorFromString(@"isForeground");
+    if ((DPCSetter(s, fSet, "B") || DPCSetter(s, fSet, "c")) &&
+        (DPCGetter(s, fGet, "B") || DPCGetter(s, fGet, "c"))) return fGet;
+    return NULL;
+}
+static BOOL DPCSettingsReadAPI(id s) {
+    return DPCGetter(s, @selector(frame), @encode(CGRect)) &&
+           DPCGetter(s, @selector(interfaceOrientation), @encode(NSInteger)) &&
+           DPCGetter(s, NSSelectorFromString(@"deviceOrientation"), @encode(NSInteger));
+}
+static BOOL DPCSettingsWriteAPI(id s) {
+    if (!DPCPresentationGetter(s)) return NO;
+    const char *rect[] = {@encode(CGRect)}, *dir[] = {@encode(NSInteger)};
+    return DPCABI(s, @selector(setFrame:), "v", rect, 1) &&
+           DPCABI(s, @selector(setInterfaceOrientation:), "v", dir, 1) &&
+           DPCABI(s, NSSelectorFromString(@"setDeviceOrientation:"), "v", dir, 1);
+}
+static BOOL DPCMakeForeground(id s) {
+    SEL g = DPCPresentationGetter(s);
+    if (!g) return NO;
+    if (g == NSSelectorFromString(@"isForeground")) {
+        SEL setSel = NSSelectorFromString(@"setForeground:");
+        if (!DPCSetter(s, setSel, "B") && !DPCSetter(s, setSel, "c")) return NO;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(s, setSel, YES);
+        if (DPCGetter(s, g, "B") && !((BOOL (*)(id, SEL))objc_msgSend)(s, g)) return NO;
+    } else {
+        SEL setSel = NSSelectorFromString(@"setBackgrounded:");
+        if (!DPCSetter(s, setSel, "B") && !DPCSetter(s, setSel, "c")) return NO;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(s, setSel, NO);
+        if (DPCGetter(s, g, "B") && ((BOOL (*)(id, SEL))objc_msgSend)(s, g)) return NO;
+    }
+    return YES;
+}
+// Clone the scene's settings, point them at the pane, and SUBMIT them.
+static BOOL DPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
+    *diag = nil;
+    if (!scene) { *diag = @"no-scene"; return NO; }
+    id settings = DPObjcGet(scene, @"settings");
+    if (!settings) { *diag = @"no-settings"; return NO; }
+    if (!DPCGetter(settings, @selector(mutableCopy), "@")) { *diag = @"no-mutableCopy"; return NO; }
+    id desired = ((id (*)(id, SEL))objc_msgSend)(settings, @selector(mutableCopy));
+    if (!desired) { *diag = @"copy-nil"; return NO; }
+    if (!DPCSettingsReadAPI(desired)) { *diag = @"read-API"; return NO; }
+    if (!DPCSettingsWriteAPI(desired)) { *diag = @"write-API"; return NO; }
+    if (!DPCMakeForeground(desired)) { *diag = @"foreground"; return NO; }
+    SEL dGet = NSSelectorFromString(@"deviceOrientation");
+    NSInteger dev = ((NSInteger (*)(id, SEL))objc_msgSend)(settings, dGet);
+    ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, @selector(setFrame:),
+                                              CGRectMake(0, 0, pane.width, pane.height));
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(desired, @selector(setInterfaceOrientation:), orient);
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(desired,
+        NSSelectorFromString(@"setDeviceOrientation:"), dev);
+    id immutable = ((id (*)(id, SEL))objc_msgSend)(desired, @selector(copy));
+    SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
+    const char *uArgs[] = {"@", "@", "@?"};
+    if (DPCABI(scene, upd, "v", uArgs, 3) || DPCABI(scene, upd, "@", uArgs, 3)) {
+        ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, immutable, nil, nil);
+        *diag = [NSString stringWithFormat:@"sent3 frame=%@", NSStringFromCGRect(
+            CGRectMake(0, 0, pane.width, pane.height))];
+        return YES;
+    }
+    // Fallback: the 2-argument form also exists in SpringBoard, and the real
+    // block spelling is reported so the next on-device read is conclusive.
+    SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
+    const char *uArgs2[] = {"@", "@"};
+    if (DPCABI(scene, upd2, "v", uArgs2, 2) || DPCABI(scene, upd2, "@", uArgs2, 2)) {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(scene, upd2, immutable, nil);
+        *diag = [NSString stringWithFormat:@"sent2 frame=%@", NSStringFromCGRect(
+            CGRectMake(0, 0, pane.width, pane.height))];
+        return YES;
+    }
+    *diag = [NSString stringWithFormat:@"no-updateSettings sig=%@",
+             DPCSigDescription(scene, upd)];
+    return NO;
+}
+
+// Solve host LOCAL bounds from the existing axis-aligned transform.
+static BOOL DPCGeometryForCanvas(CGSize canvas, CGAffineTransform t,
+                                 CGPoint anchor, CGSize *localSize, CGPoint *position) {
+    if (!localSize || !position || !isfinite(canvas.width) || !isfinite(canvas.height) ||
+        canvas.width <= 0 || canvas.height <= 0 || !isfinite(t.a) || !isfinite(t.b) ||
+        !isfinite(t.c) || !isfinite(t.d) || !isfinite(t.tx) || !isfinite(t.ty) ||
+        !isfinite(anchor.x) || !isfinite(anchor.y)) return NO;
+    CGFloat a = fabs(t.a), b = fabs(t.b), c = fabs(t.c), d = fabs(t.d);
+    CGSize size;
+    const CGFloat eps = 1e-8;
+    if (b < eps && c < eps && a > eps && d > eps) {
+        size = CGSizeMake(canvas.width / a, canvas.height / d);
+    } else if (a < eps && d < eps && b > eps && c > eps) {
+        size = CGSizeMake(canvas.height / b, canvas.width / c);
+    } else {
+        return NO; // intermediate angle / shear: refuse to stretch
+    }
+    CGFloat dx = (0.5 - anchor.x) * size.width;
+    CGFloat dy = (0.5 - anchor.y) * size.height;
+    CGPoint p = CGPointMake(canvas.width  / 2 - t.a * dx - t.c * dy - t.tx,
+                            canvas.height / 2 - t.b * dx - t.d * dy - t.ty);
+    if (!isfinite(size.width) || !isfinite(size.height) ||
+        !isfinite(p.x) || !isfinite(p.y)) return NO;
+    *localSize = size;
+    *position = p;
+    return YES;
+}
+static BOOL DPCAlignHostCanvas(UIView *host, CGSize size) {
+    if (!host || !CATransform3DIsAffine(host.layer.transform)) return NO;
+    CGSize local = CGSizeZero;
+    CGPoint position = CGPointZero;
+    if (!DPCGeometryForCanvas(size, host.transform, host.layer.anchorPoint, &local, &position)) return NO;
+    CGRect bounds = host.bounds;
+    bounds.size = local; // preserve bounds.origin — it is host-internal space
+    if (!CGRectEqualToRect(host.bounds, bounds)) host.bounds = bounds;
+    if (!CGPointEqualToPoint(host.layer.position, position)) host.layer.position = position;
+    return YES;
+}
+static void DPCLogGeometry(UIView *host, const char *stage, CGSize expected, NSInteger orientation) {
+    if (!host) return;
+    CGRect bounds = host.bounds;
+    CGAffineTransform t = host.transform;
+    CGRect proj = CGRectApplyAffineTransform((CGRect){CGPointZero, bounds.size}, t);
+    NSLog(@"[InteractivePiP] DPC geom stage=%s want=%.1fx%.1f ori=%ld bounds=(%.1f,%.1f,%.1fx%.1f) proj=%.1fx%.1f m=[%.3f %.3f %.3f %.3f %.1f %.1f] attached=%d (geometry only)",
+          stage, expected.width, expected.height, (long)orientation,
+          bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
+          proj.size.width, proj.size.height, t.a, t.b, t.c, t.d, t.tx, t.ty,
+          host.superview != nil);
+}
+
+// Main entry. size = oriented App content size for the pane;
+// orientation = UIInterfaceOrientation (Portrait=1, LandscapeRight=4, ...).
+// Returns YES only if readback matches; failure is safe, keep cover-scale.
+static BOOL DPConfigureHostCanvas(UIView *host, CGSize size, NSInteger orientation) {
+    if (!host || !isfinite(size.width) || !isfinite(size.height) ||
+        size.width <= 0 || size.height <= 0) return NO;
+    if (![host isKindOfClass:UIView.class]) return NO;
+    if (![NSThread isMainThread]) {
+        NSLog(@"[InteractivePiP] DPC refused: not main thread");
+        return NO;
+    }
+
+    SEL referenceSizeSel = NSSelectorFromString(@"referenceSize");
+    SEL orientationSel   = NSSelectorFromString(@"orientation");
+    SEL combinedSel      = NSSelectorFromString(@"_updateReferenceSize:andOrientation:");
+    SEL setSizeSel       = NSSelectorFromString(@"setReferenceSize:");
+    SEL setOrientSel     = NSSelectorFromString(@"setOrientation:");
+    SEL contextResizeSel = NSSelectorFromString(@"setResizesHostedContext:");
+
+    // H2: both getters must exist with exact ABI, plus one writable path.
+    if (!DPCGetter(host, referenceSizeSel, @encode(CGSize)) ||
+        !DPCGetter(host, orientationSel, @encode(NSInteger))) {
+        NSLog(@"[InteractivePiP] DPC host lacks ABI-safe getters ref=%@ ori=%@ class=%@",
+              DPCSigDescription(host, referenceSizeSel), DPCSigDescription(host, orientationSel),
+              NSStringFromClass(host.class));
+        return NO;
+    }
+    const char *combinedArgs[] = {@encode(CGSize), @encode(NSInteger)};
+    BOOL combined = DPCABI(host, combinedSel, "v", combinedArgs, 2);
+    BOOL separate = DPCSetter(host, setSizeSel, @encode(CGSize)) &&
+                    DPCSetter(host, setOrientSel, @encode(NSInteger));
+    if (!combined && !separate) {
+        NSLog(@"[InteractivePiP] DPC host lacks canvas updater class=%@ combined=%@ separate=%@/%@",
+              NSStringFromClass(host.class), DPCSigDescription(host, combinedSel),
+              DPCSigDescription(host, setSizeSel), DPCSigDescription(host, setOrientSel));
+        return NO;
+    }
+    BOOL contextResize = DPCSetter(host, contextResizeSel, @encode(BOOL));
+    DPCLogGeometry(host, "before", size, orientation);
+
+    BOOL aligned = NO;
+    @try {
+        // Enable ONLY for this acknowledged transaction and keep it enabled
+        // through alignment/layout so remote context actually reflows.
+        if (contextResize) DPCSetBool(host, @"setResizesHostedContext:", YES);
+
+        if (combined) {
+            ((void (*)(id, SEL, CGSize, NSInteger))objc_msgSend)(
+                host, combinedSel, size, orientation);
+        } else {
+            // Setter order matches ZNS: orientation first, then referenceSize.
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(host, setOrientSel, orientation);
+            ((void (*)(id, SEL, CGSize))objc_msgSend)(host, setSizeSel, size);
+            CGSize wroteSize = ((CGSize (*)(id, SEL))objc_msgSend)(host, referenceSizeSel);
+            NSInteger wroteOrientation = ((NSInteger (*)(id, SEL))objc_msgSend)(host, orientationSel);
+            if (!CGSizeEqualToSize(wroteSize, size) || wroteOrientation != orientation) {
+                NSLog(@"[InteractivePiP] DPC separate setters readback mismatch got=%.1fx%.1f/%ld want=%.1fx%.1f/%ld",
+                      wroteSize.width, wroteSize.height, (long)wroteOrientation,
+                      size.width, size.height, (long)orientation);
+                return NO; // @finally still restores resizesHostedContext
+            }
+        }
+        DPCLogGeometry(host, "after-update", size, orientation);
+
+        // Solve local bounds from the system transform (no frame, no reset).
+        aligned = DPCAlignHostCanvas(host, size);
+        [host setNeedsLayout];
+        [host layoutIfNeeded];
+        aligned = DPCAlignHostCanvas(host, size) && aligned;
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] DPC exception %@: %@", e.name, e.reason);
+        aligned = NO;
+    } @finally {
+        // Always restore: thumbnails / container animations must never resize
+        // the remote App canvas by merely scaling the presentation layer.
+        if (contextResize) DPCSetBool(host, @"setResizesHostedContext:", NO);
+    }
+
+    if (!aligned)
+        NSLog(@"[InteractivePiP] DPC alignment deferred (non-affine transform); system geometry retained");
+    DPCLogGeometry(host, "after-align", size, orientation);
+
+    // Final readback: local metadata only, never a rendered-pixel ACK.
+    CGSize actual = ((CGSize (*)(id, SEL))objc_msgSend)(host, referenceSizeSel);
+    NSInteger applied = ((NSInteger (*)(id, SEL))objc_msgSend)(host, orientationSel);
+    BOOL matches = CGSizeEqualToSize(actual, size) && applied == orientation;
+    NSLog(@"[InteractivePiP] DPC final ref=%.0fx%.0f ori=%ld want=%.0fx%.0f/%ld matched=%d",
+          actual.width, actual.height, (long)applied,
+          size.width, size.height, (long)orientation, matches);
+    return matches;
+}
+
+// ===== end DPC =====
 
 static void DPInvalidateHostView(UIView *host, NSString *stage) {
     SEL sel = NSSelectorFromString(@"invalidate");
@@ -40,6 +502,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, strong, nullable) UIImageView *snapshotView;
 @property (nonatomic, strong, nullable) UILabel *nameLabel;
 @property (nonatomic, strong, nullable) UILabel *hintLabel;
+@property (nonatomic, strong, nullable) UILabel *reflowDiagLabel;
 @property (nonatomic, strong, nullable) NSString *requesterToken;
 @property (nonatomic, assign) NSInteger attemptCount;
 @property (nonatomic, assign) BOOL attaching;
@@ -49,15 +512,32 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) BOOL snapshotAttempted;
 @property (nonatomic, assign) CGSize lastCommittedSceneSize;
 @property (nonatomic, assign) CGSize nativeSceneSize;
+@property (nonatomic, assign) CGSize reflowCanvas; // >0 时实时重排已生效，layoutHostView 用它当画布
+// 0.7.102: last pane handed to FBScene.settings. The pane keeps growing after
+// the host is created; only re-submit when it is larger, to avoid a settings
+// storm during the open animation.
+@property (nonatomic, assign) CGSize lastSubmittedPaneSize;
+// 0.7.103: pane kept moving after layout; converge before re-submitting.
+@property (nonatomic, assign) BOOL reflowNeedsCommit;
+@property (nonatomic, assign) CGSize reflowCommitTarget;
+@property (nonatomic, assign) CFTimeInterval reflowCommitPendingAt;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowCanvasDiag;
+@property (nonatomic, assign) BOOL reflowAttempted;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowEnumDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowHandleDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowMethodsDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
+@property (nonatomic, strong, nullable) DPHostRequester *hostRequester;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
+- (void)unfreezeIfNeeded;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t reconnectTimer;
 @property (nonatomic, assign) NSUInteger reconnectAttempts;
 @property (nonatomic, strong, nullable) id processAssertion;
 @property (nonatomic, assign) BOOL processAssertionAttempted;
+@property (nonatomic, assign) int frozenPID; // >0 表示我们 SIGSTOP 过的进程，负责解冻
 - (void)enableInteractionInView:(UIView *)view;
 - (void)scheduleReconnect;
 - (void)stopReconnect;
@@ -164,7 +644,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             id obj = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(sharedInstance));
             if ([cn isEqualToString:@"SBSceneManagerCoordinator"] && obj) {
                 @try {
-                    id m = [obj valueForKey:@"mainDisplaySceneManager"];
+                    id m = DPObjcGet(obj, @"mainDisplaySceneManager");
                     if (m) return m;
                 } @catch (__unused NSException *e) {}
             }
@@ -378,13 +858,218 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     return nil;
 }
 
+// 0.7.87: ZNSplit resolves the host via the REGISTERED scene handle, looked up
+// from the FBScene with -existingSceneHandleForScene: on the scene manager.
+// Our old sceneHandleForBundleID pulled a property off SBApplication, which is
+// NOT the handle that owns the newSceneViewWithReferenceSize: factory, so the
+// factory always no-responded. This mirrors ZNSSceneSession existingHandleForScene:.
+- (id)znsHandleForScene:(id)scene {
+    if (!scene) return nil;
+    NSMutableString *diag = [NSMutableString stringWithFormat:@"scene=%@ ",
+                             NSStringFromClass(object_getClass(scene))];
+    id result = nil;
+    // 0) SBMainWorkspace.mainWindowScene (ZNSplit's first priority).
+    Class ws = NSClassFromString(@"SBMainWorkspace");
+    if (ws && [ws respondsToSelector:@selector(sharedInstance)]) {
+        id wsp = ((id (*)(id, SEL))objc_msgSend)(ws, @selector(sharedInstance));
+        @try {
+            id mainScene = DPObjcGet(wsp, @"mainWindowScene");
+            if (mainScene) {
+                id mgr = DPObjcGet(mainScene, @"sceneManager");
+                [diag appendFormat:@"mainScene=%@ mgr=%@ ",
+                 NSStringFromClass(object_getClass(mainScene)),
+                 mgr ? NSStringFromClass(object_getClass(mgr)) : @"nil"];
+                if (mgr) {
+                    SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                    BOOL responds = [mgr respondsToSelector:sel];
+                    [diag appendFormat:@"mgrHasLookup=%d ", responds];
+                    if (responds) {
+                        id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                        if (h) {
+                            [diag appendFormat:@"H0=%@ ", NSStringFromClass(object_getClass(h))];
+                            DPDiag(@"znsHandle resolved via mainWindowScene class=%@",
+                                   NSStringFromClass(object_getClass(h)));
+                            result = h;
+                        } else [diag appendString:@"H0=nil "];
+                    }
+                }
+            }
+        } @catch (__unused NSException *e) { [diag appendString:@"H0! "]; }
+    }
+    // 1) Every connected window scene -> its sceneManager -> existingSceneHandleForScene:
+    if (!result) {
+        NSUInteger idx = 0;
+        for (id windowScene in UIApplication.sharedApplication.connectedScenes.allObjects) {
+            @try {
+                id mgr = DPObjcGet(windowScene, @"sceneManager");
+                if (!mgr) continue;
+                SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                BOOL responds = [mgr respondsToSelector:sel];
+                [diag appendFormat:@"WS%lu=%@ lookup=%d ",
+                 (unsigned long)idx++, NSStringFromClass(object_getClass(mgr)), responds];
+                if (!responds) continue;
+                id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                if (h) {
+                    [diag appendFormat:@"H%lu=%@ ", (unsigned long)idx,
+                     NSStringFromClass(object_getClass(h))];
+                    DPDiag(@"znsHandle resolved via windowScene.sceneManager class=%@",
+                           NSStringFromClass(object_getClass(h)));
+                    result = h;
+                    break;
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    // 2) SBSceneManagerCoordinator.mainDisplaySceneManager (historical fallback).
+    if (!result) {
+        Class coord = NSClassFromString(@"SBSceneManagerCoordinator");
+        if (coord && [coord respondsToSelector:@selector(sharedInstance)]) {
+            id obj = ((id (*)(id, SEL))objc_msgSend)(coord, @selector(sharedInstance));
+            @try {
+                id mgr = DPObjcGet(obj, @"mainDisplaySceneManager");
+                if (mgr) {
+                    SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                    BOOL responds = [mgr respondsToSelector:sel];
+                    [diag appendFormat:@"coord=%@ lookup=%d ",
+                     NSStringFromClass(object_getClass(mgr)), responds];
+                    if (responds) {
+                        id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                        if (h) {
+                            [diag appendFormat:@"HC=%@ ", NSStringFromClass(object_getClass(h))];
+                            DPDiag(@"znsHandle resolved via coordinator class=%@",
+                                   NSStringFromClass(object_getClass(h)));
+                            result = h;
+                        }
+                    }
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    if (!result) {
+        self.hostViewDiag = [NSString stringWithFormat:@"ZNS-FAIL %@", diag];
+        DPDiag(@"znsHandle FAIL %@", diag);
+    } else {
+        DPDiag(@"znsHandle OK %@", diag);
+    }
+    // 0.7.94: always publish the lookup trace on screen. Previously it was only
+    // set on failure and got clobbered by the tryLiveReflow dpc-on-host string,
+    // so the reverse-lookup result was invisible in the panel.
+    self.reflowHandleDiag = diag;
+    // 0.7.95: show the real selector surface of the scene and the resolved
+    // handle so the panel reveals which scene-view/reference APIs exist here.
+    self.reflowMethodsDiag = [NSString stringWithFormat:@"SC[%@] HD[%@]",
+                              DPClassMethodsFiltered(scene,
+                                  @[@"Reference", @"SceneView", @"ViewController", @"Settings"], 8),
+                              DPClassMethodsFiltered(result,
+                                  @[@"Reference", @"SceneView", @"ViewController", @"Host"], 8)];
+    return result;
+}
+
+// 0.7.91: mirror ZNSSceneSession.findScene: enumerate the real FBScene list and
+// match by clientProcess.bundleIdentifier. Returns the actual FBScene object
+// that -existingSceneHandleForScene: expects, so the reverse lookup succeeds.
+// 0.7.92: ZNSGet-style dynamic getter (objc_msgSend, not KVC valueForKey).
+static id DPObjcGet(id object, NSString *key) {
+    if (!object || !key.length) return nil;
+    SEL sel = NSSelectorFromString(key);
+    if (![object respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, sel);
+}
+
+// 0.7.95: dump the real selector surface of an object's class hierarchy for a
+// keyword list. hasFactory=0 on SBDeviceApplicationSceneHandle proved the
+// scene-view factory is absent on this iOS version, so we need the on-screen
+// panel to show which scene/reference/size APIs iOS 16.4.1 actually exposes.
+static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, NSUInteger cap) {
+    if (!obj) return @"nil";
+    NSMutableString *out = [NSMutableString string];
+    Class cls = object_getClass(obj);
+    while (cls && cap > 0) {
+        unsigned int n = 0;
+        Method *ms = class_copyMethodList(cls, &n);
+        for (unsigned int i = 0; i < n && out.length < cap; i++) {
+            NSString *nm = NSStringFromSelector(method_getName(ms[i]));
+            for (NSString *k in keywords) {
+                if ([nm rangeOfString:k].location != NSNotFound) {
+                    if (out.length) [out appendString:@","];
+                    [out appendString:nm];
+                    cap--;
+                    break;
+                }
+            }
+        }
+        if (ms) free(ms);
+        cls = class_getSuperclass(cls);
+    }
+    return out.length ? out : @"(none)";
+}
+
+- (id)fbSceneByEnumerate {
+    id mgr = [self fbSceneManager];
+    if (!mgr) { self.reflowEnumDiag = @"enum=nomgr"; return nil; }
+    SEL sel = NSSelectorFromString(@"enumerateScenesWithBlock:");
+    if (![mgr respondsToSelector:sel]) {
+        self.reflowEnumDiag = [NSString stringWithFormat:@"enum=no-sel mgr=%@",
+                               NSStringFromClass([mgr class])];
+        return nil;
+    }
+    __block id match = nil;
+    __block NSUInteger matches = 0;
+    __block NSUInteger scanned = 0;
+    void (^block)(id) = ^(id candidate) {
+        @try {
+            scanned++;
+            id process = DPObjcGet(candidate, @"clientProcess");
+            NSString *bundle = DPObjcGet(process, @"bundleIdentifier");
+            if (![bundle isKindOfClass:[NSString class]]) {
+                id appInfo = DPObjcGet(process, @"applicationInfo");
+                bundle = DPObjcGet(appInfo, @"bundleIdentifier");
+            }
+            BOOL same = [bundle isKindOfClass:[NSString class]] &&
+                        [bundle isEqualToString:self.bundleID];
+            // 0.7.93: ZNSplit findScene identifier fallback (the missing piece).
+            NSString *identifier = DPObjcGet(candidate, @"identifier");
+            if (!same && ![bundle isKindOfClass:[NSString class]] &&
+                [identifier isKindOfClass:[NSString class]]) {
+                same = [identifier isEqualToString:self.bundleID] ||
+                    [identifier hasPrefix:[@"sceneID:" stringByAppendingString:self.bundleID]];
+            }
+            if (same) {
+                id settings = DPObjcGet(candidate, @"settings");
+                SEL frameSel = NSSelectorFromString(@"frame");
+                if (settings && [settings respondsToSelector:frameSel]) {
+                    if (candidate != match) matches++;
+                    if (!match) match = candidate;
+                }
+            }
+        } @catch (__unused NSException *e) {}
+    };
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(mgr, sel, block);
+    } @catch (__unused NSException *e) {
+        self.reflowEnumDiag = @"enum=throw";
+        return nil;
+    }
+    // 0.7.93: on-screen diagnostics so the user does not need Filza/Console.
+    self.reflowEnumDiag = [NSString stringWithFormat:@"enum=scan=%lu match=%lu/%@",
+                           (unsigned long)scanned, (unsigned long)matches,
+                           match ? NSStringFromClass([match class]) : @"nil"];
+    if (matches > 1) return nil; // ambiguous, mirror ZNSplit
+    return match;
+}
+
 - (id)findFBScene {
+    // 0.7.91: ZNSplit enumerates the REAL FBScene by bundleID via
+    // FBSceneManager.enumerateScenesWithBlock:. Our old mainSceneFromApplication:
+    // (SBApplication.mainScene) is NOT an FBScene, so existingSceneHandleForScene:
+    // reverse-lookup failed and we kept landing on a factory-less handle.
+    id enumerated = [self fbSceneByEnumerate];
+    if (enumerated) return enumerated;
     id appScene = [self mainSceneFromApplication:[self sbApplication]];
     if (appScene) {
         self.sceneHandle = appScene;
         return appScene;
     }
-
     id handle = [self sceneHandleForBundleID];
     self.sceneHandle = handle;
     id scene = [self fbSceneFromHandle:handle];
@@ -458,45 +1143,75 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     if (s.width < 2 || s.height < 2) {
         s = CGSizeMake(180, 320);
     }
-    long long orientation = 1; // UIInterfaceOrientationPortrait
-    NSString *req = self.requesterToken ?: @"DualPane";
+    long long orientation = (size.width > size.height) ? 4 : 1; // LandscapeRight : Portrait
+    // 0.7.79: the scene-view factory needs a real requester OBJECT (FrontBoard
+    // calls sceneViewPresentationIdentifier:/Priority: on it). A string made
+    // every factory call fail, which is why reflow never engaged.
+    DPHostRequester *req = [[DPHostRequester alloc] init];
+    self.hostRequester = req;
 
-    // 优先 SceneViewController（iOS 15/16 更稳）
-    NSArray *vcSels = @[
-        @"newSceneViewControllerForReferenceSize:orientation:hostRequester:",
-        @"newSceneViewControllerForReferenceSize:",
-    ];
-    for (NSString *name in vcSels) {
-        SEL sel = NSSelectorFromString(name);
-        if (![handle respondsToSelector:sel]) continue;
-        NSMethodSignature *sig = [handle methodSignatureForSelector:sel];
-        if (!sig) continue;
-        @try {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            inv.target = handle;
-            inv.selector = sel;
-            [inv setArgument:&s atIndex:2];
-            if (sig.numberOfArguments >= 4) {
+    // 0.7.97: THE FACTORY THAT ACTUALLY EXISTS.
+    // The on-screen method dump proved the handle class on iOS 16.4.1 exposes
+    // ONLY the separate-orientation variant - ZNSplit's line 1177:
+    //     [self.handle newSceneViewWithReferenceSize:size
+    //         contentOrientation:orientation
+    //         containerOrientation:orientation hostRequester:requester]
+    // Every earlier build probed the ":orientation:hostRequester:" variant alone,
+    // so hasFactory read 0 and the factory never ran. Try this one FIRST.
+    SEL viewSelSep = NSSelectorFromString(
+        @"newSceneViewWithReferenceSize:contentOrientation:containerOrientation:hostRequester:");
+    DPDiag(@"reflow has newSceneViewWithReferenceSize:contentOrientation:... = %d",
+           [handle respondsToSelector:viewSelSep]);
+    if ([handle respondsToSelector:viewSelSep]) {
+        NSMethodSignature *sig = [handle methodSignatureForSelector:viewSelSep];
+        if (sig) {
+            @try {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                inv.target = handle;
+                inv.selector = viewSelSep;
+                [inv setArgument:&s atIndex:2];
                 [inv setArgument:&orientation atIndex:3];
+                [inv setArgument:&orientation atIndex:4];
+                [inv setArgument:&req atIndex:5];
+                [inv invoke];
+                __unsafe_unretained id result = nil;
+                [inv getReturnValue:&result];
+                UIView *v = [self viewFromMaybeController:result];
+                // 0.7.98: a factory view renders nothing until these are driven.
+                if (v) {
+                    DPCPrepareSceneHost(v);
+                    // 0.7.99: submit the pane into FBScene.settings. Without this
+                    // the scene still renders fullscreen, so the host shows empty.
+                    NSString *sub = nil;
+                    BOOL sent = DPSubmitSceneSettings(self.scene, s, (NSInteger)orientation, &sub);
+                    // 0.7.99: which of the three private setters actually hit, plus
+                    // hidden/alpha/subview state - the pane is black but REFLOW-OK.
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d send=%d/%@",
+                                            self.reflowHandleDiag ?: @"-",
+                                            DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
+                                            v.hidden, v.alpha, (unsigned long)v.subviews.count,
+                                            v.window != nil, sent, sub ?: @"-"];
+                }
+                if (v) {
+                    NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize(separate) OK %@",
+                          self.bundleID);
+                    return v;
+                }
+            } @catch (NSException *e) {
+                NSLog(@"[InteractivePiP] newSceneView(separate) 异常: %@", e);
             }
-            if (sig.numberOfArguments >= 5) {
-                [inv setArgument:&req atIndex:4];
-            }
-            [inv invoke];
-            __unsafe_unretained id result = nil;
-            [inv getReturnValue:&result];
-            UIView *v = [self viewFromMaybeController:result];
-            if (v) {
-                NSLog(@"[InteractivePiP] %@ via %@", self.bundleID, name);
-                return v;
-            }
-        } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] %@ 异常: %@", name, e);
         }
     }
 
+    // 0.7.85: only the ZNS VIEW factory is correct. Trying the
+    // newSceneViewControllerForReferenceSize:* factories first returns a
+    // UIViewController's .view, which has NO referenceSize ABI, so
+    // DPConfigureHostCanvas always failed (the "window blew up, content stayed
+    // cover-scale" symptom). ZNSplit calls only newSceneViewWithReferenceSize:.
     // newSceneViewWithReferenceSize:orientation:hostRequester:
     SEL viewSel = NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:");
+    DPDiag(@"reflow has newSceneViewWithReferenceSize:orientation:hostRequester: = %d",
+           [handle respondsToSelector:viewSel]);
     if ([handle respondsToSelector:viewSel]) {
         NSMethodSignature *sig = [handle methodSignatureForSelector:viewSel];
         if (sig) {
@@ -511,6 +1226,21 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                 __unsafe_unretained id result = nil;
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
+                // 0.7.98: a factory view renders nothing until these are driven.
+                if (v) {
+                    DPCPrepareSceneHost(v);
+                    // 0.7.99: submit the pane into FBScene.settings. Without this
+                    // the scene still renders fullscreen, so the host shows empty.
+                    NSString *sub = nil;
+                    BOOL sent = DPSubmitSceneSettings(self.scene, s, (NSInteger)orientation, &sub);
+                    // 0.7.99: which of the three private setters actually hit, plus
+                    // hidden/alpha/subview state - the pane is black but REFLOW-OK.
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d send=%d/%@",
+                                            self.reflowHandleDiag ?: @"-",
+                                            DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
+                                            v.hidden, v.alpha, (unsigned long)v.subviews.count,
+                                            v.window != nil, sent, sub ?: @"-"];
+                }
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize OK %@", self.bundleID);
                     return v;
@@ -536,6 +1266,21 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                 __unsafe_unretained id result = nil;
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
+                // 0.7.98: a factory view renders nothing until these are driven.
+                if (v) {
+                    DPCPrepareSceneHost(v);
+                    // 0.7.99: submit the pane into FBScene.settings. Without this
+                    // the scene still renders fullscreen, so the host shows empty.
+                    NSString *sub = nil;
+                    BOOL sent = DPSubmitSceneSettings(self.scene, s, (NSInteger)orientation, &sub);
+                    // 0.7.99: which of the three private setters actually hit, plus
+                    // hidden/alpha/subview state - the pane is black but REFLOW-OK.
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d send=%d/%@",
+                                            self.reflowHandleDiag ?: @"-",
+                                            DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
+                                            v.hidden, v.alpha, (unsigned long)v.subviews.count,
+                                            v.window != nil, sent, sub ?: @"-"];
+                }
                 if (v) return v;
             } @catch (__unused NSException *e) {}
         }
@@ -900,7 +1645,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     // iOS 16 exposes scene view creation on FBSceneManager, NOT on the FBScene.
     id mgr = [self fbSceneManager] ?: [self sbMainDisplaySceneManager];
     if (!mgr) return nil;
-    NSString *req = self.requesterToken ?: @"InteractivePiP";
+    // 0.7.79: manager factories take the same requester OBJECT contract.
+    DPHostRequester *req = [[DPHostRequester alloc] init];
+    self.hostRequester = req;
     NSArray *names = @[
         @"newSceneViewWithReferenceSize:hostRequester:",
         @"newSceneViewWithReferenceSize:orientation:hostRequester:",
@@ -943,6 +1690,190 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 
 - (UIView *)hostViewFromFBScene:(id)scene {
     if (!scene) return nil;
+
+    // 0.7.78: when the user enables live reflow, ask FrontBoard for a host that
+    // is CREATED at the pane size, exactly like ZNSplit does. Assigning
+    // referenceSize on a host we allocated ourselves never worked: such a
+    // container has no referenceSize ABI, so the DPC probe bailed out and the
+    // pane silently stayed on cover-scale.
+    if ([DPSettings shared].liveReflow) {
+        CGSize pane = self.view.bounds.size;
+        DPDiag(@"reflow enter bundle=%@ pane=%@ liveReflow=1",
+               self.bundleID, NSStringFromCGSize(pane));
+        if (pane.width >= 2 && pane.height >= 2) {
+            // 0.7.87: resolve the REGISTERED handle from the FBScene the way
+            // ZNSplit does - the old property pull returned a handle without
+            // the scene-view factory.
+            id handle = [self znsHandleForScene:self.scene];
+            if (!handle) handle = self.sceneHandle ?: [self sceneHandleForBundleID];
+            DPDiag(@"reflow handle class=%@ nil=%d",
+                   handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                   handle == nil);
+            // 0.7.96: try the iOS 16 path FIRST. The handle has no scene-view
+            // factory on this system (panel: hasFactory=0), but it does expose
+            // sceneContentView + deviceApplicationSceneViewController, which is
+            // exactly what PV 1.0.9 drives. Display the real content view and
+            // push the pane size into the scene view controller.
+            long long orient = (pane.width > pane.height) ? 4 : 1;
+            id sceneVC = DPCSceneViewController(handle);
+            UIView *contentView = DPCSceneContentView(handle);
+            BOOL usedCombined = NO;
+            BOOL sizeOK = NO;
+            BOOL viewOK = NO;
+            @try {
+                sizeOK = DPCSetContentReferenceSize(sceneVC, pane, (NSInteger)orient,
+                                                    &usedCombined);
+                if (sizeOK && contentView) {
+                    self.hostIsSceneView = YES;
+                    self.reflowCanvas = pane;
+                    self.reflowAttempted = YES;
+                    self.hostViewDiag = [NSString stringWithFormat:
+                                         @"REFLOW-OK ios16 combined=%d view=%@ vc=%@",
+                                         usedCombined,
+                                         NSStringFromClass(contentView.class),
+                                         NSStringFromClass(object_getClass(sceneVC))];
+                    DPDiag(@"reflow committed via ios16 path, displaying sceneContentView");
+                    viewOK = YES;
+                    return contentView;
+                }
+            } @catch (NSException *e) {
+                self.reflowCanvas = CGSizeZero;
+                self.reflowAttempted = NO;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-THROW ios16 %@: %@",
+                                     e.name, e.reason];
+                DPDiag(@"reflow ios16 path threw %@: %@", e.name, e.reason);
+            }
+            self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | vc=%@ content=%@ setSize=%d/%d",
+                                      self.reflowHandleDiag ?: @"-",
+                                      sceneVC ? NSStringFromClass(object_getClass(sceneVC)) : @"nil",
+                                      contentView ? NSStringFromClass(contentView.class) : @"nil",
+                                      sceneVC != nil, sizeOK];
+            DPDiag(@"reflow ios16 vc=%@ content=%@ setSize=%d combined=%d pane=%@",
+                   sceneVC ? NSStringFromClass(object_getClass(sceneVC)) : @"nil",
+                   contentView ? NSStringFromClass(contentView.class) : @"nil",
+                   sizeOK, usedCombined, NSStringFromCGSize(pane));
+            UIView *created = [self hostViewFromSceneHandle:handle size:pane];
+            DPDiag(@"reflow factory result=%@",
+                   created ? NSStringFromClass(created.class) : @"(nil)");
+            if (created) {
+                self.hostIsSceneView = YES;
+                // The host was born at the pane size: record it now so the
+                // first layoutHostView does not cover-scale it back to the
+                // full-screen canvas before tryLiveReflow runs.
+                self.reflowCanvas = pane;
+                self.reflowAttempted = YES;
+                // 0.7.81: creating the host alone never reflows the remote
+                // App. ZNSplit calls ZNSConfigureHostCanvas right after the
+                // factory - that is what pushes referenceSize into FrontBoard
+                // so the App actually lays out at the pane size. We skipped it
+                // (reflowAttempted=YES made tryLiveReflow bail), so the pane
+                // stayed cover-scale. Run it now on the freshly created host.
+                long long orient = (pane.width > pane.height) ? 4 : 1;
+                BOOL configured = DPConfigureHostCanvas(created, pane, orient);
+                DPDiag(@"reflow configured=%d pane=%@ class=%@",
+                       configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
+                NSLog(@"[InteractivePiP] REFLOW configured=%d pane=%@ class=%@",
+                      configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
+                if (configured) {
+                    self.hostViewDiag = [NSString stringWithFormat:
+                                         @"REFLOW-OK cfg=1 pane=%@ %@",
+                                         NSStringFromCGSize(pane),
+                                         NSStringFromClass(created.class)];
+                    DPDiag(@"reflow committed cfg=1, using pane-size host");
+                    return created;
+                }
+                // 0.7.84: DPC failed -> the remote App never got the new
+                // referenceSize, so this host is still a full-screen canvas.
+                // Using it with reflowCanvas set only blows the window up and
+                // cover-scales the content (the exact symptom). Invalidate it
+                // and fall through to the cover-scale path below.
+                DPDiag(@"reflow DPC failed, invalidating pane host and falling back to cover-scale");
+                NSLog(@"[InteractivePiP] REFLOW DPC failed, invalidating host, cover-scale fallback");
+                // 0.7.94: the factory DID return a view but DPConfigureHostCanvas
+                // rejected it - record which class came back before we drop it.
+                self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | factory=%@ DPC-fail",
+                                         self.reflowHandleDiag ?: @"-",
+                                         NSStringFromClass(created.class)];
+                @try { DPInvalidateHostView(created, @"reflow-dpc-failed"); } @catch (__unused NSException *e) {}
+                [created removeFromSuperview];
+                created = nil;
+                self.reflowCanvas = CGSizeZero;
+                self.reflowAttempted = NO;
+                self.hostIsSceneView = NO;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL dpc pane=%@",
+                                     NSStringFromCGSize(pane)];
+                // fall through to the non-reflow path (newSceneViewForScene /
+                // layer container / cover-scale) below.
+            } else {
+                DPDiag(@"reflow factory nil, cover-scale fallback");
+                NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
+                // 0.7.97: probe BOTH factory variants - iOS 16.4.1 only exposes
+                // the contentOrientation:containerOrientation: one.
+                BOOL hasFactory = handle &&
+                    ([handle respondsToSelector:
+                        NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:")] ||
+                     [handle respondsToSelector:
+                        NSSelectorFromString(
+                            @"newSceneViewWithReferenceSize:contentOrientation:containerOrientation:hostRequester:")]);
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ hasFactory=%d pane=%@",
+                                     handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                                     hasFactory, NSStringFromCGSize(pane)];
+                DPDiag(@"reflow handle=%@ hasFactory=%d",
+                       handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                       hasFactory);
+                // 0.7.94: append the factory verdict to the handle trace so the
+                // panel shows both halves of the chain on one screen.
+                self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | factory=none handle=%@ hasFactory=%d",
+                                         self.reflowHandleDiag ?: @"-",
+                                         handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                                         hasFactory];
+            }
+            // 0.7.89: enumerate EVERY method on the handle class into the
+            // on-screen diagnostic so we can see what iOS 16.4.1 actually
+            // exposes (the ZNS factory is an iOS 17 API; iOS 16 may name it
+            // differently or not at all).
+            @try {
+                Class hc = handle ? object_getClass(handle) : Nil;
+                DPDiag(@"reflow probe handle class=%@ nil=%d",
+                       hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
+                NSLog(@"[InteractivePiP] PROBE handle class=%@ nil=%d",
+                      hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
+                NSMutableString *msel = [NSMutableString string];
+                if (hc) {
+                    unsigned n = 0;
+                    Method *ms = class_copyMethodList(hc, &n);
+                    for (unsigned i = 0; i < n; i++) {
+                        const char *nm = sel_getName(method_getName(ms[i]));
+                        if (!nm) continue;
+                        if (!strstr(nm, "SceneView") && !strstr(nm, "sceneView") &&
+                            !strstr(nm, "Reference") && !strstr(nm, "reference") &&
+                            !strstr(nm, "Host") && !strstr(nm, "host")) continue;
+                        NSString *sn = [NSString stringWithUTF8String:nm];
+                        DPDiag(@"reflow probe sel %s enc=%s",
+                               nm, method_getTypeEncoding(ms[i]) ?: "-");
+                        NSLog(@"[InteractivePiP] PROBE handle sel %s enc=%s",
+                              nm, method_getTypeEncoding(ms[i]) ?: "-");
+                        [msel appendFormat:@"%@\n", sn];
+                        if (msel.length > 600) break;
+                    }
+                    free(ms);
+                }
+                if (msel.length) {
+                    BOOL hf = handle && [handle respondsToSelector:
+                        NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:")];
+                    self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ hasFactory=%d\nmethods:\n%@",
+                                         NSStringFromClass(hc), hf, msel];
+                    DPDiag(@"reflow probe methods:\n%@", msel);
+                }
+            } @catch (__unused NSException *e) {}
+        } else {
+            DPDiag(@"reflow skip pane too small (pane=%@), view.bounds not laid out yet",
+                   NSStringFromCGSize(pane));
+        }
+    } else {
+        DPDiag(@"reflow skip liveReflow=0 (switch off in prefs)");
+    }
+
     // Request the scene at the phone's native canvas, not the pane size: a
     // mismatched reference size makes the client lay itself out narrow, which
     // then shows as side bars after scaling.
@@ -985,7 +1916,12 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     for (NSString *name in selectors) {
         SEL sel = NSSelectorFromString(name);
         if (![scene respondsToSelector:sel]) {
-            self.hostViewDiag = [NSString stringWithFormat:@"no-respond %@", name];
+            // 0.7.88: don't clobber the REFLOW-FAIL diagnostic set by the
+            // reflow branch - we need to see WHY that branch failed, not this
+            // FBScene probe (FBScene never has these methods).
+            if (![self.hostViewDiag hasPrefix:@"REFLOW"]) {
+                self.hostViewDiag = [NSString stringWithFormat:@"no-respond %@", name];
+            }
             continue;
         }
         NSMethodSignature *sig = [scene methodSignatureForSelector:sel];
@@ -1003,7 +1939,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             if (argc > 4) { [inv setArgument:&zero atIndex:3]; [inv setArgument:&zero atIndex:4]; }
             else if (argc > 3) { [inv setArgument:&zero atIndex:3]; }
             if (argc > 5) {
-                NSString *req = self.requesterToken ?: @"InteractivePiP";
+                DPHostRequester *req = [[DPHostRequester alloc] init];
+                self.hostRequester = req;
                 [inv setArgument:&req atIndex:5];
             }
             [inv invoke];
@@ -1194,8 +2131,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     UIView *container = [[UIView alloc] initWithFrame:root.bounds];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     container.backgroundColor = [UIColor clearColor];
-    // YES: QQ 内容必须接收触摸才能点击聊天。chrome 按钮在 chromeView（上层），
-    // 不受影响。0.7.61 把这里设为 NO 导致悬浮窗无法点击。
+    // Keep non-interactive so DualPane chrome still receives gestures; the
+    // keyboard pixels still composite on top of the floating window.
     container.userInteractionEnabled = YES;
     container.clipsToBounds = NO;
     NSUInteger created = 0;
@@ -1326,6 +2263,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             self.nativeSceneSize = size;
             [self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES];
 
+            gDPDiagHost = self; // show reflow diag on this window even before attach
             UIView *hv = [self hostViewFromFBScene:scene];
             if (hv) {
                 [self attachHostView:hv scene:scene];
@@ -1477,7 +2415,18 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     }
 }
 
+// 兜底：任何销毁/失效路径都要解冻我们冻过的进程，绝不能让 App 永久 STOP。
+- (void)unfreezeIfNeeded {
+    if (self.frozenPID > 0) {
+        int p = self.frozenPID;
+        self.frozenPID = 0;
+        kill(p, SIGCONT);
+        NSLog(@"[InteractivePiP] unfreeze(on-cleanup) pid=%d", p);
+    }
+}
+
 - (void)dealloc {
+    [self unfreezeIfNeeded];
     // RBSAssertion raises if it is deallocated while still valid. Any release
     // path (ARC teardown from the window hierarchy, home exit, reload) must
     // invalidate it first, otherwise SpringBoard dies in .cxx_destruct.
@@ -1545,6 +2494,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self.view addSubview:hostView];
     [self.view bringSubviewToFront:hostView];
     [self layoutHostView];
+    // 0.7.84: keep the reflow diag label on top of the host view.
+    if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
 
     self.placeholder.hidden = YES;
     self.snapshotView.hidden = YES;
@@ -1554,7 +2505,92 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self startObservingLayerManager];
     [self startSceneKeepAlive];
     [self acquireProcessAssertionIfNeeded];
+    [self tryLiveReflow];
+    gDPDiagHost = self;
+    // 0.7.85: force an immediate diag line so the label is definitely created
+    // and visible even if the reflow branch's DPDiag never ran.
+    [self setReflowDiagText:[NSString stringWithFormat:@"attach %@ liveReflow=%d reflowCanvas=%@\n",
+                             self.bundleID, [DPSettings shared].liveReflow,
+                             NSStringFromCGSize(self.reflowCanvas)]];
     NSLog(@"[InteractivePiP] LIVE attach %@ view=%@", self.bundleID, NSStringFromClass([hostView class]));
+}
+
+// 0.7.83: REFLOW 诊断直接画在窗口底部，截图即见。
+- (void)setReflowDiagText:(NSString *)text {
+    if (!text) return;
+    if (!self.reflowDiagLabel) {
+        UILabel *lb = [[UILabel alloc] init];
+        lb.textColor = [UIColor colorWithRed:1.0 green:0.45 blue:0.45 alpha:1.0];
+        lb.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
+        lb.numberOfLines = 0;
+        lb.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
+        lb.textAlignment = NSTextAlignmentLeft;
+        lb.tag = 0x5F9;
+        [self.view addSubview:lb];
+        self.reflowDiagLabel = lb;
+    }
+    self.reflowDiagLabel.text = [self.reflowDiagLabel.text stringByAppendingString:text];
+    if (self.reflowDiagLabel.text.length > 900) {
+        self.reflowDiagLabel.text = [self.reflowDiagLabel.text substringFromIndex:
+                                     self.reflowDiagLabel.text.length - 900];
+    }
+    [self layoutReflowDiagLabel];
+    [self.view bringSubviewToFront:self.reflowDiagLabel];
+}
+
+- (void)layoutReflowDiagLabel {
+    if (!self.reflowDiagLabel) return;
+    CGRect b = self.view.bounds;
+    // 0.7.85: put the diag at the TOP of the window (centred), not the bottom -
+    // the bottom is covered by the QQ tab bar / content. Red-on-black is
+    // high-contrast and clearly readable on a screenshot.
+    CGFloat w = MIN(b.size.width - 8, 260);
+    CGFloat h = MIN(b.size.height * 0.40, 140);
+    CGFloat x = (b.size.width - w) / 2.0;
+    CGFloat y = 6;
+    self.reflowDiagLabel.frame = CGRectMake(x, y, w, h);
+    self.reflowDiagLabel.hidden = NO;
+}
+
+// 实时重排：把窗格尺寸作为 referenceSize 传给 host，让远端 App 按小窗重新排版。
+// 只在设置开关打开、且 ABI/readback 全部通过时生效；失败安全退回 cover-scale。
+- (void)tryLiveReflow {
+    if (![DPSettings shared].liveReflow || self.reflowAttempted || !self.hostView) return;
+    self.reflowAttempted = YES;
+    CGSize target = self.view.bounds.size;
+    if (target.width < 2 || target.height < 2) return;
+    NSInteger orientation = target.width > target.height ? UIInterfaceOrientationLandscapeRight
+                                                         : UIInterfaceOrientationPortrait;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.invalidated || !self.hostView || self.hostView.superview != self.view) return;
+        [UIView performWithoutAnimation:^{
+            BOOL ok = DPConfigureHostCanvas(self.hostView, target, orientation);
+            DPDiag(@"tryLiveReflow dpc ok=%d target=%@ class=%@",
+                   ok, NSStringFromCGSize(target), NSStringFromClass(self.hostView.class));
+            if (ok) {
+                self.reflowCanvas = target;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-OK cfg=1 via tryLiveReflow pane=%@",
+                                     NSStringFromCGSize(target)];
+                [self layoutHostView];
+                NSLog(@"[InteractivePiP] REFLOW enabled %@ pane=%@", self.bundleID, NSStringFromCGSize(target));
+            } else {
+                self.reflowCanvas = CGSizeZero;
+                // 0.7.95: keep this short - the panel now carries the handle
+                // trace and the selector surface below it.
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL dpc-on-host class=%@",
+                                     NSStringFromClass(self.hostView.class)];
+                NSLog(@"[InteractivePiP] REFLOW unavailable %@, keep cover-scale", self.bundleID);
+            }
+        }];
+    });
+}
+
+// 设置开关切换后重置，使下一次 layout 重新尝试/退出实时重排。
+- (void)resetLiveReflow {
+    self.reflowAttempted = NO;
+    self.reflowCanvas = CGSizeZero;
+    [self layoutHostView];
+    [self tryLiveReflow];
 }
 
 - (void)layoutHostView {
@@ -1564,6 +2600,78 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     CGSize canvas = self.nativeSceneSize;
     if (canvas.width < 2 || canvas.height < 2) canvas = [UIScreen mainScreen].bounds.size;
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
+
+    // 实时重排已生效：App 已按窗格尺寸重绘，画布就是窗格，无需 cover-scale。
+    if (self.reflowCanvas.width > 1 && self.reflowCanvas.height > 1) {
+        // 0.7.102: the pane keeps moving after the host is created (it was sized
+        // once, at factory time). The host must follow the pane, and the pane
+        // must be re-submitted, otherwise the app keeps rendering at the stale
+        // size inside a too-big container - the black border plus the clipped
+        // bottom seen on 0.7.101.
+        self.reflowCanvas = target;
+        self.hostView.transform = CGAffineTransformIdentity;
+        self.hostView.bounds = CGRectMake(0, 0, target.width, target.height);
+        self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+        self.view.clipsToBounds = YES;
+        CGSize submitted = self.lastSubmittedPaneSize;
+        // 0.7.103: follow the pane in BOTH directions. 0.7.102 only re-submitted
+        // when the pane GREW, so after the opening animation shrank the pane
+        // from 374x702 to 258x349 the app kept rendering at the stale size and
+        // the pane showed a clipped top-left corner of it. The window keeps
+        // moving for a while, so converge: mark dirty, then submit once the pane
+        // has been still for 150ms at its final size.
+        BOOL moved = (fabs(target.width - submitted.width) > 0.5 ||
+                      fabs(target.height - submitted.height) > 0.5);
+        self.reflowNeedsCommit = moved;
+        if (moved) self.reflowCommitTarget = target;
+        if (!moved && submitted.width > 1) {
+            self.reflowCanvasDiag = [NSString stringWithFormat:@"resend=held frame=%@",
+                                      NSStringFromCGSize(submitted)];
+        }
+        CFTimeInterval now = CACurrentMediaTime();
+        if (moved) {
+            self.reflowCommitPendingAt = now;
+            // Nothing else wakes layoutHostView once the pane stops moving, so
+            // drive the convergence ourselves: one more pass in 150ms.
+            __weak typeof(self) ws = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.16 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                __strong typeof(ws) self2 = ws;
+                if (self2) [self2 layoutHostView];
+            });
+        }
+        // Converge: the pane is still moving right after the opening animation.
+        // Submit only once it has been still for 150ms so the app renders at
+        // the pane's final size instead of a mid-animation one.
+        if (self.reflowNeedsCommit && self.reflowCommitPendingAt > 0 &&
+            (now - self.reflowCommitPendingAt) > 0.15) {
+            CGSize wanted = self.reflowCommitTarget;
+            self.reflowNeedsCommit = NO;
+            self.reflowCommitPendingAt = 0;
+            // 0.7.104: re-submitting FBScene.settings never re-lays-out the remote
+            // app - settings.frame is the scene's POSITION on screen, not the host
+            // size (0.7.24 already proved a half-screen frame is invalid on iOS 16).
+            // The ONLY thing that changes the reference size is the factory argument
+            // newSceneViewWithReferenceSize:..., so rebuild the host at the pane's
+            // settled size. DPConfigureHostCanvas returning YES was only the ABI
+            // probe passing; it never moved the remote layout.
+            UIView *fresh = nil;
+            @try {
+                fresh = [self hostViewFromFBScene:self.scene];
+            } @catch (__unused NSException *e) { fresh = nil; }
+            BOOL rebuilt = (fresh != nil && fresh != self.hostView);
+            if (rebuilt) [self attachHostView:fresh scene:self.scene];
+            self.lastSubmittedPaneSize = target;
+            self.reflowCanvasDiag = [NSString stringWithFormat:@"rebuild=%d pane=%@",
+                                     rebuilt, NSStringFromCGSize(wanted)];
+            DPDiag(@"reflow pane settled at %@ rebuilt=%d", NSStringFromCGSize(wanted), rebuilt);
+        }
+        self.layoutDiag = [NSString stringWithFormat:@"REFLOW view=%@ canvas=%@ sc=1.000",
+                           NSStringFromCGSize(target), NSStringFromCGSize(self.reflowCanvas)];
+        [self layoutReflowDiagLabel];
+        if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
+        return;
+    }
 
     // 0.7.5 original: uniform cover-scale into the pane (aspect fill).
     // Keeps app aspect ratio (no stretch), fills pane, clips overflow.
@@ -1575,6 +2683,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
                        NSStringFromCGSize(target), NSStringFromCGSize(canvas), scale];
+    // 0.7.85: keep the reflow diag on top of whatever host is showing.
+    [self layoutReflowDiagLabel];
+    if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
 }
 
 - (void)applySnapshotFallback {
@@ -1824,8 +2935,41 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         [self stopSceneKeepAlive];
     } else {
         [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
-    [self startObservingLayerManager];
-    [self startSceneKeepAlive];
+        [self startObservingLayerManager];
+        [self startSceneKeepAlive];
+    }
+}
+
+// 静态侧栏模式：画面是截图，但 App 进程播音频时系统会主动保活，撤 RBSAssertion
+// 根本冻不住它。唯一无条件停声手段是内核级 SIGSTOP（不可忽略），回弹 SIGCONT 解冻。
+// 只 SIGCONT 我们自己冻过的 pid（frozenPID），绝不碰别的进程。
+- (void)setSceneAudible:(BOOL)audible {
+    int pid = [self hostedApplicationPID];
+    if (audible) {
+        if (self.frozenPID > 0) {
+            int p = self.frozenPID;
+            self.frozenPID = 0;
+            if (kill(p, SIGCONT) != 0) {
+                NSLog(@"[InteractivePiP] SIGCONT failed pid=%d errno=%d", p, errno);
+            } else {
+                NSLog(@"[InteractivePiP] SIGCONT pid=%d", p);
+            }
+        }
+        self.processAssertionAttempted = NO;
+        [self acquireProcessAssertionIfNeeded];
+        [self startSceneKeepAlive];
+        [self applySceneForeground:YES backgrounded:NO size:CGSizeZero includeFrame:NO];
+    } else {
+        [self stopSceneKeepAlive];
+        if (pid > 0) {
+            // 信号只发给真实App进程，绝不误伤 SpringBoard 自己
+            if (pid != getpid() && kill(pid, SIGSTOP) == 0) {
+                self.frozenPID = pid;
+                NSLog(@"[InteractivePiP] SIGSTOP pid=%d", pid);
+            } else {
+                NSLog(@"[InteractivePiP] SIGSTOP failed pid=%d errno=%d", pid, errno);
+            }
+        }
     }
 }
 
@@ -1839,6 +2983,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self clearExternalSceneHosts];
     [self stopSceneKeepAlive];
     [self releaseProcessAssertion];
+    [self unfreezeIfNeeded];
     DPInvalidateHostView(self.hostView, @"retry");
     [self.hostView removeFromSuperview];
     self.hostView = nil;
@@ -1853,8 +2998,19 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self attemptLiveSceneHost];
 }
 
+- (void)forceReflowRebuild {
+    // Force the settled-pane rebuild to run at the CURRENT (possibly fullscreen)
+    // pane size, even if a mid-animation layout already recorded it.
+    self.lastSubmittedPaneSize = CGSizeZero;
+    self.reflowNeedsCommit = YES;
+    self.reflowCommitTarget = self.view.bounds.size;
+    self.reflowCommitPendingAt = CACurrentMediaTime() - 1.0;
+    [self layoutHostView];
+}
+
 - (void)invalidate {
     self.invalidated = YES;
+    [self unfreezeIfNeeded];
     self.externalRefreshGeneration += 1;
     [self stopObservingLayerManager];
     [self clearExternalSceneHosts];

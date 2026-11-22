@@ -413,9 +413,11 @@ void DPKBLog(NSString *fmt, ...) {
                    dispatch_get_main_queue(), ^{
         if (!ws || !ws.keyboardExpanded) return;
         ws.frame = target;
+        [ws layoutIfNeeded];   // 强制 contentContainer 更新到全屏 frame
+        [ws.sceneHost forceReflowRebuild];  // 强制按全屏 pane 重建 host
         [ws layoutSceneIfNeeded];
         [ws.sceneHost commitHostedFrame];
-        DPKBLog(@"expand:late frame=%@", NSStringFromCGRect(ws.frame));
+        DPKBLog(@"expand:late frame=%@ content=%@", NSStringFromCGRect(ws.frame), NSStringFromCGRect(ws.contentContainer.bounds));
     });
 }
 
