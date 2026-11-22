@@ -2508,8 +2508,7 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     [self.view addSubview:hostView];
     [self.view bringSubviewToFront:hostView];
     [self layoutHostView];
-    // 0.7.84: keep the reflow diag label on top of the host view.
-    if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
+    if (self.reflowDiagLabel) { [self.reflowDiagLabel removeFromSuperview]; self.reflowDiagLabel = nil; }
 
     self.placeholder.hidden = YES;
     self.snapshotView.hidden = YES;
@@ -2531,7 +2530,9 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 
 // 0.7.83: REFLOW 诊断直接画在窗口底部，截图即见。
 - (void)setReflowDiagText:(NSString *)text {
+    // 0.7.125: on-screen diag removed. NSLog ([InteractivePiP] DPDiag) still logs.
     if (!text) return;
+    if (YES) return;
     if (!self.reflowDiagLabel) {
         UILabel *lb = [[UILabel alloc] init];
         lb.textColor = [UIColor colorWithRed:1.0 green:0.45 blue:0.45 alpha:1.0];
@@ -2563,7 +2564,7 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     CGFloat x = (b.size.width - w) / 2.0;
     CGFloat y = 6;
     self.reflowDiagLabel.frame = CGRectMake(x, y, w, h);
-    self.reflowDiagLabel.hidden = NO;
+    self.reflowDiagLabel.hidden = YES; // 0.7.125: diag panel removed
 }
 
 // 实时重排：把窗格尺寸作为 referenceSize 传给 host，让远端 App 按小窗重新排版。

@@ -679,40 +679,12 @@
 }
 
 - (void)showKeyboardDiagnostics {
-    [self.diagLabel removeFromSuperview];
-    self.diagLabel = nil;
-    if (!self.overlayRoot) return;
-
-    // Collect diagnostics from every floating window + scene host
-    NSMutableString *text = [NSMutableString string];
-    [text appendFormat:@"[KeyboardReflow] overlay=%@\n",
-     NSStringFromCGRect(self.overlayWindow.frame)];
-    for (DPFloatingWindow *w in self.floatingWindows) {
-        DPSceneHost *h = w.sceneHost;
-        [text appendFormat:@"%@ frame=%@ hv=%@ sup=%@\n",
-         (w.bundleID ?: @"?").lastPathComponent,
-         NSStringFromCGRect(w.frame),
-         NSStringFromCGRect(h.view.bounds),
-         NSStringFromCGRect(h.view.superview.bounds)];
-        [text appendFormat:@"  layout=%@\n  host=%@\n",
-         h.layoutDiag ?: @"-", h.hostViewDiag ?: @"-"];
+    // 0.7.125: on-screen diagnostic panel removed. NSLog output stays, so the
+    // terminal still shows [InteractivePiP] / [KeyboardReflow] lines when needed.
+    if (self.diagLabel) {
+        [self.diagLabel removeFromSuperview];
+        self.diagLabel = nil;
     }
-
-    [text appendFormat:@"[KBtrace] %@\n", DPKeyboardExpandTrace()];
-    UILabel *lb = [[UILabel alloc] init];
-    lb.numberOfLines = 0;
-    lb.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
-    lb.textColor = [UIColor colorWithRed:1 green:0.4 blue:0.4 alpha:0.9];
-    lb.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
-    lb.text = text;
-    [lb sizeToFit];
-    CGRect b = self.overlayRoot.bounds;
-    lb.frame = CGRectMake(4, b.size.height - lb.frame.size.height - 4,
-                          MIN(lb.frame.size.width, b.size.width - 8),
-                          lb.frame.size.height);
-    lb.userInteractionEnabled = NO;
-    [self.overlayRoot addSubview:lb];
-    self.diagLabel = lb;
 }
 
 - (void)prepareForHostedInput {
