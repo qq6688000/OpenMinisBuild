@@ -2729,9 +2729,9 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     // disappears under the status strip. Nudge the host down so the visible part clears
     // it; portrait keeps the exact centre.
     if (!sameOrientation) {
-        // 0.7.144: fixed 8% of the pane height - the inset-derived offset overshot.
+        // 0.7.145: 9.5% of the pane height (8% was close, this is the tuned value).
         self.hostView.center = CGPointMake(target.width / 2.0,
-                                           target.height / 2.0 + target.height * 0.08);
+                                           target.height / 2.0 + target.height * 0.095);
     }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
