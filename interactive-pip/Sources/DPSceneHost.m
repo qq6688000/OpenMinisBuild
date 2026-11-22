@@ -1288,16 +1288,38 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                        configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
                 NSLog(@"[InteractivePiP] REFLOW configured=%d pane=%@ class=%@",
                       configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
-                self.hostViewDiag = [NSString stringWithFormat:
-                                     @"REFLOW-OK cfg=%d pane=%@ %@",
-                                     configured, NSStringFromCGSize(pane),
-                                     NSStringFromClass(created.class)];
-                return created;
+                if (configured) {
+                    self.hostViewDiag = [NSString stringWithFormat:
+                                         @"REFLOW-OK cfg=1 pane=%@ %@",
+                                         NSStringFromCGSize(pane),
+                                         NSStringFromClass(created.class)];
+                    DPDiag(@"reflow committed cfg=1, using pane-size host");
+                    return created;
+                }
+                // 0.7.84: DPC failed -> the remote App never got the new
+                // referenceSize, so this host is still a full-screen canvas.
+                // Using it with reflowCanvas set only blows the window up and
+                // cover-scales the content (the exact symptom). Invalidate it
+                // and fall through to the cover-scale path below.
+                DPDiag(@"reflow DPC failed, invalidating pane host and falling back to cover-scale");
+                NSLog(@"[InteractivePiP] REFLOW DPC failed, invalidating host, cover-scale fallback");
+                @try { DPInvalidateHostView(created, @"reflow-dpc-failed"); } @catch (__unused NSException *e) {}
+                [created removeFromSuperview];
+                created = nil;
+                self.reflowCanvas = CGSizeZero;
+                self.reflowAttempted = NO;
+                self.hostIsSceneView = NO;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL dpc pane=%@",
+                                     NSStringFromCGSize(pane)];
+                // fall through to the non-reflow path (newSceneViewForScene /
+                // layer container / cover-scale) below.
+            } else {
+                DPDiag(@"reflow factory nil, cover-scale fallback");
+                NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ pane=%@",
+                                     handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                                     NSStringFromCGSize(pane)];
             }
-            NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
-            self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ pane=%@",
-                                 handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
-                                 NSStringFromCGSize(pane)];
             // 0.7.79 diagnostics: print exactly what the handle exposes so a
             // single build tells us whether the ZNS factory exists here.
             @try {
@@ -1945,6 +1967,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self.view addSubview:hostView];
     [self.view bringSubviewToFront:hostView];
     [self layoutHostView];
+    // 0.7.84: keep the reflow diag label on top of the host view.
+    if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
 
     self.placeholder.hidden = YES;
     self.snapshotView.hidden = YES;
