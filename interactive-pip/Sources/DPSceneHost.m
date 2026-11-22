@@ -1690,7 +1690,16 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 }
 
 - (UIView *)hostViewFromFBScene:(id)scene {
-    return [self hostViewFromFBScene:scene atSize:self.view.bounds.size];
+    // 0.7.124: default to the NATURAL (full screen) reference size, like 0.7.61
+    // always did. Creating the host at the small pane size makes the app lay
+    // itself out for a narrow width, and since cover-scale then divides by the
+    // screen size the proportions come out wrong (black band on the right on
+    // first open). Only the keyboard/fullscreen mode asks for the pane size.
+    CGSize natural = self.nativeSceneSize;
+    if (natural.width < 2 || natural.height < 2) natural = [UIScreen mainScreen].bounds.size;
+    CGSize use = self.reflowFrozen ? self.view.bounds.size : natural;
+    if (use.width < 2 || use.height < 2) use = natural;
+    return [self hostViewFromFBScene:scene atSize:use];
 }
 
 - (UIView *)hostViewFromFBScene:(id)scene atSize:(CGSize)pane {
