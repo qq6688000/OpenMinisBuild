@@ -41,6 +41,8 @@ static const CGFloat kDPMinHeight = 220.0;
 - (instancetype)initWithBundleID:(NSString *)bundleID frame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
         _bundleID = [bundleID copy];
         _contentOpacity = 1.0;
         _cornerRadiusValue = 16.0;
@@ -396,6 +398,9 @@ static const CGFloat kDPMinHeight = 220.0;
         : self.keyboardSavedFrame;
     target = [self clampFrame:target inBounds:superview.bounds];
     [self dp_applyFrame:target animated:animated];
+    // 键盘收起后把浮窗放回最上层，防止其他 overlay 子视图挡住触摸
+    [superview bringSubviewToFront:self];
+    self.userInteractionEnabled = YES;
 }
 
 - (void)dp_applyFrame:(CGRect)target animated:(BOOL)animated {
