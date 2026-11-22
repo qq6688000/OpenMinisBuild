@@ -762,43 +762,11 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     DPHostRequester *req = [[DPHostRequester alloc] init];
     self.hostRequester = req;
 
-    // 优先 SceneViewController（iOS 15/16 更稳）
-    NSArray *vcSels = @[
-        @"newSceneViewControllerForReferenceSize:orientation:hostRequester:",
-        @"newSceneViewControllerForReferenceSize:",
-    ];
-    for (NSString *name in vcSels) {
-        SEL sel = NSSelectorFromString(name);
-        if (![handle respondsToSelector:sel]) continue;
-        NSMethodSignature *sig = [handle methodSignatureForSelector:sel];
-        if (!sig) continue;
-        @try {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            inv.target = handle;
-            inv.selector = sel;
-            [inv setArgument:&s atIndex:2];
-            if (sig.numberOfArguments >= 4) {
-                [inv setArgument:&orientation atIndex:3];
-            }
-            if (sig.numberOfArguments >= 5) {
-                [inv setArgument:&req atIndex:4];
-            }
-            [inv invoke];
-            __unsafe_unretained id result = nil;
-            [inv getReturnValue:&result];
-            UIView *v = [self viewFromMaybeController:result];
-            DPDiag(@"reflow factory %@ responds=%d -> %@",
-                   name, 1, v ? NSStringFromClass(v.class) : @"(nil)");
-            if (v) {
-                NSLog(@"[InteractivePiP] %@ via %@", self.bundleID, name);
-                return v;
-            }
-        } @catch (NSException *e) {
-            DPDiag(@"reflow factory %@ threw %@", name, e.name);
-            NSLog(@"[InteractivePiP] %@ 异常: %@", name, e);
-        }
-    }
-
+    // 0.7.85: only the ZNS VIEW factory is correct. Trying the
+    // newSceneViewControllerForReferenceSize:* factories first returns a
+    // UIViewController's .view, which has NO referenceSize ABI, so
+    // DPConfigureHostCanvas always failed (the "window blew up, content stayed
+    // cover-scale" symptom). ZNSplit calls only newSceneViewWithReferenceSize:.
     // newSceneViewWithReferenceSize:orientation:hostRequester:
     SEL viewSel = NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:");
     DPDiag(@"reflow has newSceneViewWithReferenceSize:orientation:hostRequester: = %d",
@@ -1980,6 +1948,11 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self acquireProcessAssertionIfNeeded];
     [self tryLiveReflow];
     gDPDiagHost = self;
+    // 0.7.85: force an immediate diag line so the label is definitely created
+    // and visible even if the reflow branch's DPDiag never ran.
+    [self setReflowDiagText:[NSString stringWithFormat:@"attach %@ liveReflow=%d reflowCanvas=%@\n",
+                             self.bundleID, [DPSettings shared].liveReflow,
+                             NSStringFromCGSize(self.reflowCanvas)]];
     NSLog(@"[InteractivePiP] LIVE attach %@ view=%@", self.bundleID, NSStringFromClass([hostView class]));
 }
 
@@ -2009,10 +1982,13 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 - (void)layoutReflowDiagLabel {
     if (!self.reflowDiagLabel) return;
     CGRect b = self.view.bounds;
-    CGFloat w = MIN(b.size.width - 8, 220);
-    CGFloat h = MIN(b.size.height * 0.45, 130);
-    CGFloat x = 4;
-    CGFloat y = b.size.height - h - 4;
+    // 0.7.85: put the diag at the TOP of the window (centred), not the bottom -
+    // the bottom is covered by the QQ tab bar / content. Red-on-black is
+    // high-contrast and clearly readable on a screenshot.
+    CGFloat w = MIN(b.size.width - 8, 260);
+    CGFloat h = MIN(b.size.height * 0.40, 140);
+    CGFloat x = (b.size.width - w) / 2.0;
+    CGFloat y = 6;
     self.reflowDiagLabel.frame = CGRectMake(x, y, w, h);
     self.reflowDiagLabel.hidden = NO;
 }
@@ -2081,6 +2057,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
                        NSStringFromCGSize(target), NSStringFromCGSize(canvas), scale];
+    // 0.7.85: keep the reflow diag on top of whatever host is showing.
+    [self layoutReflowDiagLabel];
+    if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
 }
 
 - (void)applySnapshotFallback {
