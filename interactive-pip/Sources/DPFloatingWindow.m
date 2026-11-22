@@ -377,16 +377,29 @@ static const CGFloat kDPMinHeight = 220.0;
 // 与手动全屏按钮的 maximized 状态完全独立：keyboardExpanded 只由 DPWindowManager 的键盘通知驱动。
 
 - (void)expandForKeyboardAnimated:(BOOL)animated {
-    if (self.isTiled) return;          // 分屏态不接管
-    if (self.keyboardExpanded) return; // 已在扩展态
+    if (self.isTiled) return;
+    if (self.keyboardExpanded) return;
     UIView *superview = self.superview;
     if (!superview) return;
-    // 保存当前 frame（若已 maximized，则保存 maximized 的 frame，收键盘时仍回到 maximized）
     self.keyboardSavedFrame = self.frame;
     self.keyboardExpanded = YES;
-    // 目标：覆盖 superview（overlayRoot）整个 bounds；键盘由系统叠加在顶部，无需让位。
-    CGRect target = superview.bounds;
-    [self dp_applyFrame:target animated:animated];
+    // 直接用屏幕 bounds，不依赖 superview.bounds（safe area 可能缩小它）
+    CGRect target = [UIScreen mainScreen].bounds;
+    if (@available(iOS 13.0, *)) {
+        UIWindowScene *scene = self.window.windowScene;
+        if (scene) target = scene.coordinateSpace.bounds;
+    }
+    // 无动画：spring 动画会被键盘弹出动画打断导致 frame 停在中间值
+    [self dp_applyFrame:target animated:NO];
+    // 键盘动画完成后二次确认 frame，防止被后续 layout 重置
+    __weak typeof(self) ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!ws || !ws.keyboardExpanded) return;
+        ws.frame = target;
+        [ws layoutSceneIfNeeded];
+        [ws.sceneHost commitHostedFrame];
+    });
 }
 
 - (void)collapseForKeyboardAnimated:(BOOL)animated {
@@ -399,7 +412,6 @@ static const CGFloat kDPMinHeight = 220.0;
         : self.keyboardSavedFrame;
     target = [self clampFrame:target inBounds:superview.bounds];
     [self dp_applyFrame:target animated:animated];
-    // 键盘收起后把浮窗放回最上层，防止其他 overlay 子视图挡住触摸
     [superview bringSubviewToFront:self];
     self.userInteractionEnabled = YES;
 }
