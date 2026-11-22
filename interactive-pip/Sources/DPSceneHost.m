@@ -182,9 +182,27 @@ static UIView *DPCSceneContentView(id handle) {
     id v = ((id (*)(id, SEL))objc_msgSend)(handle, sel);
     return [v isKindOfClass:[UIView class]] ? (UIView *)v : nil;
 }
+// 0.7.98: ZNSplit drives a freshly created host through three more calls before
+// it will render anything. Without setDisplayMode: the host is a live scene
+// view that simply shows nothing - the black pane seen in 0.7.97:
+//     ZNSSetBool(view,@"setPlaceholderContentEnabled:",NO);
+//     ZNSSetBool(view,@"setResizesHostedContext:",NO);
+//     [view setDisplayMode:4 animationFactory:nil completion:nil];
+//     view.userInteractionEnabled = YES;
+static void DPCPrepareSceneHost(UIView *v) {
+    if (!v) return;
+    DPCSetBool(v, @"setPlaceholderContentEnabled:", NO);
+    DPCSetBool(v, @"setResizesHostedContext:", NO);
+    SEL sel = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
+    const char *args[] = {@encode(NSInteger), "@", "@"};
+    if (DPCABI(v, sel, "v", args, 3)) {
+        NSInteger mode = 4;
+        ((void (*)(id, SEL, NSInteger, id, id))objc_msgSend)(v, sel, mode, nil, nil);
+    }
+    v.userInteractionEnabled = YES;
+}
 static BOOL DPCSetContentReferenceSize(id vc, CGSize size, NSInteger orientation, BOOL *usedCombined) {
     if (!vc) return NO;
-    // Combined form: (CGSize, NSInteger contentOrientation, NSInteger containerOrientation)
     SEL sel = NSSelectorFromString(
         @"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
     const char *args[] = {@encode(CGSize), @encode(NSInteger), @encode(NSInteger)};
@@ -1045,6 +1063,8 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 __unsafe_unretained id result = nil;
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
+                // 0.7.98: a factory view renders nothing until these are driven.
+                if (v) DPCPrepareSceneHost(v);
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize(separate) OK %@",
                           self.bundleID);
@@ -1079,6 +1099,8 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 __unsafe_unretained id result = nil;
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
+                // 0.7.98: a factory view renders nothing until these are driven.
+                if (v) DPCPrepareSceneHost(v);
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize OK %@", self.bundleID);
                     return v;
@@ -1104,6 +1126,8 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 __unsafe_unretained id result = nil;
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
+                // 0.7.98: a factory view renders nothing until these are driven.
+                if (v) DPCPrepareSceneHost(v);
                 if (v) return v;
             } @catch (__unused NSException *e) {}
         }
