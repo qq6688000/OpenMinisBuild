@@ -231,6 +231,82 @@ static BOOL DPCSetContentReferenceSize(id vc, CGSize size, NSInteger orientation
     return NO;
 }
 
+// 0.7.99: the missing piece. ZNSplit clones FBScene.settings, rewrites frame /
+// interfaceOrientation / deviceOrientation / foreground, then SUBMITS the copy
+// through FBScene.updateSettings:withTransitionContext:completion:. Without that
+// submission the scene keeps rendering fullscreen, so the freshly created host
+// view (REFLOW-OK) shows a live but empty scene - exactly the black pane we saw.
+static SEL DPCPresentationGetter(id s) {
+    SEL bSet = NSSelectorFromString(@"setBackgrounded:");
+    SEL bGet = NSSelectorFromString(@"isBackgrounded");
+    if ((DPCSetter(s, bSet, "B") || DPCSetter(s, bSet, "c")) &&
+        (DPCGetter(s, bGet, "B") || DPCGetter(s, bGet, "c"))) return bGet;
+    SEL fSet = NSSelectorFromString(@"setForeground:");
+    SEL fGet = NSSelectorFromString(@"isForeground");
+    if ((DPCSetter(s, fSet, "B") || DPCSetter(s, fSet, "c")) &&
+        (DPCGetter(s, fGet, "B") || DPCGetter(s, fGet, "c"))) return fGet;
+    return NULL;
+}
+static BOOL DPCSettingsReadAPI(id s) {
+    return DPCGetter(s, @selector(frame), @encode(CGRect)) &&
+           DPCGetter(s, @selector(interfaceOrientation), @encode(NSInteger)) &&
+           DPCGetter(s, NSSelectorFromString(@"deviceOrientation"), @encode(NSInteger));
+}
+static BOOL DPCSettingsWriteAPI(id s) {
+    if (!DPCPresentationGetter(s)) return NO;
+    const char *rect[] = {@encode(CGRect)}, *dir[] = {@encode(NSInteger)};
+    return DPCABI(s, @selector(setFrame:), "v", rect, 1) &&
+           DPCABI(s, @selector(setInterfaceOrientation:), "v", dir, 1) &&
+           DPCABI(s, NSSelectorFromString(@"setDeviceOrientation:"), "v", dir, 1);
+}
+static BOOL DPCMakeForeground(id s) {
+    SEL g = DPCPresentationGetter(s);
+    if (!g) return NO;
+    if (g == NSSelectorFromString(@"isForeground")) {
+        SEL setSel = NSSelectorFromString(@"setForeground:");
+        if (!DPCSetter(s, setSel, "B") && !DPCSetter(s, setSel, "c")) return NO;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(s, setSel, YES);
+        if (DPCGetter(s, g, "B") && !((BOOL (*)(id, SEL))objc_msgSend)(s, g)) return NO;
+    } else {
+        SEL setSel = NSSelectorFromString(@"setBackgrounded:");
+        if (!DPCSetter(s, setSel, "B") && !DPCSetter(s, setSel, "c")) return NO;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(s, setSel, NO);
+        if (DPCGetter(s, g, "B") && ((BOOL (*)(id, SEL))objc_msgSend)(s, g)) return NO;
+    }
+    return YES;
+}
+// Clone the scene's settings, point them at the pane, and SUBMIT them.
+static BOOL DPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
+    *diag = nil;
+    if (!scene) { *diag = @"no-scene"; return NO; }
+    id settings = DPObjcGet(scene, @"settings");
+    if (!settings) { *diag = @"no-settings"; return NO; }
+    if (!DPCGetter(settings, @selector(mutableCopy), "@")) { *diag = @"no-mutableCopy"; return NO; }
+    id desired = ((id (*)(id, SEL))objc_msgSend)(settings, @selector(mutableCopy));
+    if (!desired) { *diag = @"copy-nil"; return NO; }
+    if (!DPCSettingsReadAPI(desired)) { *diag = @"read-API"; return NO; }
+    if (!DPCSettingsWriteAPI(desired)) { *diag = @"write-API"; return NO; }
+    if (!DPCMakeForeground(desired)) { *diag = @"foreground"; return NO; }
+    SEL dGet = NSSelectorFromString(@"deviceOrientation");
+    NSInteger dev = ((NSInteger (*)(id, SEL))objc_msgSend)(settings, dGet);
+    ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, @selector(setFrame:),
+                                              CGRectMake(0, 0, pane.width, pane.height));
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(desired, @selector(setInterfaceOrientation:), orient);
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(desired,
+        NSSelectorFromString(@"setDeviceOrientation:"), dev);
+    id immutable = ((id (*)(id, SEL))objc_msgSend)(desired, @selector(copy));
+    SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
+    const char *uArgs[] = {"@", "@", "@"};
+    if (!DPCABI(scene, upd, "v", uArgs, 3) && !DPCABI(scene, upd, "@", uArgs, 3)) {
+        *diag = @"no-updateSettings";
+        return NO;
+    }
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, immutable, nil, nil);
+    *diag = [NSString stringWithFormat:@"sent frame=%@", NSStringFromCGRect(
+        CGRectMake(0, 0, pane.width, pane.height))];
+    return YES;
+}
+
 // Solve host LOCAL bounds from the existing axis-aligned transform.
 static BOOL DPCGeometryForCanvas(CGSize canvas, CGAffineTransform t,
                                  CGPoint anchor, CGSize *localSize, CGPoint *position) {
@@ -1075,13 +1151,17 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 // 0.7.98: a factory view renders nothing until these are driven.
                 if (v) {
                     DPCPrepareSceneHost(v);
+                    // 0.7.99: submit the pane into FBScene.settings. Without this
+                    // the scene still renders fullscreen, so the host shows empty.
+                    NSString *sub = nil;
+                    BOOL sent = DPSubmitSceneSettings(self.scene, s, (NSInteger)orientation, &sub);
                     // 0.7.99: which of the three private setters actually hit, plus
                     // hidden/alpha/subview state - the pane is black but REFLOW-OK.
-                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d",
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d send=%d/%@",
                                             self.reflowHandleDiag ?: @"-",
                                             DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
                                             v.hidden, v.alpha, (unsigned long)v.subviews.count,
-                                            v.window != nil];
+                                            v.window != nil, sent, sub ?: @"-"];
                 }
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize(separate) OK %@",
@@ -1120,13 +1200,17 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 // 0.7.98: a factory view renders nothing until these are driven.
                 if (v) {
                     DPCPrepareSceneHost(v);
+                    // 0.7.99: submit the pane into FBScene.settings. Without this
+                    // the scene still renders fullscreen, so the host shows empty.
+                    NSString *sub = nil;
+                    BOOL sent = DPSubmitSceneSettings(self.scene, s, (NSInteger)orientation, &sub);
                     // 0.7.99: which of the three private setters actually hit, plus
                     // hidden/alpha/subview state - the pane is black but REFLOW-OK.
-                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d",
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d send=%d/%@",
                                             self.reflowHandleDiag ?: @"-",
                                             DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
                                             v.hidden, v.alpha, (unsigned long)v.subviews.count,
-                                            v.window != nil];
+                                            v.window != nil, sent, sub ?: @"-"];
                 }
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize OK %@", self.bundleID);
@@ -1156,13 +1240,17 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 // 0.7.98: a factory view renders nothing until these are driven.
                 if (v) {
                     DPCPrepareSceneHost(v);
+                    // 0.7.99: submit the pane into FBScene.settings. Without this
+                    // the scene still renders fullscreen, so the host shows empty.
+                    NSString *sub = nil;
+                    BOOL sent = DPSubmitSceneSettings(self.scene, s, (NSInteger)orientation, &sub);
                     // 0.7.99: which of the three private setters actually hit, plus
                     // hidden/alpha/subview state - the pane is black but REFLOW-OK.
-                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d",
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d send=%d/%@",
                                             self.reflowHandleDiag ?: @"-",
                                             DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
                                             v.hidden, v.alpha, (unsigned long)v.subviews.count,
-                                            v.window != nil];
+                                            v.window != nil, sent, sub ?: @"-"];
                 }
                 if (v) return v;
             } @catch (__unused NSException *e) {}
