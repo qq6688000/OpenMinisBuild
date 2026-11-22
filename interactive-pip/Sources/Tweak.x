@@ -180,13 +180,13 @@ static void DPAttachIconGestures(UIView *iconView) {
     if (!iconView) return;
     if (![DPSettings shared].isEnabled) return;
 
-    // 上滑
+    // 下滑 (0.7.149: was swipe-up, switched to swipe-down)
     if ([[DPSettings shared] isGestureEnabled:DPActivationGestureIconSwipeUp]) {
         if (!objc_getAssociatedObject(iconView, &kDPIconSwipeKey)) {
             DPIconGestureTarget *target = [[DPIconGestureTarget alloc] init];
             target.iconView = iconView;
             UISwipeGestureRecognizer *swipe = [[UISwipeGestureRecognizer alloc] initWithTarget:target action:@selector(handleSwipe:)];
-            swipe.direction = UISwipeGestureRecognizerDirectionUp;
+            swipe.direction = UISwipeGestureRecognizerDirectionDown;
             swipe.numberOfTouchesRequired = 1;
             swipe.cancelsTouchesInView = YES;
             swipe.delaysTouchesBegan = NO;

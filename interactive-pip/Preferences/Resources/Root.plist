@@ -30,7 +30,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>图标上滑打开悬浮窗，长按选择双应用固定均分。顶部可退出分屏或关闭全部；按主屏幕键或锁屏结束会话。</string>
+			<string>图标下滑打开悬浮窗，长按选择双应用固定均分。顶部可退出分屏或关闭全部；按主屏幕键或锁屏结束会话。</string>
 			<key>label</key>
 			<string>启动方式</string>
 		</dict>
@@ -46,7 +46,7 @@
 			<key>key</key>
 			<string>gestureIconSwipeUp</string>
 			<key>label</key>
-			<string>图标上滑</string>
+			<string>图标下滑</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
