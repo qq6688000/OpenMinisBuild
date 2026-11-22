@@ -2724,7 +2724,7 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         // left the content as a thin strip with huge side bars, and MAX overshot.
         // Drive it by the pane WIDTH (sx) so the content actually spans the pane,
         // letting the extra height (sy > sx) clip symmetrically top and bottom.
-        scale = sx * 0.95;   // 0.7.136: 1.15 was still too large; settle just under pane width
+        scale = sx * 0.78;   // 0.7.137: content was still clipped, keep shrinking
     }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
