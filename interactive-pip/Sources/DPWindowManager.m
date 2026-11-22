@@ -163,6 +163,22 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
                                                    selector:@selector(hostedKeyboardWillShow)
                                                        name:UIKeyboardWillShowNotification
                                                      object:nil];
+        // 0.7.167: SpringBoard often never sees the "will show" notification because the
+        // keyboard belongs to a hosted (remote) app process - the "did show" one is what
+        // actually arrives. Listen to both; the handler is idempotent while expanded.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                   selector:@selector(hostedKeyboardWillShow)
+                                                       name:UIKeyboardDidShowNotification
+                                                     object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                   selector:@selector(hostedKeyboardWillHide)
+                                                       name:UIKeyboardDidHideNotification
+                                                     object:nil];
+        // private SpringBoard variant, present on iOS 16
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                   selector:@selector(hostedKeyboardWillShow)
+                                                       name:@"UIKeyboardWillShowNotification"
+                                                     object:nil];
     }
     return self;
 }
