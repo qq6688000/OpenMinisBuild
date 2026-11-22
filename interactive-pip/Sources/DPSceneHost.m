@@ -2729,23 +2729,9 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     // disappears under the status strip. Nudge the host down so the visible part clears
     // it; portrait keeps the exact centre.
     if (!sameOrientation) {
-        // 0.7.143: 5.5% was not enough - the status strip still covered the top of the
-        // video. Use the real top inset plus a margin so the visible content starts
-        // below the status bar.
-        CGFloat topInset = 44.0;
-        UIWindow *win = self.view.window;
-        if (win) {
-            if (@available(iOS 11.0, *)) topInset = MAX(win.safeAreaInsets.top, 24.0);
-        }
-        CGFloat paneTop = self.view.bounds.origin.y;
-        CGFloat desiredTop = paneTop + topInset + 6.0;
-        // where does the scaled content's top edge currently land?
-        CGFloat scaledH = target.height * scale;
-        CGFloat currentTop = (target.height - scaledH) / 2.0 + paneTop;
-        CGFloat delta = desiredTop - currentTop;
-        if (delta < 0) delta = 0;   // content is already tall enough; never move it up
+        // 0.7.144: fixed 8% of the pane height - the inset-derived offset overshot.
         self.hostView.center = CGPointMake(target.width / 2.0,
-                                           target.height / 2.0 + delta);
+                                           target.height / 2.0 + target.height * 0.08);
     }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
