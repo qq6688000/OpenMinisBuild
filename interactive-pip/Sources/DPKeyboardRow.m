@@ -99,43 +99,52 @@ static NSString *const kRow3 = @"zxcvbnm";
     CGFloat w = self.bounds.size.width;
     CGFloat h = self.bounds.size.height;
     if (w < 40 || h < 60) return;
-    CGFloat gap = [self keyGap];
+    CGFloat gap = 6.0;
     CGFloat stripH = 30;
     CGFloat usableH = h - stripH - gap * 4;
-    CGFloat rowH = MAX(28, MIN(48, usableH / 4.0));
+    CGFloat rowH = MAX(26, MIN(46, usableH / 4.0));
     CGFloat y = stripH + gap / 2.0;
 
     self.queryLabel.frame = CGRectMake(gap, 2, w - gap * 2, stripH - 4);
 
-    // row 1: 10 keys full width
-    CGFloat unit = (w - gap * 11) / 10.0;   // one key width
-    [self layoutRowFrom:0 count:10 unit:unit rowH:rowH y:y x0:gap gap:gap];
+    // every row is laid out independently so nothing gets clipped:
+    // the widest row (10 keys) defines the key unit, the rest are centered.
+    CGFloat unit = (w - gap * 11) / 10.0;
+
+    // row 1: qwertyuiop (10)
+    [self layoutRowFrom:0 count:(NSInteger)kRow1.length unit:unit rowH:rowH y:y x0:gap gap:gap];
     y += rowH + gap;
 
-    // row 2: 9 keys, indented half a key each side
-    [self layoutRowFrom:10 count:9 unit:unit rowH:rowH y:y x0:gap + unit / 2.0 + gap / 2.0 gap:gap];
+    // row 2: asdfghjkl (9), centred
+    CGFloat row2W = kRow2.length * unit + (kRow2.length - 1) * gap;
+    [self layoutRowFrom:kRow1.length count:(NSInteger)kRow2.length unit:unit rowH:rowH
+                      y:y x0:(w - row2W) / 2.0 gap:gap];
     y += rowH + gap;
 
-    // row 3: shift + 7 letters + delete
-    CGFloat shiftW = unit * 1.35;
-    self.shiftButton.frame = CGRectMake(gap, y, shiftW, rowH);
-    CGFloat x = gap + shiftW + gap;
-    for (NSInteger i = 0; i < kRow3.length; i++) {
-        UIButton *b = self.letterButtons[17 + i];
-        b.frame = CGRectMake(x, y, unit, rowH);
-        x += unit + gap;
+    // row 3: shift + zxcvbnm + delete, evenly spread across the full width
+    CGFloat shiftW = unit * 1.4;
+    CGFloat delW = unit * 1.4;
+    NSInteger letters3 = (NSInteger)kRow3.length;
+    CGFloat avail = w - gap - shiftW - gap - delW - gap;      // space for letters
+    CGFloat unit3 = (avail - gap * (letters3 - 1)) / letters3;
+    unit3 = MIN(unit3, unit);
+    CGFloat usedW = shiftW + gap + letters3 * unit3 + gap * (letters3 - 1) + gap + delW;
+    CGFloat x = (w - usedW) / 2.0;
+    self.shiftButton.frame = CGRectMake(x, y, shiftW, rowH);
+    x += shiftW + gap;
+    for (NSInteger i = 0; i < letters3; i++) {
+        UIButton *b = self.letterButtons[kRow1.length + kRow2.length + i];
+        b.frame = CGRectMake(x, y, unit3, rowH);
+        x += unit3 + gap;
     }
-    CGFloat delW = w - x - gap;
-    self.deleteButton.frame = CGRectMake(x, y, MAX(unit * 1.2, delW), rowH);
+    self.deleteButton.frame = CGRectMake(x, y, delW, rowH);
     y += rowH + gap;
 
-    // row 4: 中英 + space + return-to-filter
-    CGFloat langW = unit * 1.3;
+    // row 4: 中 + space bar
+    CGFloat langW = unit * 1.4;
     self.langButton.frame = CGRectMake(gap, y, langW, rowH);
-    CGFloat spaceX = gap + langW + gap;
-    CGFloat spaceW = w - spaceX - gap;
-    self.spaceButton.frame = CGRectMake(spaceX, y, MAX(unit * 3, spaceW), rowH);
-
+    self.spaceButton.frame = CGRectMake(gap + langW + gap, y,
+                                        w - (gap + langW + gap) - gap, rowH);
 }
 
 - (void)layoutRowFrom:(NSInteger)startIndex count:(NSInteger)count

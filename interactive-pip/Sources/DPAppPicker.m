@@ -91,6 +91,7 @@ static id DPAppValue(id object, NSString *key) {
 @property (nonatomic, copy) NSArray<NSString *> *blacklist;
 @property (nonatomic, copy, nullable) void (^completion)(NSString * _Nullable);
 @property (nonatomic, assign) NSUInteger loadGeneration;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *pinyinCache;
 @end
 
 @implementation DPAppPicker
@@ -311,13 +312,65 @@ static id DPAppValue(id object, NSString *key) {
     return @[];
 }
 
+// 0.7.130: LSApplicationProxy has no usable -icon in SpringBoard, so read the
+// bundle's own icon files. Falls back to the SpringBoard icon cache via
+// _UIImageWithName:@"AppIcon..." style lookups before giving up.
 - (UIImage *)iconForProxy:(id)proxy {
-    // Best-effort; many icon APIs need private headers
+    // 1) direct UIImage property (some iOS builds do expose it)
     if ([proxy respondsToSelector:NSSelectorFromString(@"icon")]) {
         id icon = DPAppValue(proxy, @"icon");
         if ([icon isKindOfClass:[UIImage class]]) return icon;
     }
+
+    // 2) find the .app bundle and pick the largest icon it ships
+    NSString *bundlePath = DPAppValue(proxy, @"bundleURL") ? DPAppValue(proxy, @"bundleURL")
+                          : nil;
+    if ([bundlePath isKindOfClass:[NSURL class]]) {
+        bundlePath = [(NSURL *)bundlePath path];
+    }
+    if (![bundlePath isKindOfClass:[NSString class]] || bundlePath.length == 0) {
+        id path = DPAppValue(proxy, @"bundleContainerURL");
+        if ([path isKindOfClass:[NSURL class]]) bundlePath = [(NSURL *)path path];
+    }
+    if ([bundlePath isKindOfClass:[NSString class]] && bundlePath.length) {
+        UIImage *img = [self iconFromBundlePath:bundlePath];
+        if (img) return img;
+    }
     return nil;
+}
+
+- (UIImage *)iconFromBundlePath:(NSString *)bundlePath {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    NSString *appDir = bundlePath;
+    if (![fm fileExistsAtPath:appDir isDirectory:&isDir] || !isDir) {
+        // bundleURL may already be the .app directory's parent
+        appDir = [bundlePath stringByAppendingPathExtension:@"app"];
+        if (![fm fileExistsAtPath:appDir isDirectory:&isDir]) return nil;
+    }
+
+    // Preferred names first, then any AppIcon*@*x.png by pixel area.
+    NSArray<NSString *> *contents = [fm contentsOfDirectoryAtPath:appDir error:NULL] ?: @[];
+    NSString *best = nil;
+    long bestScore = -1;
+    for (NSString *name in contents) {
+        if (![name.pathExtension.lowercaseString isEqualToString:@"png"]) continue;
+        if (![name.lowercaseString hasPrefix:@"appicon"] &&
+            ![name.lowercaseString hasPrefix:@"icon"]) continue;
+        // score: scale factor * (1 if iphone variant) so @3x wins
+        long scale = 1;
+        NSRange at = [name rangeOfString:@"@" options:NSBackwardsSearch];
+        if (at.location != NSNotFound) {
+            NSString *tail = [name substringFromIndex:at.location + 1];
+            scale = tail.integerValue ?: 1;
+        }
+        long score = scale * 100 + (long)name.length;
+        if (score > bestScore) { bestScore = score; best = name; }
+    }
+    if (!best) return nil;
+    NSString *full = [appDir stringByAppendingPathComponent:best];
+    UIImage *img = [UIImage imageWithContentsOfFile:full];
+    return img;
 }
 
 - (UIImage *)placeholderIcon {
@@ -355,14 +408,55 @@ static id DPAppValue(id object, NSString *key) {
     if (text.length == 0) {
         self.filteredItems = self.allItems;
     } else {
+        NSString *q = text.lowercaseString;
         NSPredicate *p = [NSPredicate predicateWithBlock:^BOOL(DPAppItem *item, NSDictionary *bindings) {
             (void)bindings;
-            return [item.name rangeOfString:text options:NSCaseInsensitiveSearch].location != NSNotFound
-                || [item.bundleID rangeOfString:text options:NSCaseInsensitiveSearch].location != NSNotFound;
+            // 1) literal match on the displayed name / bundle id
+            if ([item.name rangeOfString:text options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+            if ([item.bundleID rangeOfString:q options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+            // 2) pinyin: full pinyin ("douyin") or initials ("dy")
+            NSString *full = [self pinyinFor:item.name];
+            if (full.length) {
+                if ([full hasPrefix:q]) return YES;
+                if ([full containsString:q]) return YES;
+                NSString *initials = [self pinyinInitialsFor:item.name];
+                if ([initials hasPrefix:q]) return YES;
+            }
+            return NO;
         }];
         self.filteredItems = [self.allItems filteredArrayUsingPredicate:p];
     }
     [self.collectionView reloadData];
+}
+
+// 0.7.130: pinyin support for the search field. Uses CFStringTransform, which
+// ships with ICU - no extra table needed.
+- (NSString *)pinyinFor:(NSString *)text {
+    if (text.length == 0) return @"";
+    if (!self.pinyinCache) self.pinyinCache = [NSMutableDictionary dictionary];
+    NSString *cached = self.pinyinCache[text];
+    if (cached) return cached;
+
+    NSMutableString *m = [text mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)m, NULL, kCFStringTransformMandarinLatin, NO);
+    CFStringTransform((__bridge CFMutableStringRef)m, NULL, kCFStringTransformStripDiacritics, NO);
+    NSString *out = [[m lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@""];
+    if (out) self.pinyinCache[text] = out;
+    return out ?: @"";
+}
+
+- (NSString *)pinyinInitialsFor:(NSString *)text {
+    NSString *full = [self pinyinFor:text];
+    if (full.length == 0) return @"";
+    NSMutableString *initials = [NSMutableString string];
+    // Walk the original string so we know where each syllable starts.
+    NSMutableString *per = [text mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)per, NULL, kCFStringTransformMandarinLatin, NO);
+    CFStringTransform((__bridge CFMutableStringRef)per, NULL, kCFStringTransformStripDiacritics, NO);
+    for (NSString *syl in [per componentsSeparatedByString:@" "]) {
+        if (syl.length) [initials appendString:[syl substringToIndex:1]];
+    }
+    return [[initials lowercaseString] copy];
 }
 
 - (void)layoutKeyboardRow {
