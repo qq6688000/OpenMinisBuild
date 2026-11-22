@@ -886,15 +886,39 @@
     [self restorePreviousKeyWindow];
 }
 
+// 0.7.131: every window whose scene host needs a canvas refresh on rotation.
+- (NSArray<DPFloatingWindow *> *)allWindowsForRotation {
+    NSMutableOrderedSet<DPFloatingWindow *> *set = [NSMutableOrderedSet orderedSet];
+    [set addObjectsFromArray:self.mutableFloatingWindows];
+    [set addObjectsFromArray:self.splitWindows];
+    if (self.focusedWindow) [set addObject:self.focusedWindow];
+    return set.array;
+}
+
 - (void)handleOrientationChange {
+    // 0.7.131: rotation must resync the window geometry AND the hosts' natural
+    // canvas. Without the second part the scene keeps the portrait reference size
+    // and cover-scale squeezes it into a landscape pane -> wrong proportions and
+    // the pane's right half stays black.
     if (self.overlayWindow) {
         CGRect bounds = [UIScreen mainScreen].bounds;
+        UIWindowScene *scene = nil;
         if (@available(iOS 13.0, *)) {
-            UIWindowScene *scene = self.overlayWindow.windowScene ?: [self activeWindowScene];
+            scene = self.overlayWindow.windowScene ?: [self activeWindowScene];
             if (scene) bounds = scene.coordinateSpace.bounds;
+        }
+        // fall back to the device orientation when the scene is still reporting
+        // the pre-rotation size during the transition
+        if (UIDeviceOrientationIsLandscape([UIDevice currentDevice].orientation) &&
+            bounds.size.width < bounds.size.height) {
+            bounds = CGRectMake(0, 0, MAX(bounds.size.width, bounds.size.height),
+                                MIN(bounds.size.width, bounds.size.height));
         }
         self.overlayWindow.frame = bounds;
         self.overlayRoot.frame = self.overlayWindow.bounds;
+        for (DPFloatingWindow *w in [self allWindowsForRotation]) {
+            [w updateNaturalCanvasForCurrentScreen];
+        }
     }
     if (self.duoMode && self.splitWindows.count == 2) {
         [self layoutSplit];

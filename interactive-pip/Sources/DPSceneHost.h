@@ -31,6 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
 // the host destroys the system keyboard view -> white blank keyboard).
 - (void)setReflowFrozen:(BOOL)frozen;
 - (void)rebuildHostAtCurrentSize;
+- (void)updateNaturalCanvasSize:(CGSize)size; // 0.7.131 rotation
 - (void)forceReflowRebuild;
 
 @end

@@ -3055,6 +3055,26 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     }
 }
 
+// 0.7.131: rotation. The scene's natural canvas changes (393x852 <-> 852x393).
+// Rebuild at the new natural size so the remote app re-lays-out for the new
+// aspect, then let layoutHostView cover-scale it into the pane.
+- (void)updateNaturalCanvasSize:(CGSize)size {
+    if (!self.hostView || self.invalidated) return;
+    if (size.width < 2 || size.height < 2) return;
+    BOOL changed = (fabs(size.width - self.nativeSceneSize.width) > 0.5 ||
+                    fabs(size.height - self.nativeSceneSize.height) > 0.5);
+    self.nativeSceneSize = size;
+    if (!changed) { [self layoutHostView]; return; }
+    DPDiag(@"rotation canvas -> %@", NSStringFromCGSize(size));
+    // Mid-keyboard we must not rebuild (it kills the keyboard view); the normal
+    // layout pass will pick the new canvas up once the keyboard is gone.
+    if (self.reflowFrozen) { [self layoutHostView]; return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.invalidated) return;
+        [self rebuildAtNaturalSize];
+    });
+}
+
 // 0.7.121: rebuild the hosted scene view at the CURRENT pane size, right now.
 // The remote app only ever re-lays-out when the host is created through the
 // FrontBoard factory with a reference size, so a fullscreen pane needs a brand

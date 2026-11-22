@@ -26,6 +26,7 @@ FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
 - (void)attachSceneHost:(DPSceneHost *)host;
 - (nullable DPSceneHost *)detachSceneHost;
 - (void)commitSceneLayout;
+- (void)updateNaturalCanvasForCurrentScreen; // 0.7.131 rotation
 /// Round the pane's own chrome + content container while in Duo split.
 /// Never touches the hosted scene layer container's layer.
 - (void)setSplitCardCornerRadius:(CGFloat)radius;

@@ -546,6 +546,23 @@ void DPKBLog(NSString *fmt, ...) {
     }
 }
 
+// 0.7.131: after a rotation the scene host must re-learn the natural canvas
+// (portrait <-> landscape) or cover-scale keeps using the pre-rotation size and
+// the pane shows a squeezed image plus a black band.
+- (void)updateNaturalCanvasForCurrentScreen {
+    DPSceneHost *host = self.sceneHost;
+    if (!host) return;
+    CGRect screen = [UIScreen mainScreen].bounds;
+    if (@available(iOS 13.0, *)) {
+        UIWindowScene *ws = self.window.windowScene;
+        if (ws) screen = ws.coordinateSpace.bounds;
+    }
+    [host updateNaturalCanvasSize:screen.size];
+    [self setNeedsLayout];
+    [self layoutIfNeeded];
+    [host commitHostedFrame];
+}
+
 - (void)commitSceneLayout {
     [self.sceneHost commitHostedFrame];
 }
