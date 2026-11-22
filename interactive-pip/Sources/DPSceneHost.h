@@ -28,6 +28,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *reflowHandleDiag;
 // 0.7.95: selector surface of the scene / resolved handle (real APIs available).
 @property (nonatomic, copy, readonly, nullable) NSString *reflowMethodsDiag;
+// 0.7.102: whether the growing pane was re-submitted to FBScene.settings.
+@property (nonatomic, copy, readonly, nullable) NSString *reflowCanvasDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;

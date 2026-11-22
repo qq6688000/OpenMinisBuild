@@ -718,9 +718,10 @@
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         DPSceneHost *h = w.sceneHost;
         if (!h) continue;
-        [text appendFormat:@"[%@]\nhostDiag=%@\nenum=%@\nhandle=%@\nmethods=%@\nlayout=%@\n",
+        [text appendFormat:@"[%@]\nhostDiag=%@\nenum=%@\nhandle=%@\ncanvas=%@\nmethods=%@\nlayout=%@\n",
          w.bundleID ?: @"?", h.hostViewDiag ?: @"-",
          h.reflowEnumDiag ?: @"-", h.reflowHandleDiag ?: @"-",
+         h.reflowCanvasDiag ?: @"-",
          h.reflowMethodsDiag ?: @"-", h.layoutDiag ?: @"-"];
     }
     if (!text.length) {

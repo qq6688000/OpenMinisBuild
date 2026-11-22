@@ -36,6 +36,9 @@
 
 // 0.7.92: ZNSGet-style dynamic getter (objc_msgSend, not KVC valueForKey).
 static id DPObjcGet(id object, NSString *key);
+// 0.7.102: forward declaration so layoutHostView can resubmit scene settings
+// whenever the pane grows (it was sized at factory time and never again).
+static BOOL DPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag);
 
 // 0.7.83: REFLOW diagnostics go BOTH to a file (Filza) AND to an on-screen
 // label in the floating window, so the user can screenshot the result without
@@ -510,6 +513,11 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) CGSize lastCommittedSceneSize;
 @property (nonatomic, assign) CGSize nativeSceneSize;
 @property (nonatomic, assign) CGSize reflowCanvas; // >0 时实时重排已生效，layoutHostView 用它当画布
+// 0.7.102: last pane handed to FBScene.settings. The pane keeps growing after
+// the host is created; only re-submit when it is larger, to avoid a settings
+// storm during the open animation.
+@property (nonatomic, assign) CGSize lastSubmittedPaneSize;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowCanvasDiag;
 @property (nonatomic, assign) BOOL reflowAttempted;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
@@ -2591,12 +2599,33 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 
     // 实时重排已生效：App 已按窗格尺寸重绘，画布就是窗格，无需 cover-scale。
     if (self.reflowCanvas.width > 1 && self.reflowCanvas.height > 1) {
+        // 0.7.102: the pane keeps moving after the host is created (it was sized
+        // once, at factory time). The host must follow the pane, and the pane
+        // must be re-submitted, otherwise the app keeps rendering at the stale
+        // size inside a too-big container - the black border plus the clipped
+        // bottom seen on 0.7.101.
+        self.reflowCanvas = target;
         self.hostView.transform = CGAffineTransformIdentity;
-        self.hostView.bounds = CGRectMake(0, 0, self.reflowCanvas.width, self.reflowCanvas.height);
+        self.hostView.bounds = CGRectMake(0, 0, target.width, target.height);
         self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
         self.view.clipsToBounds = YES;
+        CGSize submitted = self.lastSubmittedPaneSize;
+        BOOL grown = !CGRectContainsSize(
+            CGRectMake(0, 0, submitted.width + 0.5, submitted.height + 0.5),
+            target);
+        if (grown && self.scene) {
+            NSInteger orient = target.width > target.height
+                ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationPortrait;
+            NSString *sub = nil;
+            BOOL sent = DPSubmitSceneSettings(self.scene, target, orient, &sub);
+            self.reflowCanvasDiag = [NSString stringWithFormat:@"resend=%d/%@", sent, sub ?: @"-"];
+            if (sent) self.lastSubmittedPaneSize = target;
+            DPDiag(@"reflow pane moved to %@ resent=%d", NSStringFromCGSize(target), sent);
+        }
         self.layoutDiag = [NSString stringWithFormat:@"REFLOW view=%@ canvas=%@ sc=1.000",
                            NSStringFromCGSize(target), NSStringFromCGSize(self.reflowCanvas)];
+        [self layoutReflowDiagLabel];
+        if (self.reflowDiagLabel) [self.view bringSubviewToFront:self.reflowDiagLabel];
         return;
     }
 
