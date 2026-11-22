@@ -2704,7 +2704,18 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0, 0, canvas.width, canvas.height);
     self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    CGFloat scale = MAX(target.width / canvas.width, target.height / canvas.height);
+    // 0.7.133: orientation-aware fit. Aspect-fill (MAX) blows the content up when
+    // the canvas and the pane disagree on orientation - in landscape the canvas is
+    // 852x393 but the pane stays tall, so MAX scaled the short side to the pane
+    // height and everything came out huge. Use aspect-fit (MIN) for mismatched
+    // aspects so the whole screen stays visible at a readable size, and keep the
+    // fill behaviour only when the aspects already match.
+    CGFloat sx = target.width / canvas.width;
+    CGFloat sy = target.height / canvas.height;
+    CGFloat aspectCanvas = canvas.width / MAX(canvas.height, 1.0);
+    CGFloat aspectTarget = target.width / MAX(target.height, 1.0);
+    BOOL sameOrientation = ((aspectCanvas > 1.0) == (aspectTarget > 1.0));
+    CGFloat scale = sameOrientation ? MAX(sx, sy) : MIN(sx, sy);
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
