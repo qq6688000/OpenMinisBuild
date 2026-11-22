@@ -2610,9 +2610,11 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
         self.view.clipsToBounds = YES;
         CGSize submitted = self.lastSubmittedPaneSize;
-        BOOL grown = !CGRectContainsSize(
-            CGRectMake(0, 0, submitted.width + 0.5, submitted.height + 0.5),
-            target);
+        // Only re-submit when the pane grew: keeps the pane following the
+        // container after the open animation without hammering the scene with
+        // settings updates during it.
+        BOOL grown = target.width > submitted.width + 0.5 ||
+                     target.height > submitted.height + 0.5;
         if (grown && self.scene) {
             NSInteger orient = target.width > target.height
                 ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationPortrait;
