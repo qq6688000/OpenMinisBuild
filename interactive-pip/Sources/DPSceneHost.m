@@ -2721,10 +2721,9 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         // portrait / matched aspects: unchanged from the version the user approved
         scale = MAX(sx, sy);
     } else {
-        // 0.7.139: back to the 0.7.134 geometric mean, which the user liked. It keeps
-        // the content big while the overflow is spread over both axes, so nothing is
-        // chopped off on one side and nothing shrinks into a thin strip.
-        scale = sqrt(MAX(sx, sy) * MIN(sx, sy));
+        // 0.7.141: fill the pane (MAX) - matches what the user approved in the
+        // earlier landscape builds; the geometric mean left visible bars.
+        scale = MAX(sx, sy);
     }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);

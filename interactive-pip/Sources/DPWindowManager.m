@@ -1079,11 +1079,9 @@
     CGRect full = self.overlayRoot.bounds;
     // Duo: panels fill the entire screen edge to edge (no status/home inset).
     CGRect b = full;
-    // 0.7.140: in LANDSCAPE the two panes stack on top of each other, so each pane
-    // is a wide slab that matches the landscape app aspect - that is what kills the
-    // huge side bars. In portrait they stay side by side as before.
-    BOOL landscape = b.size.width > b.size.height;
-    BOOL sideBySide = !landscape;
+    // 0.7.141: reverted 0.7.140 - flipping the axis broke both orientations.
+    // Original rule: side by side when the window is wide, stacked when it is tall.
+    BOOL sideBySide = b.size.width >= b.size.height;
     // Card-style split: each pane keeps a rounded card edge and a narrow gap
     // between them shows the backdrop, like the native app switcher cards.
     const CGFloat seamW = 10.0;                    // white bar thickness
