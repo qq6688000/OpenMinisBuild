@@ -698,7 +698,15 @@
 - (void)prepareForTouchInView:(UIView *)view {
     for (UIView *v = view; v; v = v.superview) {
         if ([v isKindOfClass:[DPFloatingWindow class]] && [self.mutableFloatingWindows containsObject:(id)v]) {
-            [self focusWindow:(DPFloatingWindow *)v];
+            DPFloatingWindow *touched = (DPFloatingWindow *)v;
+            [self focusWindow:touched];
+            // 0.7.75: a touch inside the pane is the last chance to make the
+            // hosted scene interactive before the app opens its own input
+            // session. Without this the first tap on a text field did nothing
+            // until the window was reopened.
+            if ([touched.sceneHost isLive]) {
+                [touched.sceneHost prepareForInput];
+            }
             return;
         }
     }
@@ -1101,24 +1109,31 @@
             [self2 bringOverlayToFront];
         }
         if (onAttached && self2 && generation == self2.sessionGeneration && !self2.deviceLocked) onAttached();
-        // 0.7.75 keyboard fix: the first focusWindow ran BEFORE the attach
-        // finished, so prepareForInput hit its !live early return and never
-        // enabled interaction (orderRequesterFront / setInteractionEnabled)
-        // on the LIVE scene — the keyboard then only appeared after
-        // reopening the window several times. Re-run the input preparation
-        // now that the scene is actually live, so the system's keyboard
-        // arbitration accepts the hosted window on the first open.
         if (success && self2 && generation == self2.sessionGeneration && !self2.deviceLocked) {
             __strong DPSceneHost *strongHost = weakHost;
             if (strongHost) {
-                for (DPFloatingWindow *w in self2.mutableFloatingWindows) {
-                    if (w.sceneHost == strongHost) {
-                        [strongHost prepareForInput];
-                        if (self2.focusedWindow == w) [self2 prepareForHostedInput];
-                        NSLog(@"[InteractivePiP] attach 后补输入准备 %@", bundleID);
-                        break;
-                    }
+                // 0.7.75 keyboard fix: the first focusWindow ran BEFORE the
+                // attach finished, so prepareForInput hit its !live early
+                // return and never enabled interaction on the LIVE scene.
+                // Re-run it here AND a few more times shortly after, because
+                // the hosted scene may still be settling (the orientation /
+                // presentation transaction lands a beat later); a single late
+                // call still missed on device.
+                for (NSNumber *delay in @[@0.0, @0.05, @0.15, @0.35, @0.80, @1.50]) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                                 (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        __strong typeof(weakSelf) self3 = weakSelf;
+                        __strong DPSceneHost *h = strongHost;
+                        if (!self3 || !h || generation != self3.sessionGeneration || self3.deviceLocked) return;
+                        if (!h.isLive) return;
+                        [h prepareForInput];
+                        if (self3.focusedWindow && self3.focusedWindow.sceneHost == h) {
+                            [self3 prepareForHostedInput];
+                        }
+                    });
                 }
+                NSLog(@"[InteractivePiP] attach 后补输入准备(重试) %@", bundleID);
             }
         }
         NSLog(@"[InteractivePiP] scene attach %@ success=%d attempts=%@",
