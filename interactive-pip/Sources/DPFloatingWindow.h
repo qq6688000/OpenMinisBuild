@@ -9,8 +9,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, copy, readonly) NSString *bundleID;
 @property (nonatomic, strong, readonly, nullable) DPSceneHost *sceneHost;
-/// 场景 view 的原生挂载点（edge shelf 嵌入后按此挂回）。
-@property (nonatomic, strong, readonly, nullable) UIView *contentContainer;
 @property (nonatomic, assign) CGFloat contentOpacity;
 @property (nonatomic, assign) CGFloat cornerRadiusValue;
 @property (nonatomic, assign) BOOL showsBorder;
@@ -30,6 +28,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setActive:(BOOL)active animated:(BOOL)animated;
 - (void)bringToFront;
 - (void)closeAnimated:(BOOL)animated completion:(void (^ _Nullable)(void))completion;
+/// 键盘弹出时把浮窗放大到覆盖键盘上方的可用区域（近似全屏）。
+/// 键盘收起时用 -collapseForKeyboardAnimated: 还原到键盘弹出前的 frame。
+/// 与手动全屏按钮的 maximized 状态互相独立。
+- (void)expandForKeyboardAnimated:(BOOL)animated;
+- (void)collapseForKeyboardAnimated:(BOOL)animated;
+/// 当前是否因键盘弹出而处于扩展态。
+@property (nonatomic, assign, readonly) BOOL keyboardExpanded;
 
 @end
 

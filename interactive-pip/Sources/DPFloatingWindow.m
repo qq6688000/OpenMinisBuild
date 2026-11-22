@@ -25,6 +25,8 @@ static const CGFloat kDPMinHeight = 220.0;
 @property (nonatomic, assign) CGPoint resizeStartOrigin;
 @property (nonatomic, assign) BOOL isActive;
 @property (nonatomic, assign) BOOL maximized;
+@property (nonatomic, assign) BOOL keyboardExpanded;
+@property (nonatomic, assign) CGRect keyboardSavedFrame;
 @property (nonatomic, assign) CGFloat floatingCornerRadiusValue;
 @property (nonatomic, assign) BOOL floatingShowsBorder;
 @property (nonatomic, assign) CGRect restoreFrame;
@@ -364,6 +366,53 @@ static const CGFloat kDPMinHeight = 220.0;
         apply();
         [self.sceneHost commitHostedFrame];
         if (self.onFrameChanged) self.onFrameChanged(self, self.frame);
+    }
+}
+
+// MARK: - Keyboard-driven expand/collapse
+// 行为：键盘弹出 -> 浮窗放大到键盘上方的可用区域（近似全屏）；键盘收起 -> 还原到弹出前的 frame。
+// 与手动全屏按钮的 maximized 状态完全独立：keyboardExpanded 只由 DPWindowManager 的键盘通知驱动。
+
+- (void)expandForKeyboardAnimated:(BOOL)animated {
+    if (self.isTiled) return;          // 分屏态不接管
+    if (self.keyboardExpanded) return; // 已在扩展态
+    UIView *superview = self.superview;
+    if (!superview) return;
+    // 保存当前 frame（若已 maximized，则保存 maximized 的 frame，收键盘时仍回到 maximized）
+    self.keyboardSavedFrame = self.frame;
+    self.keyboardExpanded = YES;
+    // 目标：覆盖 superview（overlayRoot）整个 bounds；键盘由系统叠加在顶部，无需让位。
+    CGRect target = superview.bounds;
+    [self dp_applyFrame:target animated:animated];
+}
+
+- (void)collapseForKeyboardAnimated:(BOOL)animated {
+    if (!self.keyboardExpanded) return;
+    self.keyboardExpanded = NO;
+    UIView *superview = self.superview;
+    if (!superview) return;
+    CGRect target = CGRectIsNull(self.keyboardSavedFrame)
+        ? CGRectInset(superview.bounds, 24.0, 72.0)
+        : self.keyboardSavedFrame;
+    target = [self clampFrame:target inBounds:superview.bounds];
+    [self dp_applyFrame:target animated:animated];
+}
+
+- (void)dp_applyFrame:(CGRect)target animated:(BOOL)animated {
+    void (^apply)(void) = ^{
+        self.frame = target;
+        [self layoutSceneIfNeeded];
+    };
+    void (^finish)(void) = ^{
+        [self.sceneHost commitHostedFrame];
+        if (self.onFrameChanged) self.onFrameChanged(self, self.frame);
+    };
+    if (animated && [DPSettings shared].animateTransitions) {
+        [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:0 animations:apply completion:^(BOOL finished) {
+            (void)finished; finish();
+        }];
+    } else {
+        apply(); finish();
     }
 }
 
