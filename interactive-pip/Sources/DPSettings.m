@@ -161,7 +161,7 @@ static NSString *DPPreferencesPath(void) {
         NSDictionary *fileDict = [NSDictionary dictionaryWithContentsOfFile:DPPreferencesPath()];
         value = fileDict[@"liveReflow"];
     }
-    if (!value) return NO;
+    if (!value) return YES;  // default ON: the reflow host is the one that can host the system keyboard
     return [value boolValue];
 }
 
