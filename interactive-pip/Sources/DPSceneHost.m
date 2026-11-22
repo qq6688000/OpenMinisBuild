@@ -2190,37 +2190,91 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
 #pragma mark - Snapshot / icon
 
 - (UIImage *)iconImageLarge {
-    id app = [self sbApplication];
-    if (app) {
-        for (NSString *key in @[@"iconImage", @"_iconImage"]) {
+    // 0.7.151: real app icon, not the SF-Symbol template (that rendered as a flat
+    // blue block in the edge shelf cards).
+    NSString *bid = self.bundleID;
+    if (bid.length) {
+        // 1) SpringBoard's icon cache keyed by bundle id
+        for (NSString *cls in @[@"SBApplicationIcon", @"SBLeafIcon"]) {
+            Class c = NSClassFromString(cls);
+            if (!c) continue;
             @try {
-                id img = [app valueForKey:key];
-                if ([img isKindOfClass:[UIImage class]]) return img;
-            } @catch (__unused NSException *e) {}
-        }
-        // iconImageForFormat: 0 = home screen style (best-effort)
-        SEL sel = NSSelectorFromString(@"iconImageForFormat:");
-        if ([app respondsToSelector:sel]) {
-            @try {
-                NSMethodSignature *sig = [app methodSignatureForSelector:sel];
-                if (sig) {
-                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                    inv.target = app;
-                    inv.selector = sel;
-                    NSInteger fmt = 0;
-                    [inv setArgument:&fmt atIndex:2];
-                    [inv invoke];
-                    __unsafe_unretained id img = nil;
-                    [inv getReturnValue:&img];
-                    if ([img isKindOfClass:[UIImage class]]) return img;
+                id icon = ((id (*)(id, SEL, NSString *))objc_msgSend)(
+                    c, NSSelectorFromString(@"iconWithApplicationBundleID:"), bid);
+                if (!icon) icon = ((id (*)(id, SEL, NSString *))objc_msgSend)(
+                    c, NSSelectorFromString(@"iconWithApplicationIdentifier:"), bid);
+                if (icon) {
+                    SEL imgSel = NSSelectorFromString(@"iconImageForFormat:");
+                    if ([icon respondsToSelector:imgSel]) {
+                        NSMethodSignature *sig = [icon methodSignatureForSelector:imgSel];
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        inv.target = icon;
+                        inv.selector = imgSel;
+                        NSInteger fmt = 0;
+                        [inv setArgument:&fmt atIndex:2];
+                        [inv invoke];
+                        __unsafe_unretained id img = nil;
+                        [inv getReturnValue:&img];
+                        if ([img isKindOfClass:[UIImage class]] && ((UIImage *)img).size.width > 8) return img;
+                    }
                 }
             } @catch (__unused NSException *e) {}
         }
+        // 2) straight from the app bundle on disk
+        id proxy = [self launchServicesProxyForBundleID:bid];
+        NSString *bundlePath = nil;
+        for (NSString *sel in @[@"bundleURL", @"bundleContainerURL"]) {
+            @try {
+                id v = [proxy valueForKey:sel];
+                if ([v isKindOfClass:[NSURL class]]) { bundlePath = [(NSURL *)v path]; break; }
+                if ([v isKindOfClass:[NSString class]]) { bundlePath = v; break; }
+            } @catch (__unused NSException *e) {}
+        }
+        UIImage *fromDisk = [self iconFromBundlePath:bundlePath];
+        if (fromDisk) return fromDisk;
     }
-    if (@available(iOS 13.0, *)) {
-        return [UIImage systemImageNamed:@"app.fill"];
+    return nil;   // caller falls back to the labelled dark card
+}
+
+- (id)launchServicesProxyForBundleID:(NSString *)bid {
+    Class LSWorkspace = NSClassFromString(@"LSApplicationWorkspace");
+    if (!LSWorkspace) return nil;
+    id ws = ((id (*)(id, SEL))objc_msgSend)(LSWorkspace, @selector(defaultWorkspace));
+    if (!ws) return nil;
+    SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+    if (![ws respondsToSelector:sel]) return nil;
+    @try {
+        return ((id (*)(id, SEL, NSString *))objc_msgSend)(ws, sel, bid);
+    } @catch (__unused NSException *e) { return nil; }
+}
+
+- (UIImage *)iconFromBundlePath:(NSString *)bundlePath {
+    if (![bundlePath isKindOfClass:[NSString class]] || bundlePath.length == 0) return nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    NSString *appDir = bundlePath;
+    if (![fm fileExistsAtPath:appDir isDirectory:&isDir] || !isDir) {
+        appDir = [bundlePath stringByAppendingPathExtension:@"app"];
+        if (![fm fileExistsAtPath:appDir isDirectory:&isDir] || !isDir) return nil;
     }
-    return nil;
+    NSArray<NSString *> *contents = [fm contentsOfDirectoryAtPath:appDir error:NULL] ?: @[];
+    NSString *best = nil;
+    long bestScore = -1;
+    for (NSString *name in contents) {
+        NSString *lower = name.lowercaseString;
+        if (![lower.pathExtension isEqualToString:@"png"]) continue;
+        if (![lower hasPrefix:@"appicon"] && ![lower hasPrefix:@"icon"]) continue;
+        long scale = 1;
+        NSRange at = [lower rangeOfString:@"@" options:NSBackwardsSearch];
+        if (at.location != NSNotFound) {
+            NSString *tail = [lower substringFromIndex:at.location + 1];
+            scale = MAX(1, (long)tail.integerValue);
+        }
+        long score = scale * 1000 + (long)name.length;
+        if (score > bestScore) { bestScore = score; best = name; }
+    }
+    if (!best) return nil;
+    return [UIImage imageWithContentsOfFile:[appDir stringByAppendingPathComponent:best]];
 }
 
 - (UIImage *)snapshotImage {

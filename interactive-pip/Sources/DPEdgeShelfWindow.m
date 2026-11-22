@@ -118,15 +118,9 @@
         card.accessibilityLabel = names[i];
         card.accessibilityHint = @"恢复悬浮窗";
         [card addTarget:surface action:@selector(cardTapped:) forControlEvents:UIControlEventTouchUpInside];
-        UIView *content = nil;
         id candidate = (i < images.count) ? images[i] : nil;
-        if ([candidate isKindOfClass:[UIImage class]]) {
-            UIImageView *iv = [[UIImageView alloc] initWithImage:candidate];
-            iv.contentMode = UIViewContentModeScaleAspectFill;
-            content = iv;
-        } else {
-            content = [self fallbackLabelForName:names[i]];
-        }
+        UIImage *img = [candidate isKindOfClass:[UIImage class]] ? (UIImage *)candidate : nil;
+        UIView *content = [self cardContentForImage:img name:names[i]];
         [self dressContent:content];
         [card addSubview:content];
         [surface addSubview:card];
@@ -146,9 +140,56 @@
     return label;
 }
 - (void)dressContent:(UIView *)content {
-    content.backgroundColor = UIColor.blackColor;
+    // 0.7.151: the cards used to render as flat blue blocks - the placeholder image
+    // (an SF Symbol) was tinted by the default button colour. Give every card a dark
+    // rounded surface plus a hairline border, and only draw the icon when we really
+    // have one.
+    content.backgroundColor = [UIColor colorWithWhite:0.10 alpha:0.96];
     content.clipsToBounds = YES;
     content.userInteractionEnabled = NO;
     content.isAccessibilityElement = NO;
+    content.layer.cornerRadius = 9;
+    content.layer.cornerCurve = kCACornerCurveContinuous;
+    content.layer.borderWidth = 0.5;
+    content.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.22].CGColor;
+}
+
+- (UIView *)cardContentForImage:(nullable UIImage *)image name:(NSString *)name {
+    UIView *box = [[UIView alloc] initWithFrame:CGRectZero];
+
+    // dark backdrop so a transparent/missing icon still reads as a card
+    UIView *bg = [[UIView alloc] initWithFrame:CGRectZero];
+    bg.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+    bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [box addSubview:bg];
+
+    if (image) {
+        UIImageView *iv = [[UIImageView alloc] initWithImage:image];
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        iv.translatesAutoresizingMaskIntoConstraints = NO;
+        [box addSubview:iv];
+        [NSLayoutConstraint activateConstraints:@[
+            [iv.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
+            [iv.topAnchor constraintEqualToAnchor:box.topAnchor constant:8],
+            [iv.widthAnchor constraintEqualToAnchor:box.widthAnchor multiplier:0.56],
+            [iv.heightAnchor constraintEqualToAnchor:iv.widthAnchor],
+        ]];
+    }
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
+    label.text = name;
+    label.textColor = [UIColor colorWithWhite:0.92 alpha:1.0];
+    label.font = [UIFont systemFontOfSize:7.5 weight:UIFontWeightMedium];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 2;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:2],
+        [label.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-2],
+        [label.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-5],
+    ]];
+    return box;
 }
 @end
