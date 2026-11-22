@@ -332,6 +332,25 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 
 // Preserve activation only for scenes currently owned by DualPane.
+// 0.7.169: keyboard visibility from the window side. SpringBoard does not reliably
+// post UIKeyboard* notifications (the keyboard belongs to a hosted app process),
+// but the system keyboard window still goes visible/invisible here - that is the
+// hook that actually works.
+%hook _UIRemoteKeyboardWindow
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[DPWindowManager shared] keyboardWindowVisibilityChanged:!hidden];
+    });
+}
+- (void)makeKeyAndVisible {
+    %orig;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[DPWindowManager shared] keyboardWindowVisibilityChanged:YES];
+    });
+}
+%end
+
 %hook FBScene
 
 - (void)updateSettings:(id)settings withTransitionContext:(id)context completion:(id)completion {

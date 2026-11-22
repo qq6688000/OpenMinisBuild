@@ -110,6 +110,7 @@
 - (BOOL)keyboardBelongsToOurWindows;
 - (void)collapseAfterKeyboard;
 - (void)expandForKeyboardIfOurs;
+- (void)keyboardWindowVisibilityChanged:(BOOL)visible;
 - (void)pollKeyboardState;
 - (void)stopKeyboardWatch;
 - (void)startKeyboardWatchIfNeeded;
@@ -973,6 +974,19 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     [self.keyboardWatchTimer invalidate];
     self.keyboardWatchTimer = nil;
     self.keyboardPollVisible = NO;
+}
+
+// 0.7.169: called from the _UIRemoteKeyboardWindow hook - the only reliable keyboard
+// signal available inside SpringBoard.
+- (void)keyboardWindowVisibilityChanged:(BOOL)visible {
+    NSLog(@"[InteractivePiP] keyboard window visible=%d", visible);
+    if (visible == self.keyboardPollVisible) return;
+    self.keyboardPollVisible = visible;
+    if (visible) {
+        [self expandForKeyboardIfOurs];
+    } else {
+        [self collapseAfterKeyboard];
+    }
 }
 
 - (void)pollKeyboardState {
