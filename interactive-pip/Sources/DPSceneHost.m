@@ -3010,11 +3010,33 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     if (_reflowFrozen == frozen) return;
     _reflowFrozen = frozen;   // write the ivar directly: self.reflowFrozen = x recurses into this same method
     if (!frozen) {
-        // keyboard collapsed: allow a rebuild to settle back to the small pane
+        // allow the next layout pass to rebuild at whatever pane size is current
         self.reflowNeedsCommit = YES;
-        self.reflowCommitPendingAt = CACurrentMediaTime();
-        [self layoutHostView];
+        self.reflowCommitPendingAt = CACurrentMediaTime() - 1.0;
     }
+}
+
+// 0.7.121: rebuild the hosted scene view at the CURRENT pane size, right now.
+// The remote app only ever re-lays-out when the host is created through the
+// FrontBoard factory with a reference size, so a fullscreen pane needs a brand
+// new host - patching bounds afterwards just letterboxes the old layout.
+- (void)rebuildHostAtCurrentSize {
+    if (!self.hostView || self.invalidated) return;
+    CGSize pane = self.view.bounds.size;
+    if (pane.width < 2 || pane.height < 2) return;
+    UIView *fresh = nil;
+    @try {
+        fresh = [self hostViewFromFBScene:self.scene];
+    } @catch (__unused NSException *e) { fresh = nil; }
+    BOOL rebuilt = (fresh != nil && fresh != self.hostView);
+    if (rebuilt) {
+        [self attachHostView:fresh scene:self.scene];
+        self.lastSubmittedPaneSize = pane;
+    }
+    self.reflowCanvasDiag = [NSString stringWithFormat:@"kbrebuild=%d pane=%@",
+                              rebuilt, NSStringFromCGSize(pane)];
+    DPDiag(@"keyboard rebuild at %@ rebuilt=%d", NSStringFromCGSize(pane), rebuilt);
+    [self layoutHostView];
 }
 
 - (void)forceReflowRebuild {

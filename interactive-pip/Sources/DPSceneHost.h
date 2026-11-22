@@ -30,6 +30,7 @@ NS_ASSUME_NONNULL_BEGIN
 // 0.7.117: freeze reflow host rebuild while the keyboard is expanded (rebuilding
 // the host destroys the system keyboard view -> white blank keyboard).
 - (void)setReflowFrozen:(BOOL)frozen;
+- (void)rebuildHostAtCurrentSize;
 - (void)forceReflowRebuild;
 
 @end

@@ -421,9 +421,9 @@ void DPKBLog(NSString *fmt, ...) {
         // small-pane reference size and the app renders 263pt wide inside a 430pt
         // frame -> black band on the right / bottom.
         // Order matters: unfreeze -> rebuild -> freeze again (rebuild is synchronous).
-        [ws.sceneHost setReflowFrozen:NO];
-        [ws.sceneHost forceReflowRebuild];   // backdate the commit stamp -> rebuild now
-        [ws.sceneHost setReflowFrozen:YES];  // freeze again so the keyboard survives
+        // freeze stays ON: the explicit rebuild below is the only thing that runs,
+        // so the pane cannot converge-rebuild twice and kill the keyboard.
+        [ws.sceneHost rebuildHostAtCurrentSize];
         [ws.sceneHost commitHostedFrame];
         DPKBLog(@"expand:late frame=%@ content=%@", NSStringFromCGRect(ws.frame), NSStringFromCGRect(ws.contentContainer.bounds));
     });
