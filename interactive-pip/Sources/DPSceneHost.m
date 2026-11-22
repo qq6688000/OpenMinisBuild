@@ -679,13 +679,56 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     return nil;
 }
 
+// 0.7.87: ZNSplit resolves the host via the REGISTERED scene handle, looked up
+// from the FBScene with -existingSceneHandleForScene: on the scene manager.
+// Our old sceneHandleForBundleID pulled a property off SBApplication, which is
+// NOT the handle that owns the newSceneViewWithReferenceSize: factory, so the
+// factory always no-responded. This mirrors ZNSSceneSession existingHandleForScene:.
+- (id)znsHandleForScene:(id)scene {
+    if (!scene) return nil;
+    // 1) Every connected window scene -> its sceneManager -> existingSceneHandleForScene:
+    for (id windowScene in UIApplication.sharedApplication.connectedScenes.allObjects) {
+        @try {
+            id mgr = [windowScene valueForKey:@"sceneManager"];
+            if (!mgr) continue;
+            SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+            if (![mgr respondsToSelector:sel]) continue;
+            id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+            if (h) {
+                DPDiag(@"znsHandle resolved via windowScene.sceneManager class=%@",
+                       NSStringFromClass(object_getClass(h)));
+                return h;
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    // 2) SBSceneManagerCoordinator.mainDisplaySceneManager (historical fallback).
+    Class coord = NSClassFromString(@"SBSceneManagerCoordinator");
+    if (coord && [coord respondsToSelector:@selector(sharedInstance)]) {
+        id obj = ((id (*)(id, SEL))objc_msgSend)(coord, @selector(sharedInstance));
+        @try {
+            id mgr = [obj valueForKey:@"mainDisplaySceneManager"];
+            if (mgr) {
+                SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                if ([mgr respondsToSelector:sel]) {
+                    id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                    if (h) {
+                        DPDiag(@"znsHandle resolved via coordinator class=%@",
+                               NSStringFromClass(object_getClass(h)));
+                        return h;
+                    }
+                }
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    return nil;
+}
+
 - (id)findFBScene {
     id appScene = [self mainSceneFromApplication:[self sbApplication]];
     if (appScene) {
         self.sceneHandle = appScene;
         return appScene;
     }
-
     id handle = [self sceneHandleForBundleID];
     self.sceneHandle = handle;
     id scene = [self fbSceneFromHandle:handle];
@@ -1234,7 +1277,11 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         DPDiag(@"reflow enter bundle=%@ pane=%@ liveReflow=1",
                self.bundleID, NSStringFromCGSize(pane));
         if (pane.width >= 2 && pane.height >= 2) {
-            id handle = self.sceneHandle ?: [self sceneHandleForBundleID];
+            // 0.7.87: resolve the REGISTERED handle from the FBScene the way
+            // ZNSplit does - the old property pull returned a handle without
+            // the scene-view factory.
+            id handle = [self znsHandleForScene:self.scene];
+            if (!handle) handle = self.sceneHandle ?: [self sceneHandleForBundleID];
             DPDiag(@"reflow handle class=%@ nil=%d",
                    handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
                    handle == nil);
