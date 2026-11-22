@@ -515,6 +515,10 @@ void DPKBLog(NSString *fmt, ...) {
     self.clipsToBounds = tiled;
     self.chromeView.layer.cornerRadius = tiled ? 0 : _cornerRadiusValue;
     self.titleBar.hidden = tiled;
+    // 0.7.163: split panes carry no close/tile/fullscreen buttons at all.
+    self.closeButton.hidden = tiled;
+    self.fullscreenButton.hidden = tiled;
+    self.resizeHandle.hidden = tiled;
     self.blurView.hidden = tiled;
     self.resizeHandle.hidden = tiled;
     self.layer.shadowOpacity = tiled ? 0 : (self.isActive ? 0.4 : 0.25);
@@ -635,11 +639,15 @@ void DPKBLog(NSString *fmt, ...) {
                                          self.bounds.size.height - kDPResizeHandle,
                                          kDPResizeHandle, kDPResizeHandle);
     [self bringSubviewToFront:self.resizeHandle];
-    // 0.7.158: the hosted content is a sibling that gets added later; re-assert the
-    // title bar on top so close / tile / fullscreen stay tappable in PiP mode too.
-    self.titleBar.hidden = NO;
-    self.titleBar.alpha = 1.0;
-    [self.chromeView bringSubviewToFront:self.titleBar];
+    // 0.7.163: keep the bar on top in PiP, but NEVER force it visible while tiled -
+    // the split pair must look like the old full-bleed panes with no buttons at all.
+    if (self.tiled) {
+        self.titleBar.hidden = YES;
+    } else {
+        self.titleBar.hidden = NO;
+        self.titleBar.alpha = 1.0;
+        [self.chromeView bringSubviewToFront:self.titleBar];
+    }
     [self layoutSceneIfNeeded];
 }
 
