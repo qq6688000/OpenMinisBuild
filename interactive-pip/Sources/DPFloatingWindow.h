@@ -4,6 +4,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class DPSceneHost;
 
+// 0.7.113: keyboard expand/collapse event trace (shared with diagnostics panel).
+FOUNDATION_EXPORT NSString *DPKeyboardExpandTrace(void);
+FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
+
 /// Hosts a second app scene inside a draggable / resizable floating chrome.
 @interface DPFloatingWindow : UIView
 

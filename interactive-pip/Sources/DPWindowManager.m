@@ -698,6 +698,7 @@
          h.layoutDiag ?: @"-", h.hostViewDiag ?: @"-"];
     }
 
+    [text appendFormat:@"[KBtrace] %@\n", DPKeyboardExpandTrace()];
     UILabel *lb = [[UILabel alloc] init];
     lb.numberOfLines = 0;
     lb.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
@@ -821,11 +822,13 @@
 }
 
 - (void)hostedKeyboardWillShow {
+    DPKBLog(@"WM show notify windows=%lu split=%lu",
+            (unsigned long)self.floatingWindows.count, (unsigned long)self.splitWindows.count);
     // 键盘弹出 -> 把活跃浮窗放大到近似全屏。不依赖 focusedWindow（直接弹出
     // 的浮窗可能没经过 focus 路径），而是找最上层的一个非分屏窗口。
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
-    if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) return;
-    if (self.splitWindows.count) return; // 分屏态不干预
+    if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) { DPKBLog(@"WM show:skip overlay"); return; }
+    if (self.splitWindows.count) { DPKBLog(@"WM show:skip split"); return; }
     DPFloatingWindow *target = nil;
     for (DPFloatingWindow *w in self.floatingWindows) {
         if (w.isTiled) continue;

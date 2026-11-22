@@ -8,6 +8,18 @@ static const CGFloat kDPResizeHandle = 44.0;
 static const CGFloat kDPMinWidth = 180.0;
 static const CGFloat kDPMinHeight = 220.0;
 
+// 0.7.113: keyboard expand/collapse trace.
+static NSMutableString *gKBTrace = nil;
+NSString *DPKeyboardExpandTrace(void) { return gKBTrace ?: @"(none)"; }
+void DPKBLog(NSString *fmt, ...) {
+    if (!gKBTrace) gKBTrace = [NSMutableString string];
+    va_list ap; va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    [gKBTrace appendFormat:@"%@ | ", s];
+    if (gKBTrace.length > 600) [gKBTrace deleteCharactersInRange:NSMakeRange(0, gKBTrace.length-600)];
+}
+
 @interface DPFloatingWindow () <UIGestureRecognizerDelegate>
 @property (nonatomic, copy, readwrite) NSString *bundleID;
 @property (nonatomic, strong, readwrite, nullable) DPSceneHost *sceneHost;
@@ -377,10 +389,11 @@ static const CGFloat kDPMinHeight = 220.0;
 // 与手动全屏按钮的 maximized 状态完全独立：keyboardExpanded 只由 DPWindowManager 的键盘通知驱动。
 
 - (void)expandForKeyboardAnimated:(BOOL)animated {
+    DPKBLog(@"expand:call tiled=%d already=%d", self.isTiled, self.keyboardExpanded);
     if (self.isTiled) return;
-    if (self.keyboardExpanded) return;
+    if (self.keyboardExpanded) { DPKBLog(@"expand:skip already"); return; }
     UIView *superview = self.superview;
-    if (!superview) return;
+    if (!superview) { DPKBLog(@"expand:skip no-sup"); return; }
     self.keyboardSavedFrame = self.frame;
     self.keyboardExpanded = YES;
     // 直接用屏幕 bounds，不依赖 superview.bounds（safe area 可能缩小它）
@@ -390,7 +403,10 @@ static const CGFloat kDPMinHeight = 220.0;
         if (scene) target = scene.coordinateSpace.bounds;
     }
     // 无动画：spring 动画会被键盘弹出动画打断导致 frame 停在中间值
+    DPKBLog(@"expand target=%@ sup=%@ screen=%@", NSStringFromCGRect(target),
+            NSStringFromCGRect(superview.bounds), NSStringFromCGRect([UIScreen mainScreen].bounds));
     [self dp_applyFrame:target animated:NO];
+    DPKBLog(@"expand after frame=%@", NSStringFromCGRect(self.frame));
     // 键盘动画完成后二次确认 frame，防止被后续 layout 重置
     __weak typeof(self) ws = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
@@ -399,10 +415,12 @@ static const CGFloat kDPMinHeight = 220.0;
         ws.frame = target;
         [ws layoutSceneIfNeeded];
         [ws.sceneHost commitHostedFrame];
+        DPKBLog(@"expand:late frame=%@", NSStringFromCGRect(ws.frame));
     });
 }
 
 - (void)collapseForKeyboardAnimated:(BOOL)animated {
+    DPKBLog(@"collapse:call already=%d", self.keyboardExpanded);
     if (!self.keyboardExpanded) return;
     self.keyboardExpanded = NO;
     UIView *superview = self.superview;
@@ -414,6 +432,7 @@ static const CGFloat kDPMinHeight = 220.0;
     [self dp_applyFrame:target animated:animated];
     [superview bringSubviewToFront:self];
     self.userInteractionEnabled = YES;
+    DPKBLog(@"collapse done frame=%@", NSStringFromCGRect(self.frame));
 }
 
 - (void)dp_applyFrame:(CGRect)target animated:(BOOL)animated {
