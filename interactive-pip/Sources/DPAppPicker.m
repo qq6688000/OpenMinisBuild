@@ -1,4 +1,5 @@
 #import "DPAppPicker.h"
+#import "DPKeyboardRow.h"
 #import "DPSettings.h"
 
 static id DPAppValue(id object, NSString *key) {
@@ -79,6 +80,7 @@ static id DPAppValue(id object, NSString *key) {
 @property (nonatomic, strong) UIVisualEffectView *blur;
 @property (nonatomic, strong) UIView *sheet;
 @property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, strong) DPKeyboardRow *keyboardRow; // 0.7.128: system keyboard never reaches us
 @property (nonatomic, strong) UICollectionView *collectionView;
 @property (nonatomic, strong) UIButton *cancelButton;
 @property (nonatomic, strong) UILabel *titleLabel;
@@ -155,7 +157,18 @@ static id DPAppValue(id object, NSString *key) {
     self.searchBar.searchBarStyle = UISearchBarStyleMinimal;
     self.searchBar.delegate = self;
     self.searchBar.barStyle = UIBarStyleBlack;
+    // 0.7.128: the system keyboard cannot be routed into our windows inside
+    // SpringBoard, so the picker brings its own keyboard.
+    self.searchBar.userInteractionEnabled = NO;   // no system keyboard attempt
+    self.searchBar.searchFieldBackgroundPositionAdjustment = UIOffsetMake(6, 0);
     [self.sheet addSubview:self.searchBar];
+
+    self.keyboardRow = [[DPKeyboardRow alloc] initWithFrame:CGRectMake(0, 0, parent.bounds.size.width, 200)];
+    __weak typeof(self) weakSelf = self;
+    self.keyboardRow.onQueryChanged = ^(NSString *query) {
+        [weakSelf applyQuery:query];
+    };
+    [self.sheet addSubview:self.keyboardRow];
 
     UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
     layout.itemSize = CGSizeMake(76, 96);
@@ -163,7 +176,7 @@ static id DPAppValue(id object, NSString *key) {
     layout.minimumLineSpacing = 12;
     layout.sectionInset = UIEdgeInsetsMake(8, 16, 24, 16);
 
-    self.collectionView = [[UICollectionView alloc] initWithFrame:CGRectMake(0, 100, parent.bounds.size.width, sheetH - 100)
+    self.collectionView = [[UICollectionView alloc] initWithFrame:CGRectMake(0, 100, parent.bounds.size.width, sheetH - 100 - 200)
                                              collectionViewLayout:layout];
     self.collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.collectionView.backgroundColor = [UIColor clearColor];
@@ -191,6 +204,7 @@ static id DPAppValue(id object, NSString *key) {
         CGRect f = self.sheet.frame;
         f.origin.y = parent.bounds.size.height - sheetH;
         self.sheet.frame = f;
+        [self layoutKeyboardRow];
     } completion:nil];
 }
 
@@ -335,21 +349,36 @@ static id DPAppValue(id object, NSString *key) {
     if (done) done(item.bundleID);
 }
 
-#pragma mark - Search
-
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
-    (void)searchBar;
-    if (searchText.length == 0) {
+// 0.7.128: shared filter path for the self-drawn keyboard.
+- (void)applyQuery:(NSString *)text {
+    self.searchBar.text = text;
+    if (text.length == 0) {
         self.filteredItems = self.allItems;
     } else {
         NSPredicate *p = [NSPredicate predicateWithBlock:^BOOL(DPAppItem *item, NSDictionary *bindings) {
             (void)bindings;
-            return [item.name rangeOfString:searchText options:NSCaseInsensitiveSearch].location != NSNotFound
-                || [item.bundleID rangeOfString:searchText options:NSCaseInsensitiveSearch].location != NSNotFound;
+            return [item.name rangeOfString:text options:NSCaseInsensitiveSearch].location != NSNotFound
+                || [item.bundleID rangeOfString:text options:NSCaseInsensitiveSearch].location != NSNotFound;
         }];
         self.filteredItems = [self.allItems filteredArrayUsingPredicate:p];
     }
     [self.collectionView reloadData];
+}
+
+- (void)layoutKeyboardRow {
+    if (!self.keyboardRow || !self.sheet) return;
+    CGFloat h = 196;
+    CGFloat w = self.sheet.bounds.size.width;
+    self.keyboardRow.frame = CGRectMake(8, self.sheet.bounds.size.height - h - 8, w - 16, h);
+    self.collectionView.frame = CGRectMake(0, 100, w,
+                                           self.sheet.bounds.size.height - 100 - h - 12);
+}
+
+#pragma mark - Search
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    (void)searchBar;
+    [self applyQuery:searchText];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
@@ -369,6 +398,7 @@ static id DPAppValue(id object, NSString *key) {
     self.loadGeneration += 1;
     [self.loadingIndicator stopAnimating];
     void (^cleanup)(void) = ^{
+        [self.keyboardRow reset];
         [self.container removeFromSuperview];
         self.container = nil;
     };
