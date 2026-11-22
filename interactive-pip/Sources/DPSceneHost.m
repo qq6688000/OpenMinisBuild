@@ -2607,7 +2607,10 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     if (target.width < 1 || target.height < 1 || canvas.width < 1 || canvas.height < 1) return;
 
     // 实时重排已生效：App 已按窗格尺寸重绘，画布就是窗格，无需 cover-scale。
-    if (self.reflowCanvas.width > 1 && self.reflowCanvas.height > 1) {
+    // 0.7.123: only trust that while the keyboard mode is on (reflowFrozen). In the
+    // small pane we always want the natural canvas + cover-scale, otherwise the app
+    // lays itself out for a narrow width and the text comes out oversized.
+    if (self.reflowFrozen && self.reflowCanvas.width > 1 && self.reflowCanvas.height > 1) {
         // 0.7.102: the pane keeps moving after the host is created (it was sized
         // once, at factory time). The host must follow the pane, and the pane
         // must be re-submitted, otherwise the app keeps rendering at the stale
@@ -3061,6 +3064,11 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         [self attachHostView:fresh scene:self.scene];
         self.lastSubmittedPaneSize = CGSizeZero;
     }
+    // The factory success path writes the pane size into reflowCanvas, which would
+    // silently switch us back to live-reflow geometry (sc=1.000, no cover-scale).
+    // For the small pane we want the natural canvas + cover-scale, so clear it.
+    self.reflowCanvas = CGSizeZero;
+    self.reflowAttempted = YES;
     DPDiag(@"natural rebuild size=%@ ok=%d", NSStringFromCGSize(natural), fresh != nil);
     [self layoutHostView];
 }
