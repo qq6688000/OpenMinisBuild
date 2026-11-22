@@ -401,9 +401,11 @@ static const CGFloat kDPMinHeight = 220.0;
 - (void)dp_applyFrame:(CGRect)target animated:(BOOL)animated {
     void (^apply)(void) = ^{
         self.frame = target;
+        [self layoutIfNeeded];  // force subview layout before reading bounds
         [self layoutSceneIfNeeded];
     };
     void (^finish)(void) = ^{
+        [self layoutIfNeeded];  // ensure contentContainer.bounds reflects new frame
         [self.sceneHost commitHostedFrame];
         if (self.onFrameChanged) self.onFrameChanged(self, self.frame);
     };
