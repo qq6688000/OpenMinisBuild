@@ -690,7 +690,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     if (s.width < 2 || s.height < 2) {
         s = CGSizeMake(180, 320);
     }
-    long long orientation = 1; // UIInterfaceOrientationPortrait
+    long long orientation = (size.width > size.height) ? 4 : 1; // LandscapeRight : Portrait
     NSString *req = self.requesterToken ?: @"DualPane";
 
     // 优先 SceneViewController（iOS 15/16 更稳）
@@ -1175,6 +1175,32 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 
 - (UIView *)hostViewFromFBScene:(id)scene {
     if (!scene) return nil;
+
+    // 0.7.78: when the user enables live reflow, ask FrontBoard for a host that
+    // is CREATED at the pane size, exactly like ZNSplit does. Assigning
+    // referenceSize on a host we allocated ourselves never worked: such a
+    // container has no referenceSize ABI, so the DPC probe bailed out and the
+    // pane silently stayed on cover-scale.
+    if ([DPSettings shared].liveReflow) {
+        CGSize pane = self.view.bounds.size;
+        if (pane.width >= 2 && pane.height >= 2) {
+            id handle = self.sceneHandle ?: [self sceneHandleForBundleID];
+            UIView *created = [self hostViewFromSceneHandle:handle size:pane];
+            if (created) {
+                self.hostIsSceneView = YES;
+                // The host was born at the pane size: record it now so the
+                // first layoutHostView does not cover-scale it back to the
+                // full-screen canvas before tryLiveReflow runs.
+                self.reflowCanvas = pane;
+                self.reflowAttempted = YES;
+                NSLog(@"[InteractivePiP] REFLOW host created at pane size %@ (%@)",
+                      NSStringFromCGSize(pane), NSStringFromClass(created.class));
+                return created;
+            }
+            NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
+        }
+    }
+
     // Request the scene at the phone's native canvas, not the pane size: a
     // mismatched reference size makes the client lay itself out narrow, which
     // then shows as side bars after scaling.
