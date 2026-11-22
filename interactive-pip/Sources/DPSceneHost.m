@@ -2717,14 +2717,14 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     BOOL sameOrientation = ((aspectCanvas > 1.0) == (aspectTarget > 1.0));
     CGFloat scale;
     if (sameOrientation) {
-        // canvas and pane agree: fill the pane, clip the overflow
+        // 0.7.135: portrait path is UNCHANGED - keep the existing fill behaviour.
         scale = MAX(sx, sy);
     } else {
-        // 0.7.134: mismatched orientation. MIN alone shrank the screen into a tiny
-        // island and MAX blew it up past the pane. The geometric mean sits between
-        // the two: content is large enough to read, and the clipped overflow on the
-        // long side is symmetric because the view stays centred.
-        scale = sqrt(MAX(sx, sy) * MIN(sx, sy));
+        // 0.7.135: landscape canvas vs a tall pane. Fitting by the short side (MIN)
+        // left the content as a thin strip with huge side bars, and MAX overshot.
+        // Drive it by the pane WIDTH (sx) so the content actually spans the pane,
+        // letting the extra height (sy > sx) clip symmetrically top and bottom.
+        scale = sx * 1.15;
     }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
