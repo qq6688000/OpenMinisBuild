@@ -142,7 +142,27 @@ static NSString *DPPreferencesPath(void) {
 
 // 实时重排：开=host 按窗格尺寸让 App 重新排版，关=原 cover-scale。
 - (BOOL)liveReflow {
-    return [self boolForKey:@"liveReflow" default:NO];
+    // 0.7.80: read this straight from CFPreferences every time. The cached
+    // `raw` snapshot only refreshes on our notify token, and SpringBoard does
+    // not reliably receive it after the settings app writes the plist - which
+    // made the switch in Settings look dead.
+    id value = nil;
+    CFPropertyListRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)@"liveReflow",
+                                                    (__bridge CFStringRef)kPrefsDomain);
+    if (!v) {
+        v = CFPreferencesCopyValue((__bridge CFStringRef)@"liveReflow",
+                                   (__bridge CFStringRef)kPrefsDomain,
+                                   kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    }
+    if (v) {
+        value = (__bridge_transfer id)v;
+    }
+    if (!value) {
+        NSDictionary *fileDict = [NSDictionary dictionaryWithContentsOfFile:DPPreferencesPath()];
+        value = fileDict[@"liveReflow"];
+    }
+    if (!value) return NO;
+    return [value boolValue];
 }
 
 - (NSInteger)maxFloatingWindows {

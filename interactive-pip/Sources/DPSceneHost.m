@@ -1232,6 +1232,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                 return created;
             }
             NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
+            self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ pane=%@",
+                                 handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                                 NSStringFromCGSize(pane)];
             // 0.7.79 diagnostics: print exactly what the handle exposes so a
             // single build tells us whether the ZNS factory exists here.
             @try {
