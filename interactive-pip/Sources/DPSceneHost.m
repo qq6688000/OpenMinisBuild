@@ -2725,6 +2725,13 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         // earlier landscape builds; the geometric mean left visible bars.
         scale = MAX(sx, sy);
     }
+    // 0.7.142: in landscape the scaled content overflows past the pane's top edge and
+    // disappears under the status strip. Nudge the host down so the visible part clears
+    // it; portrait keeps the exact centre.
+    if (!sameOrientation) {
+        self.hostView.center = CGPointMake(target.width / 2.0,
+                                           target.height / 2.0 + target.height * 0.055);
+    }
     self.view.clipsToBounds = YES;
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     self.layoutDiag = [NSString stringWithFormat:@"view=%@ canvas=%@ sc=%.3f",
