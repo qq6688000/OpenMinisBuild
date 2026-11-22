@@ -48,6 +48,7 @@
 @property (nonatomic, assign) BOOL lastLandscapeKnown;
 @property (nonatomic, strong, nullable) NSTimer *keyboardWatchTimer;
 @property (nonatomic, assign) BOOL keyboardPollVisible;
+@property (nonatomic, assign) CFTimeInterval lastKeyboardTransitionAt;
 @property (nonatomic, assign) BOOL watchingDeviceOrientation; // 0.7.126: picker search needs a key window
 @property (nonatomic, strong) NSMutableSet<NSString *> *mutableHostedBundleIDs;
 @property (nonatomic, strong) NSMutableSet<NSString *> *launchAllowlist; // 临时允许全屏一次
@@ -979,20 +980,58 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 // 0.7.169: called from the _UIRemoteKeyboardWindow hook - the only reliable keyboard
 // signal available inside SpringBoard.
 - (void)keyboardWindowVisibilityChanged:(BOOL)visible {
-    NSLog(@"[InteractivePiP] keyboard window visible=%d", visible);
+    // 0.7.171: the keyboard window hook fires for every focus/blur on the device, so
+    // reacting to it blindly made windows jump between full screen and floating.
+    // Only act when a floating window really owns the input focus, and never more
+    // often than every 400ms.
     if (visible == self.keyboardPollVisible) return;
     self.keyboardPollVisible = visible;
-    if (visible) {
-        [self expandForKeyboardIfOurs];
-    } else {
-        [self collapseAfterKeyboard];
+
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - self.lastKeyboardTransitionAt < 0.4) {
+        NSLog(@"[InteractivePiP] keyboard transition debounced");
+        return;
     }
+    self.lastKeyboardTransitionAt = now;
+
+    if (!visible) {
+        [self collapseAfterKeyboard];
+        return;
+    }
+    // Only expand when one of OUR windows holds the focus.
+    if (![self floatingWindowHasFocus]) {
+        NSLog(@"[InteractivePiP] keyboard shown but not for us");
+        return;
+    }
+    [self expandForKeyboardIfOurs];
+}
+
+// 0.7.171: does a floating window really own the first responder right now?
+- (BOOL)floatingWindowHasFocus {
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.isTiled) continue;
+        if ([self window:w containsFirstResponderInView:w]) return YES;
+    }
+    // The hosted app's responder usually lives in another process, so fall back to
+    // the FIRST RESPONDER of our own window scene: only accept it when the system
+    // says a text input is active inside our overlay's hierarchy.
+    UIWindow *key = nil;
+    for (UIWindow *cw in [UIApplication sharedApplication].windows) {
+        if (cw.isKeyWindow) { key = cw; break; }
+    }
+    if (!key || key != self.overlayWindow) return NO;
+    // overlay is key, but that alone is not enough: require that the focused window
+    // is one of ours and still on screen.
+    DPFloatingWindow *f = self.focusedWindow;
+    if (!f || f.isTiled || f.hidden || f.alpha < 0.05) return NO;
+    return YES;
 }
 
 - (void)pollKeyboardState {
     BOOL visible = [self systemKeyboardVisible];
     if (visible == self.keyboardPollVisible) return;
     self.keyboardPollVisible = visible;
+    if (visible && ![self floatingWindowHasFocus]) return;
     NSLog(@"[InteractivePiP] keyboard poll visible=%d", visible);
     if (visible) {
         [self expandForKeyboardIfOurs];
@@ -1004,6 +1043,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 // Poll-driven expand: same target selection as the notification path.
 - (void)expandForKeyboardIfOurs {
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) return;
+    if (![self floatingWindowHasFocus]) return;   // 0.7.171 never expand a window nobody is typing in
     if (self.splitWindows.count) return;
     if (self.picker) return;
     if (self.mutableFloatingWindows.count == 0) return;
