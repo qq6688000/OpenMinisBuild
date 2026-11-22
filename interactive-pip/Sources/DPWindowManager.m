@@ -61,6 +61,7 @@
 @property (nonatomic) BOOL floatingHiddenOnHome;
 @property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
 @property (nonatomic, copy) NSArray *shelfThumbnails;
+@property (nonatomic, strong, nullable) DPFloatingWindow *pipWindow;
 @property (nonatomic) NSUInteger shelfWindowCount;
 @property (nonatomic) BOOL homeGestureSettling;
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
@@ -1501,6 +1502,38 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     return shots;
 }
 
+// 0.7.153: shrink to a small always-on-top live window over the home screen.
+- (void)enterPiPMode {
+    if (self.mutableFloatingWindows.count == 0) return;
+    DPFloatingWindow *w = self.focusedWindow ?: self.mutableFloatingWindows.firstObject;
+    if (!w) return;
+    self.pipWindow = w;
+    CGRect screen = self.overlayRoot.bounds;
+    CGFloat shortSide = MIN(screen.size.width, screen.size.height);
+    CGFloat pipW = floor(shortSide * 0.42);
+    CGFloat pipH = floor(pipW * 1.62);
+    CGRect target = CGRectMake(MAX(12.0, screen.size.width - pipW - 14),
+                               MAX(12.0, screen.size.height - pipH - 96),
+                               pipW, pipH);
+    [w setTiled:NO];
+    w.alpha = 1.0;
+    [w.sceneHost setSuspended:NO];
+    [UIView animateWithDuration:0.28 animations:^{
+        w.frame = target;
+        [w layoutIfNeeded];
+    } completion:^(BOOL finished) {
+        (void)finished;
+        [w layoutIfNeeded];
+        [w commitSceneLayout];
+    }];
+    self.overlayWindow.hidden = NO;
+    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
+    [self.overlayRoot bringSubviewToFront:w];
+    [self focusWindow:w];
+    [self updateSessionControls];
+    NSLog(@"[InteractivePiP] PiP mode %@ frame=%@", w.bundleID, NSStringFromCGRect(target));
+}
+
 - (void)updateEdgeShelf {
     if (!self.floatingHiddenOnHome || self.mode != DPPresentationModeFloating ||
         self.deviceLocked || self.switcherRestorePending || self.homeGestureSettling ||
@@ -1575,6 +1608,14 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     // 0.7.152: grab the pictures while they are still on screen.
     self.shelfThumbnails = [self captureFloatingThumbnails];
+
+    // 0.7.153: PiP mode - stay on the home screen as a small live window instead of
+    // parking. The scene keeps rendering, so a playing video carries on.
+    if ([DPSettings shared].pipKeepPlaying) {
+        [self enterPiPMode];
+        return;
+    }
+
     self.floatingHiddenOnHome = YES;
     self.overlayWindow.hidden = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
