@@ -34,9 +34,10 @@
 }
 @end
 
-// 0.7.82: write REFLOW diagnostics to a file the user can open with Filza.
-// Console logs are unreachable here; a file in /var/mobile/Documents is the
-// only way to see WHY live reflow is not engaging without a Mac.
+// 0.7.83: REFLOW diagnostics go BOTH to a file (Filza) AND to an on-screen
+// label in the floating window, so the user can screenshot the result without
+// touching a Mac or Filza.
+static __weak id gDPDiagHost; // DPSceneHost currently showing diag
 static void DPDiag(NSString *fmt, ...) {
     @autoreleasepool {
         va_list ap; va_start(ap, fmt);
@@ -55,6 +56,17 @@ static void DPDiag(NSString *fmt, ...) {
                 [fh closeFile];
             } @catch (__unused NSException *e) {}
         }
+        // Mirror to the on-screen label (latest active host).
+        id host = gDPDiagHost;
+        if (!host || ![host respondsToSelector:@selector(setReflowDiagText:)]) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                [host performSelector:@selector(setReflowDiagText:) withObject:line];
+#pragma clang diagnostic pop
+            } @catch (__unused NSException *e) {}
+        });
     }
 }
 
@@ -319,6 +331,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, strong, nullable) UIImageView *snapshotView;
 @property (nonatomic, strong, nullable) UILabel *nameLabel;
 @property (nonatomic, strong, nullable) UILabel *hintLabel;
+@property (nonatomic, strong, nullable) UILabel *reflowDiagLabel;
 @property (nonatomic, strong, nullable) NSString *requesterToken;
 @property (nonatomic, assign) NSInteger attemptCount;
 @property (nonatomic, assign) BOOL attaching;
@@ -1701,6 +1714,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             self.nativeSceneSize = size;
             [self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES];
 
+            gDPDiagHost = self; // show reflow diag on this window even before attach
             UIView *hv = [self hostViewFromFBScene:scene];
             if (hv) {
                 [self attachHostView:hv scene:scene];
@@ -1941,7 +1955,42 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     [self startSceneKeepAlive];
     [self acquireProcessAssertionIfNeeded];
     [self tryLiveReflow];
+    gDPDiagHost = self;
     NSLog(@"[InteractivePiP] LIVE attach %@ view=%@", self.bundleID, NSStringFromClass([hostView class]));
+}
+
+// 0.7.83: REFLOW 诊断直接画在窗口底部，截图即见。
+- (void)setReflowDiagText:(NSString *)text {
+    if (!text) return;
+    if (!self.reflowDiagLabel) {
+        UILabel *lb = [[UILabel alloc] init];
+        lb.textColor = [UIColor colorWithRed:1.0 green:0.45 blue:0.45 alpha:1.0];
+        lb.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
+        lb.numberOfLines = 0;
+        lb.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
+        lb.textAlignment = NSTextAlignmentLeft;
+        lb.tag = 0x5F9;
+        [self.view addSubview:lb];
+        self.reflowDiagLabel = lb;
+    }
+    self.reflowDiagLabel.text = [self.reflowDiagLabel.text stringByAppendingString:text];
+    if (self.reflowDiagLabel.text.length > 900) {
+        self.reflowDiagLabel.text = [self.reflowDiagLabel.text substringFromIndex:
+                                     self.reflowDiagLabel.text.length - 900];
+    }
+    [self layoutReflowDiagLabel];
+    [self.view bringSubviewToFront:self.reflowDiagLabel];
+}
+
+- (void)layoutReflowDiagLabel {
+    if (!self.reflowDiagLabel) return;
+    CGRect b = self.view.bounds;
+    CGFloat w = MIN(b.size.width - 8, 220);
+    CGFloat h = MIN(b.size.height * 0.45, 130);
+    CGFloat x = 4;
+    CGFloat y = b.size.height - h - 4;
+    self.reflowDiagLabel.frame = CGRectMake(x, y, w, h);
+    self.reflowDiagLabel.hidden = NO;
 }
 
 // 实时重排：把窗格尺寸作为 referenceSize 传给 host，让远端 App 按小窗重新排版。
