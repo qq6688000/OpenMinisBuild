@@ -686,6 +686,28 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 // factory always no-responded. This mirrors ZNSSceneSession existingHandleForScene:.
 - (id)znsHandleForScene:(id)scene {
     if (!scene) return nil;
+    // 0) SBMainWorkspace.mainWindowScene (ZNSplit's first priority).
+    Class ws = NSClassFromString(@"SBMainWorkspace");
+    if (ws && [ws respondsToSelector:@selector(sharedInstance)]) {
+        id wsp = ((id (*)(id, SEL))objc_msgSend)(ws, @selector(sharedInstance));
+        @try {
+            id mainScene = [wsp valueForKey:@"mainWindowScene"];
+            if (mainScene) {
+                id mgr = [mainScene valueForKey:@"sceneManager"];
+                if (mgr) {
+                    SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                    if ([mgr respondsToSelector:sel]) {
+                        id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                        if (h) {
+                            DPDiag(@"znsHandle resolved via mainWindowScene class=%@",
+                                   NSStringFromClass(object_getClass(h)));
+                            return h;
+                        }
+                    }
+                }
+            }
+        } @catch (__unused NSException *e) {}
+    }
     // 1) Every connected window scene -> its sceneManager -> existingSceneHandleForScene:
     for (id windowScene in UIApplication.sharedApplication.connectedScenes.allObjects) {
         @try {
@@ -1335,9 +1357,14 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             } else {
                 DPDiag(@"reflow factory nil, cover-scale fallback");
                 NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
-                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ pane=%@",
+                BOOL hasFactory = handle && [handle respondsToSelector:
+                    NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:")];
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ hasFactory=%d pane=%@",
                                      handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
-                                     NSStringFromCGSize(pane)];
+                                     hasFactory, NSStringFromCGSize(pane)];
+                DPDiag(@"reflow handle=%@ hasFactory=%d",
+                       handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                       hasFactory);
             }
             // 0.7.79 diagnostics: print exactly what the handle exposes so a
             // single build tells us whether the ZNS factory exists here.
@@ -1413,7 +1440,12 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     for (NSString *name in selectors) {
         SEL sel = NSSelectorFromString(name);
         if (![scene respondsToSelector:sel]) {
-            self.hostViewDiag = [NSString stringWithFormat:@"no-respond %@", name];
+            // 0.7.88: don't clobber the REFLOW-FAIL diagnostic set by the
+            // reflow branch - we need to see WHY that branch failed, not this
+            // FBScene probe (FBScene never has these methods).
+            if (![self.hostViewDiag hasPrefix:@"REFLOW"]) {
+                self.hostViewDiag = [NSString stringWithFormat:@"no-respond %@", name];
+            }
             continue;
         }
         NSMethodSignature *sig = [scene methodSignatureForSelector:sel];
