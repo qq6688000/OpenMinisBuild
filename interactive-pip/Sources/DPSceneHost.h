@@ -22,6 +22,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (int)keyboardRoutingPID;
 @property (nonatomic, assign, readonly) BOOL keyboardHostIsSceneView;
 @property (nonatomic, copy, readonly, nullable) NSString *hostViewDiag;
+// 0.7.93: FBSceneManager enumerate diagnostics (enum=scan=N match=M/<class>).
+@property (nonatomic, copy, readonly, nullable) NSString *reflowEnumDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;

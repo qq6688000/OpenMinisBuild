@@ -352,6 +352,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) BOOL reflowAttempted;
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowEnumDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, strong, nullable) DPHostRequester *hostRequester;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
@@ -791,13 +792,19 @@ static id DPObjcGet(id object, NSString *key) {
 
 - (id)fbSceneByEnumerate {
     id mgr = [self fbSceneManager];
-    if (!mgr) return nil;
+    if (!mgr) { self.reflowEnumDiag = @"enum=nomgr"; return nil; }
     SEL sel = NSSelectorFromString(@"enumerateScenesWithBlock:");
-    if (![mgr respondsToSelector:sel]) return nil;
+    if (![mgr respondsToSelector:sel]) {
+        self.reflowEnumDiag = [NSString stringWithFormat:@"enum=no-sel mgr=%@",
+                               NSStringFromClass([mgr class])];
+        return nil;
+    }
     __block id match = nil;
     __block NSUInteger matches = 0;
+    __block NSUInteger scanned = 0;
     void (^block)(id) = ^(id candidate) {
         @try {
+            scanned++;
             id process = DPObjcGet(candidate, @"clientProcess");
             NSString *bundle = DPObjcGet(process, @"bundleIdentifier");
             if (![bundle isKindOfClass:[NSString class]]) {
@@ -806,6 +813,13 @@ static id DPObjcGet(id object, NSString *key) {
             }
             BOOL same = [bundle isKindOfClass:[NSString class]] &&
                         [bundle isEqualToString:self.bundleID];
+            // 0.7.93: ZNSplit findScene identifier fallback (the missing piece).
+            NSString *identifier = DPObjcGet(candidate, @"identifier");
+            if (!same && ![bundle isKindOfClass:[NSString class]] &&
+                [identifier isKindOfClass:[NSString class]]) {
+                same = [identifier isEqualToString:self.bundleID] ||
+                    [identifier hasPrefix:[@"sceneID:" stringByAppendingString:self.bundleID]];
+            }
             if (same) {
                 id settings = DPObjcGet(candidate, @"settings");
                 SEL frameSel = NSSelectorFromString(@"frame");
@@ -818,7 +832,14 @@ static id DPObjcGet(id object, NSString *key) {
     };
     @try {
         ((void (*)(id, SEL, id))objc_msgSend)(mgr, sel, block);
-    } @catch (__unused NSException *e) { return nil; }
+    } @catch (__unused NSException *e) {
+        self.reflowEnumDiag = @"enum=throw";
+        return nil;
+    }
+    // 0.7.93: on-screen diagnostics so the user does not need Filza/Console.
+    self.reflowEnumDiag = [NSString stringWithFormat:@"enum=scan=%lu match=%lu/%@",
+                           (unsigned long)scanned, (unsigned long)matches,
+                           match ? NSStringFromClass([match class]) : @"nil"];
     if (matches > 1) return nil; // ambiguous, mirror ZNSplit
     return match;
 }
