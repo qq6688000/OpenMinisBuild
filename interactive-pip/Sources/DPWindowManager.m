@@ -885,16 +885,36 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 // device, so we must know whether the typing target is one of our windows.
 - (BOOL)keyboardBelongsToOurWindows {
     if (self.mutableFloatingWindows.count == 0) return NO;
+
+    // 0.7.166: the hosted app's first responder lives in ANOTHER PROCESS, so the
+    // subtree scan below almost never finds it - that is what made 0.7.164 swallow
+    // our own keyboard events and stop the expand-from-keyboard behaviour.
+    // Positive signals first:
+    //  a) our overlay window is the key window
+    for (UIWindow *cw in [UIApplication sharedApplication].windows) {
+        if (cw.isKeyWindow && cw == self.overlayWindow) return YES;
+    }
+    //  b) a first responder lives in one of our (local) subtrees
     for (DPFloatingWindow *w in self.floatingWindows) {
         if (w.isTiled) continue;
         if ([self window:w containsFirstResponderInView:w]) return YES;
     }
-    UIWindow *key = nil;
+
+    // Negative signal only: some OTHER app window is key and visible. Home screen
+    // keeps SpringBoard windows, which never equal a foreign app window.
     for (UIWindow *cw in [UIApplication sharedApplication].windows) {
-        if (cw.isKeyWindow) { key = cw; break; }
+        if (!cw.isKeyWindow) continue;
+        if (cw == self.overlayWindow) return YES;
+        if (cw == self.edgeShelf) return NO;
+        // SpringBoard's own windows (homescreen icons, folders, switcher) are not
+        // ours to expand for - but they also mean the user is not typing in our app.
+        NSString *cls = NSStringFromClass(cw.class);
+        if ([cls hasPrefix:@"SB"] || [cls hasPrefix:@"_UI"] || [cls containsString:@"StatusBar"]) {
+            return NO;
+        }
     }
-    if (!key) return NO;
-    return (key == self.overlayWindow);
+    // No key window at all (transition): assume it is ours, expanding is recoverable.
+    return YES;
 }
 
 - (void)hostedKeyboardWillShow {
