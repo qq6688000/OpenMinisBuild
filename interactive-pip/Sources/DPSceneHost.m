@@ -34,6 +34,30 @@
 }
 @end
 
+// 0.7.82: write REFLOW diagnostics to a file the user can open with Filza.
+// Console logs are unreachable here; a file in /var/mobile/Documents is the
+// only way to see WHY live reflow is not engaging without a Mac.
+static void DPDiag(NSString *fmt, ...) {
+    @autoreleasepool {
+        va_list ap; va_start(ap, fmt);
+        NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
+        va_end(ap);
+        NSString *entry = [NSString stringWithFormat:@"[%.3f] %@\n",
+                           CFAbsoluteTimeGetCurrent(), line];
+        NSString *path = @"/var/mobile/Documents/duo-reflow.log";
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (!fh) {
+            [entry writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        } else {
+            @try {
+                [fh seekToEndOfFile];
+                [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+                [fh closeFile];
+            } @catch (__unused NSException *e) {}
+        }
+    }
+}
+
 // Only describes known private initializers; no private class is implemented.
 @interface DPSceneLayerContainerABI : UIView
 - (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
@@ -750,17 +774,22 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             __unsafe_unretained id result = nil;
             [inv getReturnValue:&result];
             UIView *v = [self viewFromMaybeController:result];
+            DPDiag(@"reflow factory %@ responds=%d -> %@",
+                   name, 1, v ? NSStringFromClass(v.class) : @"(nil)");
             if (v) {
                 NSLog(@"[InteractivePiP] %@ via %@", self.bundleID, name);
                 return v;
             }
         } @catch (NSException *e) {
+            DPDiag(@"reflow factory %@ threw %@", name, e.name);
             NSLog(@"[InteractivePiP] %@ 异常: %@", name, e);
         }
     }
 
     // newSceneViewWithReferenceSize:orientation:hostRequester:
     SEL viewSel = NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:");
+    DPDiag(@"reflow has newSceneViewWithReferenceSize:orientation:hostRequester: = %d",
+           [handle respondsToSelector:viewSel]);
     if ([handle respondsToSelector:viewSel]) {
         NSMethodSignature *sig = [handle methodSignatureForSelector:viewSel];
         if (sig) {
@@ -1217,9 +1246,16 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     // pane silently stayed on cover-scale.
     if ([DPSettings shared].liveReflow) {
         CGSize pane = self.view.bounds.size;
+        DPDiag(@"reflow enter bundle=%@ pane=%@ liveReflow=1",
+               self.bundleID, NSStringFromCGSize(pane));
         if (pane.width >= 2 && pane.height >= 2) {
             id handle = self.sceneHandle ?: [self sceneHandleForBundleID];
+            DPDiag(@"reflow handle class=%@ nil=%d",
+                   handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                   handle == nil);
             UIView *created = [self hostViewFromSceneHandle:handle size:pane];
+            DPDiag(@"reflow factory result=%@",
+                   created ? NSStringFromClass(created.class) : @"(nil)");
             if (created) {
                 self.hostIsSceneView = YES;
                 // The host was born at the pane size: record it now so the
@@ -1235,6 +1271,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                 // stayed cover-scale. Run it now on the freshly created host.
                 long long orient = (pane.width > pane.height) ? 4 : 1;
                 BOOL configured = DPConfigureHostCanvas(created, pane, orient);
+                DPDiag(@"reflow configured=%d pane=%@ class=%@",
+                       configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
                 NSLog(@"[InteractivePiP] REFLOW configured=%d pane=%@ class=%@",
                       configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
                 self.hostViewDiag = [NSString stringWithFormat:
@@ -1251,6 +1289,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             // single build tells us whether the ZNS factory exists here.
             @try {
                 Class hc = handle ? object_getClass(handle) : Nil;
+                DPDiag(@"reflow probe handle class=%@ nil=%d",
+                       hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
                 NSLog(@"[InteractivePiP] PROBE handle class=%@ nil=%d",
                       hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
                 if (hc) {
@@ -1261,13 +1301,20 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                         if (!nm) continue;
                         if (!strstr(nm, "SceneView") && !strstr(nm, "sceneView") &&
                             !strstr(nm, "Reference") && !strstr(nm, "reference")) continue;
+                        DPDiag(@"reflow probe sel %s enc=%s",
+                               nm, method_getTypeEncoding(ms[i]) ?: "-");
                         NSLog(@"[InteractivePiP] PROBE handle sel %s enc=%s",
                               nm, method_getTypeEncoding(ms[i]) ?: "-");
                     }
                     free(ms);
                 }
             } @catch (__unused NSException *e) {}
+        } else {
+            DPDiag(@"reflow skip pane too small (pane=%@), view.bounds not laid out yet",
+                   NSStringFromCGSize(pane));
         }
+    } else {
+        DPDiag(@"reflow skip liveReflow=0 (switch off in prefs)");
     }
 
     // Request the scene at the phone's native canvas, not the pane size: a
@@ -1910,6 +1957,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         if (self.invalidated || !self.hostView || self.hostView.superview != self.view) return;
         [UIView performWithoutAnimation:^{
             BOOL ok = DPConfigureHostCanvas(self.hostView, target, orientation);
+            DPDiag(@"tryLiveReflow dpc ok=%d target=%@ class=%@",
+                   ok, NSStringFromCGSize(target), NSStringFromClass(self.hostView.class));
             if (ok) {
                 self.reflowCanvas = target;
                 [self layoutHostView];
