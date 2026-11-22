@@ -163,6 +163,47 @@ static BOOL DPCGetter(id object, SEL sel, const char *retType) {
     return DPCABI(object, sel, retType, NULL, 0);
 }
 
+// 0.7.96: the real iOS 16 path, recovered from PV 1.0.9's own binary.
+//
+// The registered handle has NO scene-view factory on this system (the panel
+// reported hasFactory=0), so the pane host must be handle.sceneContentView,
+// and the size must be pushed into
+// handle.deviceApplicationSceneViewController (SBDeviceApplicationSceneViewController,
+// a subclass of SBSceneViewController). Our own allocated layer container never
+// had either ABI, which is why every DPC probe answered dpc-on-host.
+static id DPCSceneViewController(id handle) {
+    SEL sel = NSSelectorFromString(@"deviceApplicationSceneViewController");
+    if (!handle || ![handle respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(handle, sel);
+}
+static UIView *DPCSceneContentView(id handle) {
+    SEL sel = NSSelectorFromString(@"sceneContentView");
+    if (!handle || ![handle respondsToSelector:sel]) return nil;
+    id v = ((id (*)(id, SEL))objc_msgSend)(handle, sel);
+    return [v isKindOfClass:[UIView class]] ? (UIView *)v : nil;
+}
+static BOOL DPCSetContentReferenceSize(id vc, CGSize size, NSInteger orientation, BOOL *usedCombined) {
+    if (!vc) return NO;
+    // Combined form: (CGSize, NSInteger contentOrientation, NSInteger containerOrientation)
+    SEL sel = NSSelectorFromString(
+        @"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
+    const char *args[] = {@encode(CGSize), @encode(NSInteger), @encode(NSInteger)};
+    if (DPCABI(vc, sel, "v", args, 3)) {
+        ((void (*)(id, SEL, CGSize, NSInteger, NSInteger))objc_msgSend)(
+            vc, sel, size, orientation, orientation);
+        if (usedCombined) *usedCombined = YES;
+        return YES;
+    }
+    // Separate form: (CGSize, NSInteger interfaceOrientation)
+    sel = NSSelectorFromString(@"setContentReferenceSize:withInterfaceOrientation:");
+    const char *args2[] = {@encode(CGSize), @encode(NSInteger)};
+    if (DPCABI(vc, sel, "v", args2, 2)) {
+        ((void (*)(id, SEL, CGSize, NSInteger))objc_msgSend)(vc, sel, size, orientation);
+        return YES;
+    }
+    return NO;
+}
+
 // Solve host LOCAL bounds from the existing axis-aligned transform.
 static BOOL DPCGeometryForCanvas(CGSize canvas, CGAffineTransform t,
                                  CGPoint anchor, CGSize *localSize, CGPoint *position) {
@@ -1453,6 +1494,49 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
             DPDiag(@"reflow handle class=%@ nil=%d",
                    handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
                    handle == nil);
+            // 0.7.96: try the iOS 16 path FIRST. The handle has no scene-view
+            // factory on this system (panel: hasFactory=0), but it does expose
+            // sceneContentView + deviceApplicationSceneViewController, which is
+            // exactly what PV 1.0.9 drives. Display the real content view and
+            // push the pane size into the scene view controller.
+            long long orient = (pane.width > pane.height) ? 4 : 1;
+            id sceneVC = DPCSceneViewController(handle);
+            UIView *contentView = DPCSceneContentView(handle);
+            BOOL usedCombined = NO;
+            BOOL sizeOK = NO;
+            BOOL viewOK = NO;
+            @try {
+                sizeOK = DPCSetContentReferenceSize(sceneVC, pane, (NSInteger)orient,
+                                                    &usedCombined);
+                if (sizeOK && contentView) {
+                    self.hostIsSceneView = YES;
+                    self.reflowCanvas = pane;
+                    self.reflowAttempted = YES;
+                    self.hostViewDiag = [NSString stringWithFormat:
+                                         @"REFLOW-OK ios16 combined=%d view=%@ vc=%@",
+                                         usedCombined,
+                                         NSStringFromClass(contentView.class),
+                                         NSStringFromClass(object_getClass(sceneVC))];
+                    DPDiag(@"reflow committed via ios16 path, displaying sceneContentView");
+                    viewOK = YES;
+                    return contentView;
+                }
+            } @catch (NSException *e) {
+                self.reflowCanvas = CGSizeZero;
+                self.reflowAttempted = NO;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-THROW ios16 %@: %@",
+                                     e.name, e.reason];
+                DPDiag(@"reflow ios16 path threw %@: %@", e.name, e.reason);
+            }
+            self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | vc=%@ content=%@ setSize=%d/%d",
+                                      self.reflowHandleDiag ?: @"-",
+                                      sceneVC ? NSStringFromClass(object_getClass(sceneVC)) : @"nil",
+                                      contentView ? NSStringFromClass(contentView.class) : @"nil",
+                                      sceneVC != nil, sizeOK];
+            DPDiag(@"reflow ios16 vc=%@ content=%@ setSize=%d combined=%d pane=%@",
+                   sceneVC ? NSStringFromClass(object_getClass(sceneVC)) : @"nil",
+                   contentView ? NSStringFromClass(contentView.class) : @"nil",
+                   sizeOK, usedCombined, NSStringFromCGSize(pane));
             UIView *created = [self hostViewFromSceneHandle:handle size:pane];
             DPDiag(@"reflow factory result=%@",
                    created ? NSStringFromClass(created.class) : @"(nil)");
