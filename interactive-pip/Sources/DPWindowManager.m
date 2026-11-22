@@ -881,6 +881,22 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     return NO;
 }
 
+// 0.7.165: guard against foreign keyboards. This notification fires for the whole
+// device, so we must know whether the typing target is one of our windows.
+- (BOOL)keyboardBelongsToOurWindows {
+    if (self.mutableFloatingWindows.count == 0) return NO;
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.isTiled) continue;
+        if ([self window:w containsFirstResponderInView:w]) return YES;
+    }
+    UIWindow *key = nil;
+    for (UIWindow *cw in [UIApplication sharedApplication].windows) {
+        if (cw.isKeyWindow) { key = cw; break; }
+    }
+    if (!key) return NO;
+    return (key == self.overlayWindow);
+}
+
 - (void)hostedKeyboardWillShow {
     DPKBLog(@"WM show notify windows=%lu split=%lu",
             (unsigned long)self.floatingWindows.count, (unsigned long)self.splitWindows.count);
