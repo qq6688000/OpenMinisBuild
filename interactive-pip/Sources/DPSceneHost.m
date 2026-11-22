@@ -519,7 +519,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) CGSize lastSubmittedPaneSize;
 // 0.7.103: pane kept moving after layout; converge before re-submitting.
 @property (nonatomic, assign) BOOL reflowNeedsCommit;
-@property (nonatomic, assign) BOOL reflowFrozen; // keyboard expanded: skip host rebuild
+@property (nonatomic, assign) BOOL reflowFrozen;
+@property (nonatomic, assign) NSInteger lastInterfaceOrientation; // keyboard expanded: skip host rebuild
 @property (nonatomic, assign) CGSize reflowCommitTarget;
 @property (nonatomic, assign) CFTimeInterval reflowCommitPendingAt;
 @property (nonatomic, copy, readwrite, nullable) NSString *reflowCanvasDiag;
@@ -3064,13 +3065,22 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     BOOL changed = (fabs(size.width - self.nativeSceneSize.width) > 0.5 ||
                     fabs(size.height - self.nativeSceneSize.height) > 0.5);
     self.nativeSceneSize = size;
-    if (!changed) { [self layoutHostView]; return; }
-    DPDiag(@"rotation canvas -> %@", NSStringFromCGSize(size));
-    // Mid-keyboard we must not rebuild (it kills the keyboard view); the normal
-    // layout pass will pick the new canvas up once the keyboard is gone.
+    // 0.7.132: the host itself must also be told about the new orientation, or it
+    // keeps drawing portrait content into a landscape frame (sideways + squeezed).
+    NSInteger orient = (size.width > size.height) ? 4 : 1;   // 4 = landscapeRight, 1 = portrait
+    BOOL orientChanged = (self.lastInterfaceOrientation != orient);
+    self.lastInterfaceOrientation = orient;
+    if (!changed && !orientChanged) { [self layoutHostView]; return; }
+
+    DPDiag(@"rotation canvas=%@ orient=%ld changed=%d/%d",
+           NSStringFromCGSize(size), (long)orient, changed, orientChanged);
+    self.reflowAttempted = NO;          // allow the factory to run again
+    self.reflowCanvas = CGSizeZero;
     if (self.reflowFrozen) { [self layoutHostView]; return; }
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.invalidated) return;
+        // submit the orientation to the scene before rebuilding the view
+        [self applySceneForeground:YES backgrounded:NO size:size includeFrame:YES];
         [self rebuildAtNaturalSize];
     });
 }

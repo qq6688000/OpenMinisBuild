@@ -42,7 +42,10 @@
 @property (nonatomic, strong, readwrite) NSMutableArray<DPFloatingWindow *> *mutableFloatingWindows;
 @property (nonatomic, assign, readwrite) DPPresentationMode mode;
 @property (nonatomic, strong, nullable) DPAppPicker *picker;
-@property (nonatomic, strong, nullable) UIWindow *prePickerKeyWindow; // 0.7.126: picker search needs a key window
+@property (nonatomic, strong, nullable) UIWindow *prePickerKeyWindow;
+@property (nonatomic, assign) BOOL lastLandscapeState;
+@property (nonatomic, assign) BOOL lastLandscapeKnown;
+@property (nonatomic, assign) BOOL watchingDeviceOrientation; // 0.7.126: picker search needs a key window
 @property (nonatomic, strong) NSMutableSet<NSString *> *mutableHostedBundleIDs;
 @property (nonatomic, strong) NSMutableSet<NSString *> *launchAllowlist; // 临时允许全屏一次
 @property (nonatomic, assign) BOOL suppressLaunch;
@@ -187,6 +190,10 @@
     self.overlayRoot = root;
 
     NSLog(@"[InteractivePiP] 顶层窗口已安装 level=%.0f", win.windowLevel);
+    [self startWatchingDeviceOrientation];
+    CGRect rb = self.overlayRoot.bounds;
+    self.lastLandscapeKnown = YES;
+    self.lastLandscapeState = (rb.size.width > rb.size.height);
 }
 
 - (UIWindowScene *)activeWindowScene API_AVAILABLE(ios(13.0)) {
@@ -895,6 +902,43 @@
     return set.array;
 }
 
+// 0.7.132: rotation watchdog. SB's private orientation callback is not reliable
+// on every iOS build, so also poll the effective geometry whenever layout runs.
+// 0.7.132: belt and braces - also watch the device orientation notification, which
+// fires even when SpringBoard's private orientation callback does not.
+- (void)startWatchingDeviceOrientation {
+    if (self.watchingDeviceOrientation) return;
+    self.watchingDeviceOrientation = YES;
+    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(deviceOrientationDidChange:)
+                                                 name:UIDeviceOrientationDidChangeNotification
+                                               object:nil];
+}
+
+- (void)deviceOrientationDidChange:(NSNotification *)note {
+    (void)note;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self syncRotationIfNeeded];
+    });
+}
+
+- (void)syncRotationIfNeeded {
+    if (!self.overlayWindow) return;
+    CGRect full = self.overlayRoot.bounds;
+    if (full.size.width < 2 || full.size.height < 2) return;
+    BOOL nowLandscape = full.size.width > full.size.height;
+    if (nowLandscape == self.lastLandscapeState && self.lastLandscapeKnown) return;
+    self.lastLandscapeKnown = YES;
+    self.lastLandscapeState = nowLandscape;
+    NSLog(@"[InteractivePiP] rotation sync landscape=%d bounds=%@", nowLandscape, NSStringFromCGRect(full));
+    for (DPFloatingWindow *w in [self allWindowsForRotation]) {
+        [w updateNaturalCanvasForCurrentScreen];
+    }
+    if (self.duoMode && self.splitWindows.count == 2) [self layoutSplit];
+}
+
 - (void)handleOrientationChange {
     // 0.7.131: rotation must resync the window geometry AND the hosts' natural
     // canvas. Without the second part the scene keeps the portrait reference size
@@ -1030,6 +1074,7 @@
 
 - (void)layoutSplit {
     if (self.splitWindows.count != 2) return;
+    [self syncRotationIfNeeded];
     [self scheduleSwitcherPreviewRefresh];
     CGRect full = self.overlayRoot.bounds;
     // Duo: panels fill the entire screen edge to edge (no status/home inset).
