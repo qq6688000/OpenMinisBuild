@@ -27,7 +27,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setSuspended:(BOOL)suspended;
 - (void)retryAttach;
 - (void)invalidate;
-// 0.7.115: force the reflow host to rebuild at the current pane size.
+// 0.7.117: freeze reflow host rebuild while the keyboard is expanded (rebuilding
+// the host destroys the system keyboard view -> white blank keyboard).
+- (void)setReflowFrozen:(BOOL)frozen;
 - (void)forceReflowRebuild;
 
 @end

@@ -519,6 +519,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) CGSize lastSubmittedPaneSize;
 // 0.7.103: pane kept moving after layout; converge before re-submitting.
 @property (nonatomic, assign) BOOL reflowNeedsCommit;
+@property (nonatomic, assign) BOOL reflowFrozen; // keyboard expanded: skip host rebuild
 @property (nonatomic, assign) CGSize reflowCommitTarget;
 @property (nonatomic, assign) CFTimeInterval reflowCommitPendingAt;
 @property (nonatomic, copy, readwrite, nullable) NSString *reflowCanvasDiag;
@@ -2643,6 +2644,13 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         // Converge: the pane is still moving right after the opening animation.
         // Submit only once it has been still for 150ms so the app renders at
         // the pane's final size instead of a mid-animation one.
+        if (self.reflowFrozen) {
+            // keyboard expanded: do NOT rebuild host (would blank the keyboard)
+            self.layoutDiag = [NSString stringWithFormat:@"REFLOW view=%@ canvas=%@ sc=1.000 FROZEN",
+                               NSStringFromCGSize(target), NSStringFromCGSize(self.reflowCanvas)];
+            [self layoutReflowDiagLabel];
+            return;
+        }
         if (self.reflowNeedsCommit && self.reflowCommitPendingAt > 0 &&
             (now - self.reflowCommitPendingAt) > 0.15) {
             CGSize wanted = self.reflowCommitTarget;
@@ -2996,6 +3004,16 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
     self.placeholder.hidden = NO;
     [self updatePlaceholderHint:@"正在重新连接…"];
     [self attemptLiveSceneHost];
+}
+
+- (void)setReflowFrozen:(BOOL)frozen {
+    self.reflowFrozen = frozen;
+    if (!frozen) {
+        // keyboard collapsed: allow a rebuild to settle back to the small pane
+        self.reflowNeedsCommit = YES;
+        self.reflowCommitPendingAt = CACurrentMediaTime();
+        [self layoutHostView];
+    }
 }
 
 - (void)forceReflowRebuild {

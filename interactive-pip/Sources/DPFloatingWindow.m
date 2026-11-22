@@ -396,6 +396,7 @@ void DPKBLog(NSString *fmt, ...) {
     if (!superview) { DPKBLog(@"expand:skip no-sup"); return; }
     self.keyboardSavedFrame = self.frame;
     self.keyboardExpanded = YES;
+    [self.sceneHost setReflowFrozen:YES];  // 防全屏触发 host 重建 -> 白板键盘
     // 直接用屏幕 bounds，不依赖 superview.bounds（safe area 可能缩小它）
     CGRect target = [UIScreen mainScreen].bounds;
     if (@available(iOS 13.0, *)) {
@@ -414,7 +415,8 @@ void DPKBLog(NSString *fmt, ...) {
         if (!ws || !ws.keyboardExpanded) return;
         ws.frame = target;
         [ws layoutIfNeeded];   // 强制 contentContainer 更新到全屏 frame
-        [ws.sceneHost forceReflowRebuild];  // 强制按全屏 pane 重建 host
+        // 不重建 host：重建会把系统键盘视图一起重建掉（白板键盘）。
+        // 只让 cover-scale 铺满全屏，键盘照常渲染。
         [ws layoutSceneIfNeeded];
         [ws.sceneHost commitHostedFrame];
         DPKBLog(@"expand:late frame=%@ content=%@", NSStringFromCGRect(ws.frame), NSStringFromCGRect(ws.contentContainer.bounds));
@@ -424,6 +426,7 @@ void DPKBLog(NSString *fmt, ...) {
 - (void)collapseForKeyboardAnimated:(BOOL)animated {
     DPKBLog(@"collapse:call already=%d", self.keyboardExpanded);
     if (!self.keyboardExpanded) return;
+    [self.sceneHost setReflowFrozen:NO];  // 允许重建回小窗 pane
     self.keyboardExpanded = NO;
     UIView *superview = self.superview;
     if (!superview) return;
