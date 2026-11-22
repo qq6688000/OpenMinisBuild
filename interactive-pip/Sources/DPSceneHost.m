@@ -775,7 +775,46 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     return result;
 }
 
+// 0.7.91: mirror ZNSSceneSession.findScene: enumerate the real FBScene list and
+// match by clientProcess.bundleIdentifier. Returns the actual FBScene object
+// that -existingSceneHandleForScene: expects, so the reverse lookup succeeds.
+- (id)fbSceneByEnumerate {
+    id mgr = [self fbSceneManager];
+    if (!mgr) return nil;
+    SEL sel = NSSelectorFromString(@"enumerateScenesWithBlock:");
+    if (![mgr respondsToSelector:sel]) return nil;
+    __block id match = nil;
+    __block NSUInteger matches = 0;
+    void (^block)(id) = ^(id candidate) {
+        @try {
+            id process = [candidate valueForKey:@"clientProcess"];
+            NSString *bundle = [process valueForKey:@"bundleIdentifier"];
+            if (![bundle isKindOfClass:[NSString class]]) {
+                id appInfo = [process valueForKey:@"applicationInfo"];
+                bundle = [appInfo valueForKey:@"bundleIdentifier"];
+            }
+            BOOL same = [bundle isKindOfClass:[NSString class]] &&
+                        [bundle isEqualToString:self.bundleID];
+            if (same) {
+                if (candidate != match) matches++;
+                if (!match) match = candidate;
+            }
+        } @catch (__unused NSException *e) {}
+    };
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(mgr, sel, block);
+    } @catch (__unused NSException *e) { return nil; }
+    if (matches > 1) return nil; // ambiguous, mirror ZNSplit
+    return match;
+}
+
 - (id)findFBScene {
+    // 0.7.91: ZNSplit enumerates the REAL FBScene by bundleID via
+    // FBSceneManager.enumerateScenesWithBlock:. Our old mainSceneFromApplication:
+    // (SBApplication.mainScene) is NOT an FBScene, so existingSceneHandleForScene:
+    // reverse-lookup failed and we kept landing on a factory-less handle.
+    id enumerated = [self fbSceneByEnumerate];
+    if (enumerated) return enumerated;
     id appScene = [self mainSceneFromApplication:[self sbApplication]];
     if (appScene) {
         self.sceneHandle = appScene;
