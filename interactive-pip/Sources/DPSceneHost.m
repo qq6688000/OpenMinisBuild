@@ -1227,8 +1227,20 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                 // full-screen canvas before tryLiveReflow runs.
                 self.reflowCanvas = pane;
                 self.reflowAttempted = YES;
-                NSLog(@"[InteractivePiP] REFLOW host created at pane size %@ (%@)",
-                      NSStringFromCGSize(pane), NSStringFromClass(created.class));
+                // 0.7.81: creating the host alone never reflows the remote
+                // App. ZNSplit calls ZNSConfigureHostCanvas right after the
+                // factory - that is what pushes referenceSize into FrontBoard
+                // so the App actually lays out at the pane size. We skipped it
+                // (reflowAttempted=YES made tryLiveReflow bail), so the pane
+                // stayed cover-scale. Run it now on the freshly created host.
+                long long orient = (pane.width > pane.height) ? 4 : 1;
+                BOOL configured = DPConfigureHostCanvas(created, pane, orient);
+                NSLog(@"[InteractivePiP] REFLOW configured=%d pane=%@ class=%@",
+                      configured, NSStringFromCGSize(pane), NSStringFromClass(created.class));
+                self.hostViewDiag = [NSString stringWithFormat:
+                                     @"REFLOW-OK cfg=%d pane=%@ %@",
+                                     configured, NSStringFromCGSize(pane),
+                                     NSStringFromClass(created.class)];
                 return created;
             }
             NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
