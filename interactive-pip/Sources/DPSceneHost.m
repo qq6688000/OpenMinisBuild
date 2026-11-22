@@ -7,6 +7,33 @@
 #import <unistd.h>
 #import <errno.h>
 
+// 0.7.79: FrontBoard calls these methods on the hostRequester object. Passing a
+// plain NSString (as every earlier build did) made
+// -newSceneViewWithReferenceSize:... throw or return nil, which silently fell
+// back to the pixel-only layer container - the reason live reflow never
+// engaged. ZNSplit passes a real object with the same two methods.
+@interface DPHostRequester : NSObject
+@property (nonatomic, copy) NSString *presentationIdentifier;
+@end
+
+@implementation DPHostRequester
+- (instancetype)init {
+    if ((self = [super init])) {
+        _presentationIdentifier = [@"com.seagull.interactivepip.host."
+                                   stringByAppendingString:NSUUID.UUID.UUIDString];
+    }
+    return self;
+}
+- (NSString *)sceneViewPresentationIdentifier:(id)view {
+    (void)view;
+    return self.presentationIdentifier;
+}
+- (long long)sceneViewPresentationPriority:(id)view {
+    (void)view;
+    return 1;
+}
+@end
+
 // Only describes known private initializers; no private class is implemented.
 @interface DPSceneLayerContainerABI : UIView
 - (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
@@ -282,6 +309,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
+@property (nonatomic, strong, nullable) DPHostRequester *hostRequester;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
 - (void)unfreezeIfNeeded;
 @property (nonatomic, strong, nullable) dispatch_source_t keepAliveTimer;
@@ -691,7 +719,11 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         s = CGSizeMake(180, 320);
     }
     long long orientation = (size.width > size.height) ? 4 : 1; // LandscapeRight : Portrait
-    NSString *req = self.requesterToken ?: @"DualPane";
+    // 0.7.79: the scene-view factory needs a real requester OBJECT (FrontBoard
+    // calls sceneViewPresentationIdentifier:/Priority: on it). A string made
+    // every factory call fail, which is why reflow never engaged.
+    DPHostRequester *req = [[DPHostRequester alloc] init];
+    self.hostRequester = req;
 
     // 优先 SceneViewController（iOS 15/16 更稳）
     NSArray *vcSels = @[
@@ -1132,7 +1164,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     // iOS 16 exposes scene view creation on FBSceneManager, NOT on the FBScene.
     id mgr = [self fbSceneManager] ?: [self sbMainDisplaySceneManager];
     if (!mgr) return nil;
-    NSString *req = self.requesterToken ?: @"InteractivePiP";
+    // 0.7.79: manager factories take the same requester OBJECT contract.
+    DPHostRequester *req = [[DPHostRequester alloc] init];
+    self.hostRequester = req;
     NSArray *names = @[
         @"newSceneViewWithReferenceSize:hostRequester:",
         @"newSceneViewWithReferenceSize:orientation:hostRequester:",
@@ -1198,6 +1232,26 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                 return created;
             }
             NSLog(@"[InteractivePiP] REFLOW host factory unavailable, falling back");
+            // 0.7.79 diagnostics: print exactly what the handle exposes so a
+            // single build tells us whether the ZNS factory exists here.
+            @try {
+                Class hc = handle ? object_getClass(handle) : Nil;
+                NSLog(@"[InteractivePiP] PROBE handle class=%@ nil=%d",
+                      hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
+                if (hc) {
+                    unsigned n = 0;
+                    Method *ms = class_copyMethodList(hc, &n);
+                    for (unsigned i = 0; i < n; i++) {
+                        const char *nm = sel_getName(method_getName(ms[i]));
+                        if (!nm) continue;
+                        if (!strstr(nm, "SceneView") && !strstr(nm, "sceneView") &&
+                            !strstr(nm, "Reference") && !strstr(nm, "reference")) continue;
+                        NSLog(@"[InteractivePiP] PROBE handle sel %s enc=%s",
+                              nm, method_getTypeEncoding(ms[i]) ?: "-");
+                    }
+                    free(ms);
+                }
+            } @catch (__unused NSException *e) {}
         }
     }
 
@@ -1261,7 +1315,8 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             if (argc > 4) { [inv setArgument:&zero atIndex:3]; [inv setArgument:&zero atIndex:4]; }
             else if (argc > 3) { [inv setArgument:&zero atIndex:3]; }
             if (argc > 5) {
-                NSString *req = self.requesterToken ?: @"InteractivePiP";
+                DPHostRequester *req = [[DPHostRequester alloc] init];
+                self.hostRequester = req;
                 [inv setArgument:&req atIndex:5];
             }
             [inv invoke];
