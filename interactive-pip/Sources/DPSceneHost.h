@@ -24,6 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *hostViewDiag;
 // 0.7.93: FBSceneManager enumerate diagnostics (enum=scan=N match=M/<class>).
 @property (nonatomic, copy, readonly, nullable) NSString *reflowEnumDiag;
+// 0.7.94: trace of the scene-handle reverse lookup (which manager resolved it).
+@property (nonatomic, copy, readonly, nullable) NSString *reflowHandleDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;

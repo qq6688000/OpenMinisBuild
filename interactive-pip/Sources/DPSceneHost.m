@@ -353,6 +353,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, assign) BOOL hostIsSceneView;
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *reflowEnumDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowHandleDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, strong, nullable) DPHostRequester *hostRequester;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
@@ -776,6 +777,10 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     } else {
         DPDiag(@"znsHandle OK %@", diag);
     }
+    // 0.7.94: always publish the lookup trace on screen. Previously it was only
+    // set on failure and got clobbered by the tryLiveReflow dpc-on-host string,
+    // so the reverse-lookup result was invisible in the panel.
+    self.reflowHandleDiag = diag;
     return result;
 }
 
@@ -1449,6 +1454,11 @@ static id DPObjcGet(id object, NSString *key) {
                 // and fall through to the cover-scale path below.
                 DPDiag(@"reflow DPC failed, invalidating pane host and falling back to cover-scale");
                 NSLog(@"[InteractivePiP] REFLOW DPC failed, invalidating host, cover-scale fallback");
+                // 0.7.94: the factory DID return a view but DPConfigureHostCanvas
+                // rejected it - record which class came back before we drop it.
+                self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | factory=%@ DPC-fail",
+                                         self.reflowHandleDiag ?: @"-",
+                                         NSStringFromClass(created.class)];
                 @try { DPInvalidateHostView(created, @"reflow-dpc-failed"); } @catch (__unused NSException *e) {}
                 [created removeFromSuperview];
                 created = nil;
@@ -1470,6 +1480,12 @@ static id DPObjcGet(id object, NSString *key) {
                 DPDiag(@"reflow handle=%@ hasFactory=%d",
                        handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
                        hasFactory);
+                // 0.7.94: append the factory verdict to the handle trace so the
+                // panel shows both halves of the chain on one screen.
+                self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | factory=none handle=%@ hasFactory=%d",
+                                         self.reflowHandleDiag ?: @"-",
+                                         handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
+                                         hasFactory];
             }
             // 0.7.89: enumerate EVERY method on the handle class into the
             // on-screen diagnostic so we can see what iOS 16.4.1 actually

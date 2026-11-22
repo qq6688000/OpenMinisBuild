@@ -718,9 +718,9 @@
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         DPSceneHost *h = w.sceneHost;
         if (!h) continue;
-        [text appendFormat:@"[%@]\nhostDiag=%@\nenum=%@\nlayout=%@\n",
+        [text appendFormat:@"[%@]\nhostDiag=%@\nenum=%@\nhandle=%@\nlayout=%@\n",
          w.bundleID ?: @"?", h.hostViewDiag ?: @"-",
-         h.reflowEnumDiag ?: @"-", h.layoutDiag ?: @"-"];
+         h.reflowEnumDiag ?: @"-", h.reflowHandleDiag ?: @"-", h.layoutDiag ?: @"-"];
     }
     if (!text.length) {
         if (self.diagLabel) { [self.diagLabel removeFromSuperview]; self.diagLabel = nil; }
@@ -738,7 +738,7 @@
     }
     self.diagLabel.text = text;
     CGRect b = self.overlayRoot.bounds;
-    CGFloat w = MIN(b.size.width - 8, 300);
+    CGFloat w = MIN(b.size.width - 8, 360);
     CGFloat h = MIN(b.size.height * 0.35, 150);
     self.diagLabel.frame = CGRectMake((b.size.width - w) / 2.0, 6, w, h);
     [self.overlayRoot bringSubviewToFront:self.diagLabel];
