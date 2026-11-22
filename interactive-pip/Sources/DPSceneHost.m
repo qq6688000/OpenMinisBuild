@@ -1366,14 +1366,17 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                        handle ? NSStringFromClass(object_getClass(handle)) : @"(nil)",
                        hasFactory);
             }
-            // 0.7.79 diagnostics: print exactly what the handle exposes so a
-            // single build tells us whether the ZNS factory exists here.
+            // 0.7.89: enumerate EVERY method on the handle class into the
+            // on-screen diagnostic so we can see what iOS 16.4.1 actually
+            // exposes (the ZNS factory is an iOS 17 API; iOS 16 may name it
+            // differently or not at all).
             @try {
                 Class hc = handle ? object_getClass(handle) : Nil;
                 DPDiag(@"reflow probe handle class=%@ nil=%d",
                        hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
                 NSLog(@"[InteractivePiP] PROBE handle class=%@ nil=%d",
                       hc ? NSStringFromClass(hc) : @"(nil)", handle == nil);
+                NSMutableString *msel = [NSMutableString string];
                 if (hc) {
                     unsigned n = 0;
                     Method *ms = class_copyMethodList(hc, &n);
@@ -1381,13 +1384,24 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                         const char *nm = sel_getName(method_getName(ms[i]));
                         if (!nm) continue;
                         if (!strstr(nm, "SceneView") && !strstr(nm, "sceneView") &&
-                            !strstr(nm, "Reference") && !strstr(nm, "reference")) continue;
+                            !strstr(nm, "Reference") && !strstr(nm, "reference") &&
+                            !strstr(nm, "Host") && !strstr(nm, "host")) continue;
+                        NSString *sn = [NSString stringWithUTF8String:nm];
                         DPDiag(@"reflow probe sel %s enc=%s",
                                nm, method_getTypeEncoding(ms[i]) ?: "-");
                         NSLog(@"[InteractivePiP] PROBE handle sel %s enc=%s",
                               nm, method_getTypeEncoding(ms[i]) ?: "-");
+                        [msel appendFormat:@"%@\n", sn];
+                        if (msel.length > 600) break;
                     }
                     free(ms);
+                }
+                if (msel.length) {
+                    BOOL hf = handle && [handle respondsToSelector:
+                        NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:")];
+                    self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL handle=%@ hasFactory=%d\nmethods:\n%@",
+                                         NSStringFromClass(hc), hf, msel];
+                    DPDiag(@"reflow probe methods:\n%@", msel);
                 }
             } @catch (__unused NSException *e) {}
         } else {
@@ -2093,10 +2107,14 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
                    ok, NSStringFromCGSize(target), NSStringFromClass(self.hostView.class));
             if (ok) {
                 self.reflowCanvas = target;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-OK cfg=1 via tryLiveReflow pane=%@",
+                                     NSStringFromCGSize(target)];
                 [self layoutHostView];
                 NSLog(@"[InteractivePiP] REFLOW enabled %@ pane=%@", self.bundleID, NSStringFromCGSize(target));
             } else {
                 self.reflowCanvas = CGSizeZero;
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL dpc-on-host target=%@ class=%@",
+                                     NSStringFromCGSize(target), NSStringFromClass(self.hostView.class)];
                 NSLog(@"[InteractivePiP] REFLOW unavailable %@, keep cover-scale", self.bundleID);
             }
         }];
