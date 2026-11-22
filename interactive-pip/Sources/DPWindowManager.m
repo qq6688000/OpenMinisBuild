@@ -104,6 +104,7 @@
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
 - (void)enterPiPMode;
 - (void)exitPiPMode;
+- (BOOL)window:(DPFloatingWindow *)window containsFirstResponderInView:(UIView *)view;
 - (void)updateEdgeShelf;
 - (NSArray<UIImage *> *)captureFloatingThumbnails;
 @end
@@ -880,10 +881,32 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) { DPKBLog(@"WM show:skip overlay"); return; }
     if (self.splitWindows.count) { DPKBLog(@"WM show:skip split"); return; }
+    // 0.7.160: in PiP mode never expand - the small live window is the whole point,
+    // and expanding it on the keyboard would blow it back up to full screen.
+    if (self.pipWindow) { DPKBLog(@"WM show:skip pip"); return; }
+
+    // 0.7.160: expand the window the user is actually typing in. The old zPosition
+    // scan grabbed whichever window happened to sit highest, so opening the keyboard
+    // in window B expanded an unrelated window A that was created earlier.
     DPFloatingWindow *target = nil;
+    DPFloatingWindow *firstResponderWindow = nil;
     for (DPFloatingWindow *w in self.floatingWindows) {
         if (w.isTiled) continue;
-        if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
+        // a window that currently holds a first responder in its subtree
+        if ([self window:w containsFirstResponderInView:w]) { firstResponderWindow = w; break; }
+    }
+    if (self.focusedWindow && [self.floatingWindows containsObject:self.focusedWindow] &&
+        !self.focusedWindow.isTiled) {
+        target = self.focusedWindow;
+    }
+    if (firstResponderWindow && firstResponderWindow != target) {
+        target = firstResponderWindow;
+    }
+    if (!target) {
+        for (DPFloatingWindow *w in self.floatingWindows) {
+            if (w.isTiled) continue;
+            if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
+        }
     }
     if (target) {
         [target expandForKeyboardAnimated:YES];
