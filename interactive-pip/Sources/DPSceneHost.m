@@ -686,6 +686,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 // factory always no-responded. This mirrors ZNSSceneSession existingHandleForScene:.
 - (id)znsHandleForScene:(id)scene {
     if (!scene) return nil;
+    NSMutableString *diag = [NSMutableString stringWithFormat:@"scene=%@ ",
+                             NSStringFromClass(object_getClass(scene))];
+    id result = nil;
     // 0) SBMainWorkspace.mainWindowScene (ZNSplit's first priority).
     Class ws = NSClassFromString(@"SBMainWorkspace");
     if (ws && [ws respondsToSelector:@selector(sharedInstance)]) {
@@ -694,55 +697,82 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             id mainScene = [wsp valueForKey:@"mainWindowScene"];
             if (mainScene) {
                 id mgr = [mainScene valueForKey:@"sceneManager"];
+                [diag appendFormat:@"mainScene=%@ mgr=%@ ",
+                 NSStringFromClass(object_getClass(mainScene)),
+                 mgr ? NSStringFromClass(object_getClass(mgr)) : @"nil"];
                 if (mgr) {
                     SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
-                    if ([mgr respondsToSelector:sel]) {
+                    BOOL responds = [mgr respondsToSelector:sel];
+                    [diag appendFormat:@"mgrHasLookup=%d ", responds];
+                    if (responds) {
                         id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
                         if (h) {
+                            [diag appendFormat:@"H0=%@ ", NSStringFromClass(object_getClass(h))];
                             DPDiag(@"znsHandle resolved via mainWindowScene class=%@",
                                    NSStringFromClass(object_getClass(h)));
-                            return h;
+                            result = h;
+                        } else [diag appendString:@"H0=nil "];
+                    }
+                }
+            }
+        } @catch (__unused NSException *e) { [diag appendString:@"H0! "]; }
+    }
+    // 1) Every connected window scene -> its sceneManager -> existingSceneHandleForScene:
+    if (!result) {
+        NSUInteger idx = 0;
+        for (id windowScene in UIApplication.sharedApplication.connectedScenes.allObjects) {
+            @try {
+                id mgr = [windowScene valueForKey:@"sceneManager"];
+                if (!mgr) continue;
+                SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                BOOL responds = [mgr respondsToSelector:sel];
+                [diag appendFormat:@"WS%lu=%@ lookup=%d ",
+                 (unsigned long)idx++, NSStringFromClass(object_getClass(mgr)), responds];
+                if (!responds) continue;
+                id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                if (h) {
+                    [diag appendFormat:@"H%lu=%@ ", (unsigned long)idx,
+                     NSStringFromClass(object_getClass(h))];
+                    DPDiag(@"znsHandle resolved via windowScene.sceneManager class=%@",
+                           NSStringFromClass(object_getClass(h)));
+                    result = h;
+                    break;
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    // 2) SBSceneManagerCoordinator.mainDisplaySceneManager (historical fallback).
+    if (!result) {
+        Class coord = NSClassFromString(@"SBSceneManagerCoordinator");
+        if (coord && [coord respondsToSelector:@selector(sharedInstance)]) {
+            id obj = ((id (*)(id, SEL))objc_msgSend)(coord, @selector(sharedInstance));
+            @try {
+                id mgr = [obj valueForKey:@"mainDisplaySceneManager"];
+                if (mgr) {
+                    SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
+                    BOOL responds = [mgr respondsToSelector:sel];
+                    [diag appendFormat:@"coord=%@ lookup=%d ",
+                     NSStringFromClass(object_getClass(mgr)), responds];
+                    if (responds) {
+                        id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
+                        if (h) {
+                            [diag appendFormat:@"HC=%@ ", NSStringFromClass(object_getClass(h))];
+                            DPDiag(@"znsHandle resolved via coordinator class=%@",
+                                   NSStringFromClass(object_getClass(h)));
+                            result = h;
                         }
                     }
                 }
-            }
-        } @catch (__unused NSException *e) {}
+            } @catch (__unused NSException *e) {}
+        }
     }
-    // 1) Every connected window scene -> its sceneManager -> existingSceneHandleForScene:
-    for (id windowScene in UIApplication.sharedApplication.connectedScenes.allObjects) {
-        @try {
-            id mgr = [windowScene valueForKey:@"sceneManager"];
-            if (!mgr) continue;
-            SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
-            if (![mgr respondsToSelector:sel]) continue;
-            id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
-            if (h) {
-                DPDiag(@"znsHandle resolved via windowScene.sceneManager class=%@",
-                       NSStringFromClass(object_getClass(h)));
-                return h;
-            }
-        } @catch (__unused NSException *e) {}
+    if (!result) {
+        self.hostViewDiag = [NSString stringWithFormat:@"ZNS-FAIL %@", diag];
+        DPDiag(@"znsHandle FAIL %@", diag);
+    } else {
+        DPDiag(@"znsHandle OK %@", diag);
     }
-    // 2) SBSceneManagerCoordinator.mainDisplaySceneManager (historical fallback).
-    Class coord = NSClassFromString(@"SBSceneManagerCoordinator");
-    if (coord && [coord respondsToSelector:@selector(sharedInstance)]) {
-        id obj = ((id (*)(id, SEL))objc_msgSend)(coord, @selector(sharedInstance));
-        @try {
-            id mgr = [obj valueForKey:@"mainDisplaySceneManager"];
-            if (mgr) {
-                SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
-                if ([mgr respondsToSelector:sel]) {
-                    id h = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, scene);
-                    if (h) {
-                        DPDiag(@"znsHandle resolved via coordinator class=%@",
-                               NSStringFromClass(object_getClass(h)));
-                        return h;
-                    }
-                }
-            }
-        } @catch (__unused NSException *e) {}
-    }
-    return nil;
+    return result;
 }
 
 - (id)findFBScene {
