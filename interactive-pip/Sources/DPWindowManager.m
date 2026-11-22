@@ -287,24 +287,37 @@
         [self.picker dismissAnimated:NO];
         self.picker = nil;
     }
-    UIView *parent = [self contentParent];
-    // 0.7.126: the picker has a UISearchBar. A UITextField can only become first
-    // responder while its window is key, and our overlay deliberately never takes
-    // key status - that is why tapping the search field did nothing and the
-    // keyboard never came up. Take key for the picker and hand it back after.
-    if (self.overlayWindow && !self.overlayWindow.isKeyWindow) {
-        self.prePickerKeyWindow = [self currentKeyWindow];
-        [self.overlayWindow makeKeyWindow];
-    }
+    [self install];
+    [self bringOverlayToFront];
+    UIViewController *host = self.overlayWindow.rootViewController;
+    if (!host) { if (completion) completion(nil); return; }
+
+    // 0.7.127: mount the picker in a MODALLY PRESENTED view controller. Hanging it
+    // straight on our passthrough window makes it first responder but the system
+    // never routes a keyboard to that window, which is why the caret appeared and
+    // nothing else happened. A modal presentation gets a proper input context.
+    UIViewController *modal = [[UIViewController alloc] init];
+    modal.view.backgroundColor = [UIColor clearColor];
+    modal.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    modal.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+
     self.picker = [[DPAppPicker alloc] init];
     __weak typeof(self) weakSelf = self;
-    [self.picker presentInView:parent
-                     favorites:[DPSettings shared].favorites
-                     blacklist:[DPSettings shared].blacklist
-                    completion:^(NSString *bundleID) {
-        weakSelf.picker = nil;
-        [weakSelf restorePrePickerKeyWindow];
-        if (completion) completion(bundleID);
+    [host presentViewController:modal animated:NO completion:^{
+        typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.picker) return;
+        [strongSelf.picker presentInView:modal.view
+                               favorites:[DPSettings shared].favorites
+                               blacklist:[DPSettings shared].blacklist
+                              completion:^(NSString *bundleID) {
+            typeof(weakSelf) s2 = weakSelf;
+            if (s2) {
+                s2.picker = nil;
+                [modal dismissViewControllerAnimated:NO completion:nil];
+                [s2 restorePrePickerKeyWindow];
+            }
+            if (completion) completion(bundleID);
+        }];
     }];
 }
 
