@@ -332,24 +332,41 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 
 // Preserve activation only for scenes currently owned by DualPane.
-// 0.7.169: keyboard visibility from the window side. SpringBoard does not reliably
-// post UIKeyboard* notifications (the keyboard belongs to a hosted app process),
-// but the system keyboard window still goes visible/invisible here - that is the
-// hook that actually works.
-%hook _UIRemoteKeyboardWindow
-- (void)setHidden:(BOOL)hidden {
-    %orig;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[DPWindowManager shared] keyboardWindowVisibilityChanged:!hidden];
-    });
+
+// 0.7.169: keyboard visibility from the window side. SpringBoard does not post
+// UIKeyboard* notifications reliably (the keyboard belongs to a hosted app process),
+// but the private keyboard window still toggles here - swizzled at runtime because
+// Logos cannot see this private class.
+static void DPKeyboardSwizzleRun(void) {
+    for (NSString *name in @[@"_UIRemoteKeyboardWindow", @"UIRemoteKeyboardWindow", @"UIKeyboardWindow"]) {
+        Class cls = NSClassFromString(name);
+        if (!cls) continue;
+        for (NSString *selName in @[@"setHidden:", @"makeKeyAndVisible"]) {
+            SEL sel = NSSelectorFromString(selName);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (!m) continue;
+            IMP orig = method_getImplementation(m);
+            if ([selName isEqualToString:@"setHidden:"]) {
+                IMP repl = imp_implementationWithBlock(^(id self, BOOL hidden) {
+                    ((void (*)(id, SEL, BOOL))orig)(self, sel, hidden);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [[DPWindowManager shared] keyboardWindowVisibilityChanged:!hidden];
+                    });
+                });
+                method_setImplementation(m, repl);
+            } else {
+                IMP repl = imp_implementationWithBlock(^(id self) {
+                    ((void (*)(id, SEL))orig)(self, sel);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [[DPWindowManager shared] keyboardWindowVisibilityChanged:YES];
+                    });
+                });
+                method_setImplementation(m, repl);
+            }
+            NSLog(@"[InteractivePiP] swizzled %@ %@", name, selName);
+        }
+    }
 }
-- (void)makeKeyAndVisible {
-    %orig;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[DPWindowManager shared] keyboardWindowVisibilityChanged:YES];
-    });
-}
-%end
 
 %hook FBScene
 
@@ -799,12 +816,16 @@ static BOOL DPHasGroupReturnTransition(void) {
             // App 进程: 0.7.27 的 UIScreen bounds hook 只改了 screen 而 QQ 的
             // window 仍全屏, 结果内容居中+上下空白, 已回滚 — 这里不装任何 hook。
             NSLog(@"[InteractivePiP] 已加载到 App 进程 %@ — 无 hook", NSProcessInfo.processInfo.processName);
+            return;
         } else {
         [DPSettings shared];
         if (DPHasGroupRequestBinding()) { %init(DPGroupRequestBinding); }
         if (DPHasGroupReturnTransition()) { %init(DPGroupReturnTransition); }
         if (DPHasGroupReturnTransitionForClass(@"SBFluidSwitcherViewController")) { %init(DPFluidGroupReturnTransition); }
         %init(_ungrouped);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DPKeyboardSwizzleRun();
+        });
         static int lockToken;
         notify_register_dispatch("com.apple.springboard.lockstate", &lockToken, dispatch_get_main_queue(), ^(int token) {
             uint64_t state = 0;
