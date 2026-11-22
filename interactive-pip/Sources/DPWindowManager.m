@@ -1532,16 +1532,19 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     self.pipWindow = w;
     CGRect screen = self.overlayRoot.bounds;
     CGFloat shortSide = MIN(screen.size.width, screen.size.height);
-    // 0.7.155: 16:9 strip that matches the video band inside the app
+    // 0.7.159: separate title bar ABOVE a clean 16:9 video band (like the reference
+    // screenshot). The bar height is added on top so the video keeps its own area.
     CGFloat pipW = floor(screen.size.width * 0.62);
-    CGFloat pipH = floor(pipW * 9.0 / 16.0);
+    CGFloat videoH = floor(pipW * 9.0 / 16.0);
+    CGFloat pipH = videoH + 36.0;   // kDPTitleBarHeight sits above the video band
     CGRect target = CGRectMake(MAX(12.0, screen.size.width - pipW - 14),
                                MAX(12.0, screen.size.height - pipH - 96),
                                pipW, pipH);
     [w setTiled:NO];
     [w setPipMode:YES animated:NO];   // 0.7.154: drop the title bar, content fills the window
     // 0.7.155: slide the app up so the video band sits in this 16:9 strip.
-    [w setPipCropTop:floor(pipH * 0.42) pipHeightFraction:0.42];
+    // crop the app so its video band lands under our own title bar
+    [w setPipCropTop:floor(videoH * 0.42) pipHeightFraction:0.42];
     self.overlayRoot.backgroundColor = [UIColor clearColor];
     w.backgroundColor = [UIColor clearColor];
     w.alpha = 1.0;
