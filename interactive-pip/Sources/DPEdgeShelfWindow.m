@@ -164,16 +164,31 @@
     [box addSubview:bg];
 
     if (image) {
+        // 0.7.152: a window thumbnail fills the card (ZengNiu look). Only a small
+        // App icon would have been inset; tell them apart by aspect ratio.
+        CGFloat ratio = image.size.height / MAX(image.size.width, 1.0);
+        BOOL isShot = ratio > 1.4;
         UIImageView *iv = [[UIImageView alloc] initWithImage:image];
-        iv.contentMode = UIViewContentModeScaleAspectFit;
+        iv.backgroundColor = [UIColor clearColor];
+        iv.contentMode = isShot ? UIViewContentModeScaleAspectFill : UIViewContentModeScaleAspectFit;
+        iv.clipsToBounds = YES;
         iv.translatesAutoresizingMaskIntoConstraints = NO;
         [box addSubview:iv];
-        [NSLayoutConstraint activateConstraints:@[
-            [iv.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
-            [iv.topAnchor constraintEqualToAnchor:box.topAnchor constant:8],
-            [iv.widthAnchor constraintEqualToAnchor:box.widthAnchor multiplier:0.56],
-            [iv.heightAnchor constraintEqualToAnchor:iv.widthAnchor],
-        ]];
+        if (isShot) {
+            [NSLayoutConstraint activateConstraints:@[
+                [iv.leadingAnchor constraintEqualToAnchor:box.leadingAnchor],
+                [iv.trailingAnchor constraintEqualToAnchor:box.trailingAnchor],
+                [iv.topAnchor constraintEqualToAnchor:box.topAnchor],
+                [iv.bottomAnchor constraintEqualToAnchor:box.bottomAnchor],
+            ]];
+        } else {
+            [NSLayoutConstraint activateConstraints:@[
+                [iv.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
+                [iv.centerYAnchor constraintEqualToAnchor:box.centerYAnchor constant:-6],
+                [iv.widthAnchor constraintEqualToAnchor:box.widthAnchor multiplier:0.56],
+                [iv.heightAnchor constraintEqualToAnchor:iv.widthAnchor],
+            ]];
+        }
     }
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];

@@ -60,6 +60,7 @@
 @property (nonatomic, assign) BOOL sessionParked;
 @property (nonatomic) BOOL floatingHiddenOnHome;
 @property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
+@property (nonatomic, copy) NSArray *shelfThumbnails;
 @property (nonatomic) NSUInteger shelfWindowCount;
 @property (nonatomic) BOOL homeGestureSettling;
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
@@ -1475,6 +1476,31 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 // 0.7.150: ZengNiu-style edge shelf. While the floating windows are parked on the
 // home screen (one swipe up), show a column of thumbnail cards on the left edge.
 // Tapping a card brings that window back. Split pairs keep the native group card.
+// 0.7.152: snapshot every floating window BEFORE hiding the overlay, so the edge
+// shelf cards can show a real thumbnail (ZengNiu style) instead of a black block.
+- (NSArray<UIImage *> *)captureFloatingThumbnails {
+    NSMutableArray<UIImage *> *shots = [NSMutableArray array];
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        UIImage *img = nil;
+        @try {
+            CGRect b = w.bounds;
+            if (b.size.width > 2 && b.size.height > 2) {
+                UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+                fmt.scale = MIN(2.0, [UIScreen mainScreen].scale);
+                fmt.opaque = NO;
+                UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:b.size format:fmt];
+                img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+                    BOOL ok = [w drawViewHierarchyInRect:b afterScreenUpdates:NO];
+                    if (!ok) [w.layer renderInContext:ctx.CGContext];
+                }];
+            }
+        } @catch (__unused NSException *e) { img = nil; }
+        if (img) [shots addObject:img];
+        else [shots addObject:[NSNull null]];
+    }
+    return shots;
+}
+
 - (void)updateEdgeShelf {
     if (!self.floatingHiddenOnHome || self.mode != DPPresentationModeFloating ||
         self.deviceLocked || self.switcherRestorePending || self.homeGestureSettling ||
@@ -1504,11 +1530,18 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         NSArray<DPFloatingWindow *> *floaters = [self.mutableFloatingWindows copy];
         NSMutableArray *names = [NSMutableArray arrayWithCapacity:floaters.count];
         NSMutableArray *images = [NSMutableArray arrayWithCapacity:floaters.count];
-        for (DPFloatingWindow *window in floaters) {
+        NSArray<UIImage *> *shots = self.shelfThumbnails;
+        for (NSUInteger i = 0; i < floaters.count; i++) {
+            DPFloatingWindow *window = floaters[i];
             NSString *bundle = window.bundleID ?: @"?";
             [names addObject:bundle.pathExtension.length ? bundle.pathExtension : bundle];
-            UIImage *img = [window.sceneHost iconImageLarge];
-            [images addObject:img ?: (id)[NSNull null]];
+            id shot = (i < shots.count) ? shots[i] : nil;
+            if ([shot isKindOfClass:[UIImage class]]) {
+                [images addObject:shot];
+            } else {
+                UIImage *icon = [window.sceneHost iconImageLarge];
+                [images addObject:icon ?: (id)[NSNull null]];
+            }
         }
         NSUInteger generation = self.sessionGeneration;
         __weak typeof(self) weakSelf = self;
@@ -1540,6 +1573,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
+    // 0.7.152: grab the pictures while they are still on screen.
+    self.shelfThumbnails = [self captureFloatingThumbnails];
     self.floatingHiddenOnHome = YES;
     self.overlayWindow.hidden = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
