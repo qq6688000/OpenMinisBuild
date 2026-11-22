@@ -869,6 +869,17 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     self.keyWindowBeforeHostedInput = nil;
 }
 
+// 0.7.161: does this window's subtree currently own a first responder?
+- (BOOL)window:(DPFloatingWindow *)window containsFirstResponderInView:(UIView *)view {
+    (void)window;
+    if (!view) return NO;
+    if (view.isFirstResponder) return YES;
+    for (UIView *sub in view.subviews) {
+        if ([self window:window containsFirstResponderInView:sub]) return YES;
+    }
+    return NO;
+}
+
 - (void)hostedKeyboardWillShow {
     DPKBLog(@"WM show notify windows=%lu split=%lu",
             (unsigned long)self.floatingWindows.count, (unsigned long)self.splitWindows.count);
