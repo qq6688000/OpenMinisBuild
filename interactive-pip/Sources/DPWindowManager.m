@@ -105,6 +105,7 @@
 - (void)enterPiPMode;
 - (void)exitPiPMode;
 - (BOOL)window:(DPFloatingWindow *)window containsFirstResponderInView:(UIView *)view;
+- (BOOL)keyboardBelongsToOurWindows;
 - (void)updateEdgeShelf;
 - (NSArray<UIImage *> *)captureFloatingThumbnails;
 @end
@@ -892,6 +893,12 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) { DPKBLog(@"WM show:skip overlay"); return; }
     if (self.splitWindows.count) { DPKBLog(@"WM show:skip split"); return; }
+
+    // 0.7.164: this notification fires for EVERY keyboard on the device. When the
+    // user is typing in a real app (or on the home screen search) our windows must
+    // not react at all - that is what silently expanded a floating app to full
+    // screen while the user was typing somewhere else.
+    if (![self keyboardBelongsToOurWindows]) { DPKBLog(@"WM show:skip foreign keyboard"); return; }
     // 0.7.162: in PiP mode, typing means the user wants to interact - leave PiP and
     // expand, instead of staying stuck in the small window.
     if (self.pipWindow) {
@@ -936,6 +943,12 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 0.7.126: never touch the key window while the picker is up - that is the
     // picker's own search keyboard closing.
     if (self.picker) { DPKBLog(@"WM hide:skip picker"); return; }
+    // 0.7.164: only collapse windows we expanded ourselves.
+    BOOL anyExpanded = NO;
+    for (DPFloatingWindow *w in self.floatingWindows) {
+        if (w.keyboardExpanded) { anyExpanded = YES; break; }
+    }
+    if (!anyExpanded) { DPKBLog(@"WM hide:skip not-ours"); return; }
     // 键盘收起 -> 还原到弹出前的 frame。
     if (self.splitWindows.count) { [self restorePreviousKeyWindow]; return; }
     DPFloatingWindow *target = nil;
