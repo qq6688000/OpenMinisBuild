@@ -2646,16 +2646,25 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         if (self.reflowNeedsCommit && self.reflowCommitPendingAt > 0 &&
             (now - self.reflowCommitPendingAt) > 0.15) {
             CGSize wanted = self.reflowCommitTarget;
-            NSInteger orient = wanted.width > wanted.height
-                ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationPortrait;
-            NSString *sub = nil;
-            BOOL sent = DPSubmitSceneSettings(self.scene, wanted, orient, &sub);
-            self.reflowCanvasDiag = [NSString stringWithFormat:@"resend=%d/%@ frame=%@",
-                                     sent, sub ?: @"-", NSStringFromCGSize(wanted)];
-            if (sent) self.lastSubmittedPaneSize = wanted;
-            self.reflowNeedsCommit = !sent;
-            self.reflowCommitPendingAt = sent ? 0 : now;
-            DPDiag(@"reflow pane settled at %@ resent=%d", NSStringFromCGSize(wanted), sent);
+            self.reflowNeedsCommit = NO;
+            self.reflowCommitPendingAt = 0;
+            // 0.7.104: re-submitting FBScene.settings never re-lays-out the remote
+            // app - settings.frame is the scene's POSITION on screen, not the host
+            // size (0.7.24 already proved a half-screen frame is invalid on iOS 16).
+            // The ONLY thing that changes the reference size is the factory argument
+            // newSceneViewWithReferenceSize:..., so rebuild the host at the pane's
+            // settled size. DPConfigureHostCanvas returning YES was only the ABI
+            // probe passing; it never moved the remote layout.
+            UIView *fresh = nil;
+            @try {
+                fresh = [self hostViewFromFBScene:self.scene];
+            } @catch (__unused NSException *e) { fresh = nil; }
+            BOOL rebuilt = (fresh != nil && fresh != self.hostView);
+            if (rebuilt) [self attachHostView:fresh scene:self.scene];
+            self.lastSubmittedPaneSize = target;
+            self.reflowCanvasDiag = [NSString stringWithFormat:@"rebuild=%d pane=%@",
+                                     rebuilt, NSStringFromCGSize(wanted)];
+            DPDiag(@"reflow pane settled at %@ rebuilt=%d", NSStringFromCGSize(wanted), rebuilt);
         }
         self.layoutDiag = [NSString stringWithFormat:@"REFLOW view=%@ canvas=%@ sc=1.000",
                            NSStringFromCGSize(target), NSStringFromCGSize(self.reflowCanvas)];
