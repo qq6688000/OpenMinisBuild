@@ -34,6 +34,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)updateNaturalCanvasSize:(CGSize)size; // 0.7.131 rotation
 - (void)forceReflowRebuild;
 
+- (nullable UIImage *)iconImageLarge;
+
 @end
 
 NS_ASSUME_NONNULL_END

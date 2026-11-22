@@ -2,6 +2,7 @@
 #import "DPFloatingWindow.h"
 #import "DPSceneHost.h"
 #import "DPAppPicker.h"
+#import "DPEdgeShelfWindow.h"
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
@@ -58,6 +59,9 @@
 @property (nonatomic, assign) BOOL deviceLocked;
 @property (nonatomic, assign) BOOL sessionParked;
 @property (nonatomic) BOOL floatingHiddenOnHome;
+@property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
+@property (nonatomic) NSUInteger shelfWindowCount;
+@property (nonatomic) BOOL homeGestureSettling;
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
 - (void)hideFloatingOnHome;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
@@ -97,6 +101,24 @@
 - (id)sharedRemoteKeyboards;
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
 @end
+
+static BOOL DPDuoSystemSwitcherVisible(void) {
+    for (NSString *name in @[@"SBMainSwitcherControllerCoordinator", @"SBMainSwitcherViewController"]) {
+        Class cls = NSClassFromString(name);
+        SEL shared = @selector(sharedInstance);
+        if (!cls || ![cls respondsToSelector:shared]) continue;
+        id controller = ((id (*)(id, SEL))objc_msgSend)(cls, shared);
+        if (!controller) continue;
+        for (NSString *key in @[@"isMainSwitcherVisible", @"isAnySwitcherVisible"]) {
+            SEL sel = NSSelectorFromString(key);
+            NSMethodSignature *sig = [controller methodSignatureForSelector:sel];
+            const char *type = sig.methodReturnType;
+            if (sig.numberOfArguments == 2 && type && (type[0] == 'B' || type[0] == 'c') &&
+                ((BOOL (*)(id, SEL))objc_msgSend)(controller, sel)) return YES;
+        }
+    }
+    return NO;
+}
 
 @implementation DPWindowManager
 
@@ -272,6 +294,7 @@
 
     [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
     self.floatingHiddenOnHome = NO;
+    self.edgeShelf.hidden = YES;
     if (self.sessionParked) [self restoreParkedSession];
     [self install];
 
@@ -1026,6 +1049,7 @@
     if (!second || ![self.mutableFloatingWindows containsObject:first]) return;
     [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
     self.floatingHiddenOnHome = NO;
+    self.edgeShelf.hidden = YES;
     self.splitWindows = @[first, second];
     for (DPFloatingWindow *w in self.splitWindows) {
         [w.layer removeAllAnimations];
@@ -1448,10 +1472,80 @@
     [self bringOverlayToFront];
 }
 
+// 0.7.150: ZengNiu-style edge shelf. While the floating windows are parked on the
+// home screen (one swipe up), show a column of thumbnail cards on the left edge.
+// Tapping a card brings that window back. Split pairs keep the native group card.
+- (void)updateEdgeShelf {
+    if (!self.floatingHiddenOnHome || self.mode != DPPresentationModeFloating ||
+        self.deviceLocked || self.switcherRestorePending || self.homeGestureSettling ||
+        ![DPSettings shared].isEnabled) {
+        self.edgeShelf.hidden = YES;
+        return;
+    }
+    NSString *fg = [self foregroundBundleID];
+    if ((fg.length && ![fg isEqualToString:@"com.apple.springboard"]) || DPDuoSystemSwitcherVisible()) {
+        self.edgeShelf.hidden = YES;
+        return;
+    }
+    UIWindowScene *scene = self.switcherHomeScene;
+    if (!scene || scene.activationState != UISceneActivationStateForegroundActive) scene = [self activeWindowScene];
+    if (!scene || scene.activationState != UISceneActivationStateForegroundActive || scene.screen != UIScreen.mainScreen) {
+        self.edgeShelf.hidden = YES;
+        return;
+    }
+    if (self.edgeShelf && self.shelfWindowCount != self.mutableFloatingWindows.count) {
+        self.edgeShelf.hidden = YES;
+        self.edgeShelf = nil;
+    }
+    if (self.edgeShelf.windowScene != scene) {
+        self.edgeShelf.hidden = YES;
+        DPEdgeShelfWindow *shelf = [[DPEdgeShelfWindow alloc] initWithWindowScene:scene];
+        shelf.hidden = YES;
+        NSArray<DPFloatingWindow *> *floaters = [self.mutableFloatingWindows copy];
+        NSMutableArray *names = [NSMutableArray arrayWithCapacity:floaters.count];
+        NSMutableArray *images = [NSMutableArray arrayWithCapacity:floaters.count];
+        for (DPFloatingWindow *window in floaters) {
+            NSString *bundle = window.bundleID ?: @"?";
+            [names addObject:bundle.pathExtension.length ? bundle.pathExtension : bundle];
+            UIImage *img = [window.sceneHost iconImageLarge];
+            [images addObject:img ?: (id)[NSNull null]];
+        }
+        NSUInteger generation = self.sessionGeneration;
+        __weak typeof(self) weakSelf = self;
+        __weak DPEdgeShelfWindow *weakShelf = shelf;
+        [shelf configureWithNames:names images:images restore:^(NSUInteger index) {
+            __strong typeof(weakSelf) manager = weakSelf;
+            if (!manager || !weakShelf || manager.edgeShelf != weakShelf ||
+                manager.sessionGeneration != generation ||
+                index >= manager.mutableFloatingWindows.count) return;
+            manager.floatingHiddenOnHome = NO;
+            [manager.floatingHomeTimer invalidate];
+            manager.floatingHomeTimer = nil;
+            DPFloatingWindow *selected = manager.mutableFloatingWindows[index];
+            for (DPFloatingWindow *window in manager.mutableFloatingWindows) {
+                window.alpha = 1;
+                [window.sceneHost setSuspended:NO];
+            }
+            manager.overlayWindow.hidden = NO;
+            [manager focusWindow:selected];
+            [manager updateEdgeShelf];
+            NSLog(@"[InteractivePiP] edge shelf restore %@", selected.bundleID);
+        }];
+        self.edgeShelf = shelf;
+        self.shelfWindowCount = floaters.count;
+    }
+    self.edgeShelf.frame = scene.coordinateSpace.bounds;
+    self.edgeShelf.hidden = NO;
+}
+
 - (void)hideFloatingOnHome {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     self.floatingHiddenOnHome = YES;
     self.overlayWindow.hidden = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self updateEdgeShelf];
+    });
     if (self.floatingHomeTimer) return;
     NSUInteger generation = self.sessionGeneration;
     __weak typeof(self) weakSelf = self;
