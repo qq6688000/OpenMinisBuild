@@ -34,6 +34,9 @@
 }
 @end
 
+// 0.7.92: ZNSGet-style dynamic getter (objc_msgSend, not KVC valueForKey).
+static id DPObjcGet(id object, NSString *key);
+
 // 0.7.83: REFLOW diagnostics go BOTH to a file (Filza) AND to an on-screen
 // label in the floating window, so the user can screenshot the result without
 // touching a Mac or Filza.
@@ -465,7 +468,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
             id obj = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(sharedInstance));
             if ([cn isEqualToString:@"SBSceneManagerCoordinator"] && obj) {
                 @try {
-                    id m = [obj valueForKey:@"mainDisplaySceneManager"];
+                    id m = DPObjcGet(obj, @"mainDisplaySceneManager");
                     if (m) return m;
                 } @catch (__unused NSException *e) {}
             }
@@ -694,9 +697,9 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     if (ws && [ws respondsToSelector:@selector(sharedInstance)]) {
         id wsp = ((id (*)(id, SEL))objc_msgSend)(ws, @selector(sharedInstance));
         @try {
-            id mainScene = [wsp valueForKey:@"mainWindowScene"];
+            id mainScene = DPObjcGet(wsp, @"mainWindowScene");
             if (mainScene) {
-                id mgr = [mainScene valueForKey:@"sceneManager"];
+                id mgr = DPObjcGet(mainScene, @"sceneManager");
                 [diag appendFormat:@"mainScene=%@ mgr=%@ ",
                  NSStringFromClass(object_getClass(mainScene)),
                  mgr ? NSStringFromClass(object_getClass(mgr)) : @"nil"];
@@ -722,7 +725,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         NSUInteger idx = 0;
         for (id windowScene in UIApplication.sharedApplication.connectedScenes.allObjects) {
             @try {
-                id mgr = [windowScene valueForKey:@"sceneManager"];
+                id mgr = DPObjcGet(windowScene, @"sceneManager");
                 if (!mgr) continue;
                 SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
                 BOOL responds = [mgr respondsToSelector:sel];
@@ -747,7 +750,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
         if (coord && [coord respondsToSelector:@selector(sharedInstance)]) {
             id obj = ((id (*)(id, SEL))objc_msgSend)(coord, @selector(sharedInstance));
             @try {
-                id mgr = [obj valueForKey:@"mainDisplaySceneManager"];
+                id mgr = DPObjcGet(obj, @"mainDisplaySceneManager");
                 if (mgr) {
                     SEL sel = NSSelectorFromString(@"existingSceneHandleForScene:");
                     BOOL responds = [mgr respondsToSelector:sel];
@@ -778,6 +781,14 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 // 0.7.91: mirror ZNSSceneSession.findScene: enumerate the real FBScene list and
 // match by clientProcess.bundleIdentifier. Returns the actual FBScene object
 // that -existingSceneHandleForScene: expects, so the reverse lookup succeeds.
+// 0.7.92: ZNSGet-style dynamic getter (objc_msgSend, not KVC valueForKey).
+static id DPObjcGet(id object, NSString *key) {
+    if (!object || !key.length) return nil;
+    SEL sel = NSSelectorFromString(key);
+    if (![object respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, sel);
+}
+
 - (id)fbSceneByEnumerate {
     id mgr = [self fbSceneManager];
     if (!mgr) return nil;
@@ -787,17 +798,21 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     __block NSUInteger matches = 0;
     void (^block)(id) = ^(id candidate) {
         @try {
-            id process = [candidate valueForKey:@"clientProcess"];
-            NSString *bundle = [process valueForKey:@"bundleIdentifier"];
+            id process = DPObjcGet(candidate, @"clientProcess");
+            NSString *bundle = DPObjcGet(process, @"bundleIdentifier");
             if (![bundle isKindOfClass:[NSString class]]) {
-                id appInfo = [process valueForKey:@"applicationInfo"];
-                bundle = [appInfo valueForKey:@"bundleIdentifier"];
+                id appInfo = DPObjcGet(process, @"applicationInfo");
+                bundle = DPObjcGet(appInfo, @"bundleIdentifier");
             }
             BOOL same = [bundle isKindOfClass:[NSString class]] &&
                         [bundle isEqualToString:self.bundleID];
             if (same) {
-                if (candidate != match) matches++;
-                if (!match) match = candidate;
+                id settings = DPObjcGet(candidate, @"settings");
+                SEL frameSel = NSSelectorFromString(@"frame");
+                if (settings && [settings respondsToSelector:frameSel]) {
+                    if (candidate != match) matches++;
+                    if (!match) match = candidate;
+                }
             }
         } @catch (__unused NSException *e) {}
     };
