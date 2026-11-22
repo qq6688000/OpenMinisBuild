@@ -26,6 +26,9 @@ FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
 - (void)attachSceneHost:(DPSceneHost *)host;
 - (nullable DPSceneHost *)detachSceneHost;
 - (void)commitSceneLayout;
+// 0.7.154: hide the title bar and let the content fill the window (drawing-in-picture look).
+- (void)setPipMode:(BOOL)pip animated:(BOOL)animated;
+@property (nonatomic, readonly) BOOL pipMode;
 - (void)updateNaturalCanvasForCurrentScreen; // 0.7.131 rotation
 /// Round the pane's own chrome + content container while in Duo split.
 /// Never touches the hosted scene layer container's layer.

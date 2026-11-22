@@ -1510,12 +1510,16 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     self.pipWindow = w;
     CGRect screen = self.overlayRoot.bounds;
     CGFloat shortSide = MIN(screen.size.width, screen.size.height);
-    CGFloat pipW = floor(shortSide * 0.42);
-    CGFloat pipH = floor(pipW * 1.62);
+    // 0.7.154: portrait-video proportions so the playing area dominates the window
+    CGFloat pipW = floor(shortSide * 0.46);
+    CGFloat pipH = floor(pipW * 1.78);
     CGRect target = CGRectMake(MAX(12.0, screen.size.width - pipW - 14),
                                MAX(12.0, screen.size.height - pipH - 96),
                                pipW, pipH);
     [w setTiled:NO];
+    [w setPipMode:YES animated:NO];   // 0.7.154: drop the title bar, content fills the window
+    self.overlayRoot.backgroundColor = [UIColor clearColor];
+    w.backgroundColor = [UIColor clearColor];
     w.alpha = 1.0;
     [w.sceneHost setSuspended:NO];
     [UIView animateWithDuration:0.28 animations:^{

@@ -563,6 +563,27 @@ void DPKBLog(NSString *fmt, ...) {
     [host commitHostedFrame];
 }
 
+- (void)setPipMode:(BOOL)pip animated:(BOOL)animated {
+    if (_pipMode == pip) return;
+    _pipMode = pip;
+    void (^apply)(void) = ^{
+        self.titleBar.alpha = pip ? 0.0 : 1.0;
+        self.titleBar.userInteractionEnabled = !pip;
+        // content slides up under where the bar used to be
+        [self setNeedsLayout];
+        [self layoutIfNeeded];
+    };
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:apply completion:^(BOOL finished) {
+            (void)finished;
+            [self commitSceneLayout];
+        }];
+    } else {
+        apply();
+        [self commitSceneLayout];
+    }
+}
+
 - (void)commitSceneLayout {
     [self.sceneHost commitHostedFrame];
 }
@@ -572,7 +593,7 @@ void DPKBLog(NSString *fmt, ...) {
     self.chromeView.frame = self.bounds;
     self.chromeView.layer.cornerRadius = self.cornerRadiusValue;
     self.titleBar.frame = CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight);
-    CGFloat contentY = self.tiled ? 0 : kDPTitleBarHeight;
+    CGFloat contentY = (self.tiled || _pipMode) ? 0 : kDPTitleBarHeight; // 0.7.154 PiP: content fills the window
     self.contentContainer.frame = CGRectMake(0, contentY,
                                              self.bounds.size.width,
                                              MAX(0, self.bounds.size.height - contentY));
