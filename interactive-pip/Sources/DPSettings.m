@@ -140,29 +140,11 @@ static NSString *DPPreferencesPath(void) {
     return [self boolForKey:@"shelfLivePreview" default:YES];
 }
 
-// 实时重排：开=host 按窗格尺寸让 App 重新排版，关=原 cover-scale。
+// 实时重排：host 按窗格尺寸让 App 重新排版。
+// 0.7.119: hard-forced ON. The layer-fallback host cannot host the system
+// keyboard (blank white keyboard), so we never allow that path anymore.
 - (BOOL)liveReflow {
-    // 0.7.80: read this straight from CFPreferences every time. The cached
-    // `raw` snapshot only refreshes on our notify token, and SpringBoard does
-    // not reliably receive it after the settings app writes the plist - which
-    // made the switch in Settings look dead.
-    id value = nil;
-    CFPropertyListRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)@"liveReflow",
-                                                    (__bridge CFStringRef)kPrefsDomain);
-    if (!v) {
-        v = CFPreferencesCopyValue((__bridge CFStringRef)@"liveReflow",
-                                   (__bridge CFStringRef)kPrefsDomain,
-                                   kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    }
-    if (v) {
-        value = (__bridge_transfer id)v;
-    }
-    if (!value) {
-        NSDictionary *fileDict = [NSDictionary dictionaryWithContentsOfFile:DPPreferencesPath()];
-        value = fileDict[@"liveReflow"];
-    }
-    if (!value) return YES;  // default ON: the reflow host is the one that can host the system keyboard
-    return [value boolValue];
+    return YES;
 }
 
 - (NSInteger)maxFloatingWindows {
