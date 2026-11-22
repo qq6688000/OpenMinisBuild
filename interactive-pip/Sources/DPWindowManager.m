@@ -892,9 +892,12 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) { DPKBLog(@"WM show:skip overlay"); return; }
     if (self.splitWindows.count) { DPKBLog(@"WM show:skip split"); return; }
-    // 0.7.160: in PiP mode never expand - the small live window is the whole point,
-    // and expanding it on the keyboard would blow it back up to full screen.
-    if (self.pipWindow) { DPKBLog(@"WM show:skip pip"); return; }
+    // 0.7.162: in PiP mode, typing means the user wants to interact - leave PiP and
+    // expand, instead of staying stuck in the small window.
+    if (self.pipWindow) {
+        DPKBLog(@"WM show:exit pip for keyboard");
+        [self exitPiPMode];
+    }
 
     // 0.7.160: expand the window the user is actually typing in. The old zPosition
     // scan grabbed whichever window happened to sit highest, so opening the keyboard

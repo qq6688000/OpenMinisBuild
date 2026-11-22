@@ -391,7 +391,21 @@ void DPKBLog(NSString *fmt, ...) {
 - (void)expandForKeyboardAnimated:(BOOL)animated {
     DPKBLog(@"expand:call tiled=%d already=%d", self.isTiled, self.keyboardExpanded);
     if (self.isTiled) return;
-    if (self.keyboardExpanded) { DPKBLog(@"expand:skip already"); return; }
+    // 0.7.162: if we already think we are expanded but the frame is clearly not
+    // fullscreen (a previous collapse never ran), redo it instead of bailing out -
+    // that is what made the keyboard stop resizing the window at all.
+    if (self.keyboardExpanded) {
+        CGRect screen = [UIScreen mainScreen].bounds;
+        if (@available(iOS 13.0, *)) {
+            UIWindowScene *ws = self.window.windowScene;
+            if (ws) screen = ws.coordinateSpace.bounds;
+        }
+        BOOL stillFullscreen = (fabs(self.frame.size.width - screen.size.width) < 2.0 &&
+                                fabs(self.frame.size.height - screen.size.height) < 2.0);
+        if (stillFullscreen) { DPKBLog(@"expand:skip already"); return; }
+        DPKBLog(@"expand:reset stale state");
+        self.keyboardExpanded = NO;
+    }
     UIView *superview = self.superview;
     if (!superview) { DPKBLog(@"expand:skip no-sup"); return; }
     self.keyboardSavedFrame = self.frame;
