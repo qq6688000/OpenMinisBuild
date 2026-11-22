@@ -189,15 +189,24 @@ static UIView *DPCSceneContentView(id handle) {
 //     ZNSSetBool(view,@"setResizesHostedContext:",NO);
 //     [view setDisplayMode:4 animationFactory:nil completion:nil];
 //     view.userInteractionEnabled = YES;
+static BOOL DPCPrepPlaceholder = NO, DPCPrepResize = NO, DPCPrepMode4 = NO;
 static void DPCPrepareSceneHost(UIView *v) {
     if (!v) return;
+    // Record whether each private setter actually exists with the exact ABI
+    // before touching it: DPCSetBool is silent, so a failed probe was
+    // indistinguishable from a working call.
+    SEL phSel = NSSelectorFromString(@"setPlaceholderContentEnabled:");
+    DPCPrepPlaceholder = DPCSetter(v, phSel, "B") || DPCSetter(v, phSel, "c");
+    SEL rzSel = NSSelectorFromString(@"setResizesHostedContext:");
+    DPCPrepResize = DPCSetter(v, rzSel, "B") || DPCSetter(v, rzSel, "c");
+    SEL dmSel = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
+    const char *dmArgs[] = {@encode(NSInteger), "@", "@"};
+    DPCPrepMode4 = DPCABI(v, dmSel, "v", dmArgs, 3);
     DPCSetBool(v, @"setPlaceholderContentEnabled:", NO);
     DPCSetBool(v, @"setResizesHostedContext:", NO);
-    SEL sel = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
-    const char *args[] = {@encode(NSInteger), "@", "@"};
-    if (DPCABI(v, sel, "v", args, 3)) {
+    if (DPCPrepMode4) {
         NSInteger mode = 4;
-        ((void (*)(id, SEL, NSInteger, id, id))objc_msgSend)(v, sel, mode, nil, nil);
+        ((void (*)(id, SEL, NSInteger, id, id))objc_msgSend)(v, dmSel, mode, nil, nil);
     }
     v.userInteractionEnabled = YES;
 }
@@ -1064,7 +1073,16 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
                 // 0.7.98: a factory view renders nothing until these are driven.
-                if (v) DPCPrepareSceneHost(v);
+                if (v) {
+                    DPCPrepareSceneHost(v);
+                    // 0.7.99: which of the three private setters actually hit, plus
+                    // hidden/alpha/subview state - the pane is black but REFLOW-OK.
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d",
+                                            self.reflowHandleDiag ?: @"-",
+                                            DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
+                                            v.hidden, v.alpha, (unsigned long)v.subviews.count,
+                                            v.window != nil];
+                }
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize(separate) OK %@",
                           self.bundleID);
@@ -1100,7 +1118,16 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
                 // 0.7.98: a factory view renders nothing until these are driven.
-                if (v) DPCPrepareSceneHost(v);
+                if (v) {
+                    DPCPrepareSceneHost(v);
+                    // 0.7.99: which of the three private setters actually hit, plus
+                    // hidden/alpha/subview state - the pane is black but REFLOW-OK.
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d",
+                                            self.reflowHandleDiag ?: @"-",
+                                            DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
+                                            v.hidden, v.alpha, (unsigned long)v.subviews.count,
+                                            v.window != nil];
+                }
                 if (v) {
                     NSLog(@"[InteractivePiP] newSceneViewWithReferenceSize OK %@", self.bundleID);
                     return v;
@@ -1127,7 +1154,16 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
                 [inv getReturnValue:&result];
                 UIView *v = [self viewFromMaybeController:result];
                 // 0.7.98: a factory view renders nothing until these are driven.
-                if (v) DPCPrepareSceneHost(v);
+                if (v) {
+                    DPCPrepareSceneHost(v);
+                    // 0.7.99: which of the three private setters actually hit, plus
+                    // hidden/alpha/subview state - the pane is black but REFLOW-OK.
+                    self.reflowHandleDiag = [NSString stringWithFormat:@"%@ | prep=ph%d rz%d m%d hid=%d a=%.2f sub=%lu win=%d",
+                                            self.reflowHandleDiag ?: @"-",
+                                            DPCPrepPlaceholder, DPCPrepResize, DPCPrepMode4,
+                                            v.hidden, v.alpha, (unsigned long)v.subviews.count,
+                                            v.window != nil];
+                }
                 if (v) return v;
             } @catch (__unused NSException *e) {}
         }
