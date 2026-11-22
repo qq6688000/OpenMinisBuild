@@ -415,9 +415,15 @@ void DPKBLog(NSString *fmt, ...) {
         if (!ws || !ws.keyboardExpanded) return;
         ws.frame = target;
         [ws layoutIfNeeded];   // 强制 contentContainer 更新到全屏 frame
-        // 不重建 host：重建会把系统键盘视图一起重建掉（白板键盘）。
-        // 只让 cover-scale 铺满全屏，键盘照常渲染。
         [ws layoutSceneIfNeeded];
+        // 0.7.120: the keyboard has fully settled by now, so it is safe to rebuild
+        // the host at the fullscreen pane size. Without this the host keeps its
+        // small-pane reference size and the app renders 263pt wide inside a 430pt
+        // frame -> black band on the right / bottom.
+        // Order matters: unfreeze -> rebuild -> freeze again (rebuild is synchronous).
+        [ws.sceneHost setReflowFrozen:NO];
+        [ws.sceneHost forceReflowRebuild];   // backdate the commit stamp -> rebuild now
+        [ws.sceneHost setReflowFrozen:YES];  // freeze again so the keyboard survives
         [ws.sceneHost commitHostedFrame];
         DPKBLog(@"expand:late frame=%@ content=%@", NSStringFromCGRect(ws.frame), NSStringFromCGRect(ws.contentContainer.bounds));
     });
