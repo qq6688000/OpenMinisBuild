@@ -718,9 +718,10 @@
     for (DPFloatingWindow *w in self.mutableFloatingWindows) {
         DPSceneHost *h = w.sceneHost;
         if (!h) continue;
-        [text appendFormat:@"[%@]\nhostDiag=%@\nenum=%@\nhandle=%@\nlayout=%@\n",
+        [text appendFormat:@"[%@]\nhostDiag=%@\nenum=%@\nhandle=%@\nmethods=%@\nlayout=%@\n",
          w.bundleID ?: @"?", h.hostViewDiag ?: @"-",
-         h.reflowEnumDiag ?: @"-", h.reflowHandleDiag ?: @"-", h.layoutDiag ?: @"-"];
+         h.reflowEnumDiag ?: @"-", h.reflowHandleDiag ?: @"-",
+         h.reflowMethodsDiag ?: @"-", h.layoutDiag ?: @"-"];
     }
     if (!text.length) {
         if (self.diagLabel) { [self.diagLabel removeFromSuperview]; self.diagLabel = nil; }
@@ -729,7 +730,7 @@
     if (!self.diagLabel) {
         UILabel *lb = [[UILabel alloc] init];
         lb.textColor = [UIColor colorWithRed:1.0 green:0.5 blue:0.5 alpha:1.0];
-        lb.font = [UIFont systemFontOfSize:10 weight:UIFontWeightBold];
+        lb.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
         lb.numberOfLines = 0;
         lb.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
         lb.userInteractionEnabled = NO;
@@ -739,7 +740,7 @@
     self.diagLabel.text = text;
     CGRect b = self.overlayRoot.bounds;
     CGFloat w = MIN(b.size.width - 8, 360);
-    CGFloat h = MIN(b.size.height * 0.35, 150);
+    CGFloat h = MIN(b.size.height * 0.45, 240);
     self.diagLabel.frame = CGRectMake((b.size.width - w) / 2.0, 6, w, h);
     [self.overlayRoot bringSubviewToFront:self.diagLabel];
 }

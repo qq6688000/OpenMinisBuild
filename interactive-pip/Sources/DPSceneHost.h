@@ -26,6 +26,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *reflowEnumDiag;
 // 0.7.94: trace of the scene-handle reverse lookup (which manager resolved it).
 @property (nonatomic, copy, readonly, nullable) NSString *reflowHandleDiag;
+// 0.7.95: selector surface of the scene / resolved handle (real APIs available).
+@property (nonatomic, copy, readonly, nullable) NSString *reflowMethodsDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layerDiag;
 @property (nonatomic, copy, readonly, nullable) NSString *layoutDiag;
 - (void)setSuspended:(BOOL)suspended;

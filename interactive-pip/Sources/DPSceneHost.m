@@ -354,6 +354,7 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 @property (nonatomic, copy, readwrite, nullable) NSString *hostViewDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *reflowEnumDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *reflowHandleDiag;
+@property (nonatomic, copy, readwrite, nullable) NSString *reflowMethodsDiag;
 @property (nonatomic, copy, readwrite, nullable) NSString *layerDiag;
 @property (nonatomic, strong, nullable) DPHostRequester *hostRequester;
 @property (nonatomic, copy, readwrite, nullable) NSString *layoutDiag;
@@ -781,6 +782,13 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
     // set on failure and got clobbered by the tryLiveReflow dpc-on-host string,
     // so the reverse-lookup result was invisible in the panel.
     self.reflowHandleDiag = diag;
+    // 0.7.95: show the real selector surface of the scene and the resolved
+    // handle so the panel reveals which scene-view/reference APIs exist here.
+    self.reflowMethodsDiag = [NSString stringWithFormat:@"SC[%@] HD[%@]",
+                              DPClassMethodsFiltered(scene,
+                                  @[@"Reference", @"SceneView", @"ViewController", @"Settings"], 8),
+                              DPClassMethodsFiltered(result,
+                                  @[@"Reference", @"SceneView", @"ViewController", @"Host"], 8)];
     return result;
 }
 
@@ -793,6 +801,34 @@ static id DPObjcGet(id object, NSString *key) {
     SEL sel = NSSelectorFromString(key);
     if (![object respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(object, sel);
+}
+
+// 0.7.95: dump the real selector surface of an object's class hierarchy for a
+// keyword list. hasFactory=0 on SBDeviceApplicationSceneHandle proved the
+// scene-view factory is absent on this iOS version, so we need the on-screen
+// panel to show which scene/reference/size APIs iOS 16.4.1 actually exposes.
+static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, NSUInteger cap) {
+    if (!obj) return @"nil";
+    NSMutableString *out = [NSMutableString string];
+    Class cls = object_getClass(obj);
+    while (cls && cap > 0) {
+        unsigned int n = 0;
+        Method *ms = class_copyMethodList(cls, &n);
+        for (unsigned int i = 0; i < n && out.length < cap; i++) {
+            NSString *nm = NSStringFromSelector(method_getName(ms[i]));
+            for (NSString *k in keywords) {
+                if ([nm rangeOfString:k].location != NSNotFound) {
+                    if (out.length) [out appendString:@","];
+                    [out appendString:nm];
+                    cap--;
+                    break;
+                }
+            }
+        }
+        if (ms) free(ms);
+        cls = class_getSuperclass(cls);
+    }
+    return out.length ? out : @"(none)";
 }
 
 - (id)fbSceneByEnumerate {
@@ -2234,8 +2270,10 @@ static id DPObjcGet(id object, NSString *key) {
                 NSLog(@"[InteractivePiP] REFLOW enabled %@ pane=%@", self.bundleID, NSStringFromCGSize(target));
             } else {
                 self.reflowCanvas = CGSizeZero;
-                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL dpc-on-host target=%@ class=%@",
-                                     NSStringFromCGSize(target), NSStringFromClass(self.hostView.class)];
+                // 0.7.95: keep this short - the panel now carries the handle
+                // trace and the selector surface below it.
+                self.hostViewDiag = [NSString stringWithFormat:@"REFLOW-FAIL dpc-on-host class=%@",
+                                     NSStringFromClass(self.hostView.class)];
                 NSLog(@"[InteractivePiP] REFLOW unavailable %@, keep cover-scale", self.bundleID);
             }
         }];
