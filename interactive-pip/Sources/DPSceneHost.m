@@ -517,6 +517,10 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 // the host is created; only re-submit when it is larger, to avoid a settings
 // storm during the open animation.
 @property (nonatomic, assign) CGSize lastSubmittedPaneSize;
+// 0.7.103: pane kept moving after layout; converge before re-submitting.
+@property (nonatomic, assign) BOOL reflowNeedsCommit;
+@property (nonatomic, assign) CGSize reflowCommitTarget;
+@property (nonatomic, assign) CFTimeInterval reflowCommitPendingAt;
 @property (nonatomic, copy, readwrite, nullable) NSString *reflowCanvasDiag;
 @property (nonatomic, assign) BOOL reflowAttempted;
 @property (nonatomic, assign) BOOL hostIsSceneView;
@@ -2610,19 +2614,48 @@ static NSString *DPClassMethodsFiltered(id obj, NSArray<NSString *> *keywords, N
         self.hostView.center = CGPointMake(target.width / 2.0, target.height / 2.0);
         self.view.clipsToBounds = YES;
         CGSize submitted = self.lastSubmittedPaneSize;
-        // Only re-submit when the pane grew: keeps the pane following the
-        // container after the open animation without hammering the scene with
-        // settings updates during it.
-        BOOL grown = target.width > submitted.width + 0.5 ||
-                     target.height > submitted.height + 0.5;
-        if (grown && self.scene) {
-            NSInteger orient = target.width > target.height
+        // 0.7.103: follow the pane in BOTH directions. 0.7.102 only re-submitted
+        // when the pane GREW, so after the opening animation shrank the pane
+        // from 374x702 to 258x349 the app kept rendering at the stale size and
+        // the pane showed a clipped top-left corner of it. The window keeps
+        // moving for a while, so converge: mark dirty, then submit once the pane
+        // has been still for 150ms at its final size.
+        BOOL moved = (fabs(target.width - submitted.width) > 0.5 ||
+                      fabs(target.height - submitted.height) > 0.5);
+        self.reflowNeedsCommit = moved;
+        if (moved) self.reflowCommitTarget = target;
+        if (!moved && submitted.width > 1) {
+            self.reflowCanvasDiag = [NSString stringWithFormat:@"resend=held frame=%@",
+                                      NSStringFromCGSize(submitted)];
+        }
+        CFTimeInterval now = CACurrentMediaTime();
+        if (moved) {
+            self.reflowCommitPendingAt = now;
+            // Nothing else wakes layoutHostView once the pane stops moving, so
+            // drive the convergence ourselves: one more pass in 150ms.
+            __weak typeof(self) ws = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.16 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                __strong typeof(ws) self2 = ws;
+                if (self2) [self2 layoutHostView];
+            });
+        }
+        // Converge: the pane is still moving right after the opening animation.
+        // Submit only once it has been still for 150ms so the app renders at
+        // the pane's final size instead of a mid-animation one.
+        if (self.reflowNeedsCommit && self.reflowCommitPendingAt > 0 &&
+            (now - self.reflowCommitPendingAt) > 0.15) {
+            CGSize wanted = self.reflowCommitTarget;
+            NSInteger orient = wanted.width > wanted.height
                 ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationPortrait;
             NSString *sub = nil;
-            BOOL sent = DPSubmitSceneSettings(self.scene, target, orient, &sub);
-            self.reflowCanvasDiag = [NSString stringWithFormat:@"resend=%d/%@", sent, sub ?: @"-"];
-            if (sent) self.lastSubmittedPaneSize = target;
-            DPDiag(@"reflow pane moved to %@ resent=%d", NSStringFromCGSize(target), sent);
+            BOOL sent = DPSubmitSceneSettings(self.scene, wanted, orient, &sub);
+            self.reflowCanvasDiag = [NSString stringWithFormat:@"resend=%d/%@ frame=%@",
+                                     sent, sub ?: @"-", NSStringFromCGSize(wanted)];
+            if (sent) self.lastSubmittedPaneSize = wanted;
+            self.reflowNeedsCommit = !sent;
+            self.reflowCommitPendingAt = sent ? 0 : now;
+            DPDiag(@"reflow pane settled at %@ resent=%d", NSStringFromCGSize(wanted), sent);
         }
         self.layoutDiag = [NSString stringWithFormat:@"REFLOW view=%@ canvas=%@ sc=1.000",
                            NSStringFromCGSize(target), NSStringFromCGSize(self.reflowCanvas)];
