@@ -42,6 +42,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)tryActivatePendingSplitForLaunchedBundleID:(NSString *)bundleID request:(id)request;
 /// 0.7.199: 每次转场都抓 request 里的系统自建真实 displayItem 按 bundleID 缓存
 - (void)cacheRealDisplayItemFromRequest:(id)request bundleID:(NSString *)bundleID;
+/// 0.7.201: 枚举 SBApplication 属性，诊断 displayItem 到底在哪个字段
+- (void)diagSBApplicationProperties:(NSString *)bundleID;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;

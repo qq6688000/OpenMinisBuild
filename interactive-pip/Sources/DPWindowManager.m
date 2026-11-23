@@ -1574,6 +1574,50 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     return [self displayItemForBundleID:bundleID];
 }
 
+// 0.7.201: panBegan 时 App 还稳定前台，枚举 SBApplication 身上所有属性，
+// 找出真正带 displayItem 的字段（app.displayItem 在 iOS16.6 是空的）。
+- (void)diagSBApplicationProperties:(NSString *)bundleID {
+    Class SBAppCtrl = NSClassFromString(@"SBApplicationController");
+    if (!SBAppCtrl || ![SBAppCtrl respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+        [self logSplitResult:@"diagApp: no SBApplicationController"];
+        return;
+    }
+    id appCtrl = ((id(*)(id, SEL))objc_msgSend)(SBAppCtrl, NSSelectorFromString(@"sharedInstance"));
+    if (!appCtrl || ![appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")]) {
+        [self logSplitResult:@"diagApp: no appCtrl or no applicationWithBundleIdentifier:"];
+        return;
+    }
+    id app = ((id(*)(id, SEL, id))objc_msgSend)(appCtrl, NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundleID);
+    if (!app) {
+        [self logSplitResult:[NSString stringWithFormat:@"diagApp %@: app=nil", bundleID]];
+        return;
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"diagApp %@: class=%@ searching props...", bundleID, NSStringFromClass([app class])]];
+    // 枚举实例属性
+    unsigned int count = 0;
+    objc_property_t *props = class_copyPropertyList([app class], &count);
+    for (unsigned int i = 0; i < count; i++) {
+        NSString *pname = @(property_getName(props[i]));
+        @try {
+            id val = [app valueForKey:pname];
+            if (val && ![val isKindOfClass:NSNumber.class] && ![val isKindOfClass:NSString.class]) {
+                [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ prop %@ = %@",
+                                      bundleID, pname, NSStringFromClass([val class])]];
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    free(props);
+    // 常见候选 key 直接试
+    for (NSString *k in @[@"displayItem", @"_displayItem", @"sceneHandle", @"scene",
+                          @"_scene", @"applicationSceneHandle", @"displayIdentity", @"_displayIdentity"]) {
+        @try {
+            id v = [app valueForKey:k];
+            if (v) [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ key %@ = %@", bundleID, k, NSStringFromClass([v class])]];
+        } @catch (__unused NSException *e) {}
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"diagApp %@: done", bundleID]];
+}
+
 
 
 // 0.7.198: 分屏待命中，用户手动打开了第二个 App。系统正在为它建真实 displayItem，
@@ -1694,7 +1738,15 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
     self.pvSplitGestureArmed = YES;
     self.pvPendingFirstBundleID = [fg copy];
-    NSLog(@"[InteractivePiP] PV split pan BEGAN fg=%@", fg);
+    // 0.7.201: 手指刚按下、App 稳定前台，此刻抓它的真实 displayItem 缓存备用。
+    // panEnded 时 App 已进回桌面转场动画、item 被系统挂起（app.displayItem=nil），
+    // 所以必须在 panBegan 抓，不能等 panEnded。
+    id earlyItem = [self displayItemForBundleID:fg];
+    if (earlyItem) self.pvPendingFirstDisplayItem = earlyItem;
+    NSLog(@"[InteractivePiP] PV split pan BEGAN fg=%@ earlyItem=%@",
+          fg, earlyItem ? NSStringFromClass([earlyItem class]) : @"nil");
+    [self logSplitResult:[NSString stringWithFormat:@"panBegan fg=%@ earlyItem=%@",
+                          fg, earlyItem ? NSStringFromClass([earlyItem class]) : @"nil"]];
 }
 
 - (void)handlePVFullscreenSplitPanChanged:(id)gesture {
@@ -1735,6 +1787,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 等 executeTransitionRequest: hook 拦到用户手动开的第二个 App 再激活。10s 超时防卡死。
     NSString *first = self.pvPendingFirstBundleID;
     if (!first.length) return NO;
+    // 0.7.201: 此刻 QQ 可能已在回桌面动画里，先枚举 SBApplication 属性找 displayItem 真身
+    [self diagSBApplicationProperties:first];
     id firstItem = [self displayItemForBundleID:first];
     self.pvPendingFirstDisplayItem = firstItem;
     NSLog(@"[InteractivePiP] PV split: cached firstItem=%@ for %@, waiting for second app",
