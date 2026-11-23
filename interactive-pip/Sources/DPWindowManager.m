@@ -2030,6 +2030,37 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         [self logSplitResult:[NSString stringWithFormat:@"FAIL: factory ex %@", e.reason]];
         return NO;
     }
+    // 0.7.194: 系统执行时会读 displayIdentity / applicationContext 等字段，
+    // 我们工厂造出来的对象缺这些。用当前主屏 windowScene 的 displayIdentity 补上。
+    if (request) {
+        SEL diSel = NSSelectorFromString(@"setDisplayIdentity:");
+        if ([request respondsToSelector:diSel]) {
+            id displayIdentity = nil;
+            for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+                if (![sc isKindOfClass:UIWindowScene.class]) continue;
+                UIWindowScene *ws = (UIWindowScene *)sc;
+                if (ws.activationState != UISceneActivationStateForegroundActive) continue;
+                @try {
+                    SEL idSel = NSSelectorFromString(@"_displayIdentity");
+                    if ([ws respondsToSelector:idSel]) {
+                        displayIdentity = ((id(*)(id,SEL))objc_msgSend)(ws, idSel);
+                    }
+                } @catch (__unused NSException *e) {}
+                break;
+            }
+            if (displayIdentity) {
+                @try {
+                    ((void(*)(id,SEL,id))objc_msgSend)(request, diSel, displayIdentity);
+                    [self logSplitResult:[NSString stringWithFormat:@"set displayIdentity=%@",
+                                          NSStringFromClass([displayIdentity class])]];
+                } @catch (NSException *e) {
+                    [self logSplitResult:[NSString stringWithFormat:@"FAIL: setDisplayIdentity ex %@", e.reason]];
+                }
+            } else {
+                [self logSplitResult:@"no displayIdentity available"];
+            }
+        }
+    }
     NSLog(@"[InteractivePiP] activate: request=%@ layout=%@",
           request ? NSStringFromClass([request class]) : @"nil",
           NSStringFromClass([layout class]));
@@ -2059,16 +2090,22 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 正确路径：SBSwitcherTransitionRequest 只能交给 switcher content controller 执行。
 
     // ① 首选：switcher content controller
-    id content = self.switcherContentController;
-    if (!content) {
-        for (NSString *cn in @[@"SBFluidSwitcherViewController", @"SBMainSwitcherControllerCoordinator"]) {
-            Class C = NSClassFromString(cn);
-            if (!C) continue;
-            if ([C respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-                id inst = ((id(*)(id,SEL))objc_msgSend)(C, NSSelectorFromString(@"sharedInstance"));
-                if (inst) { content = inst; break; }
-            }
+    // 0.7.194: 本机上 self.switcherContentController 是 SBDeckSwitcherViewController（卡片流，
+    // 没有 performTransition），真正的执行者是 SBMainSwitcherControllerCoordinator。
+    id content = nil;
+    {
+        Class Coord = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
+        if (Coord && [Coord respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+            @try {
+                id c = ((id(*)(id,SEL))objc_msgSend)(Coord, NSSelectorFromString(@"sharedInstance"));
+                if ([c respondsToSelector:@selector(switcherContentController:performTransitionWithRequest:gestureInitiated:)]) {
+                    content = c;
+                }
+            } @catch (__unused NSException *e) {}
         }
+    }
+    if (!content && [self.switcherContentController respondsToSelector:@selector(switcherContentController:performTransitionWithRequest:gestureInitiated:)]) {
+        content = self.switcherContentController;
     }
     [self logSplitResult:[NSString stringWithFormat:@"content=%@", content ? NSStringFromClass([content class]) : @"nil"]];
     if (content) {
