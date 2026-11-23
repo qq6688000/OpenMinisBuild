@@ -46,6 +46,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)diagSBApplicationProperties:(NSString *)bundleID;
 /// 0.7.203: 枚举前台 scene 属性，诊断 displayItem 真身（SBApplication 上没有）
 - (void)diagForegroundSceneForBundleID:(NSString *)bundleID;
+/// 0.7.204: 递归 dump 转场 request 对象树，定位真实 displayItem 藏在哪个字段
+- (void)dumpTransitionRequest:(id)request;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;

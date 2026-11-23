@@ -1550,6 +1550,75 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
 }
 
+// 0.7.204: 一次性运行时 dump。不再猜 displayItem 在哪 —— 在确认能触发的
+// executeTransitionRequest: 钩子里，把 request 的 class/属性/ivar 递归展开落盘。
+static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
+                      NSMutableSet *seen, void (^emit)(NSString *)) {
+    if (!obj || depth > maxDepth) return;
+    if ([obj isKindOfClass:NSString.class]) { emit([NSString stringWithFormat:@"%@ = \"%@\"", NSStringFromClass([obj class]), obj]); return; }
+    if ([obj isKindOfClass:NSNumber.class] || [obj isKindOfClass:NSValue.class]) { emit([NSString stringWithFormat:@"%@ = %@", NSStringFromClass([obj class]), obj]); return; }
+    if ([obj isKindOfClass:NSArray.class] || [obj isKindOfClass:NSSet.class]) {
+        NSArray *arr = [obj isKindOfClass:NSSet.class] ? [obj allObjects] : (NSArray *)obj;
+        emit([NSString stringWithFormat:@"%@ count=%lu", NSStringFromClass([obj class]), (unsigned long)arr.count]);
+        if (depth < maxDepth) {
+            for (NSUInteger i = 0; i < arr.count && i < 6; i++)
+                DPDumpObj(arr[i], depth + 1, maxDepth, seen, emit);
+        }
+        return;
+    }
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        emit([NSString stringWithFormat:@"%@ count=%lu", NSStringFromClass([obj class]), (unsigned long)[obj count]]);
+        if (depth < maxDepth) {
+            for (NSString *k in obj) {
+                emit([NSString stringWithFormat:@"[%@]", k]);
+                DPDumpObj(obj[k], depth + 1, maxDepth, seen, emit);
+            }
+        }
+        return;
+    }
+    NSString *ptr = [NSString stringWithFormat:@"%p", obj];
+    if ([seen containsObject:ptr]) { emit([NSString stringWithFormat:@"%@ (seen)", NSStringFromClass([obj class])]); return; }
+    [seen addObject:ptr];
+    Class cls = [obj class];
+    emit([NSString stringWithFormat:@"<%@ %p>", cls, obj]);
+    Class c = cls;
+    while (c && c != [NSObject class]) {
+        unsigned int n = 0;
+        objc_property_t *props = class_copyPropertyList(c, &n);
+        for (unsigned int i = 0; i < n; i++) {
+            NSString *pn = @(property_getName(props[i]));
+            @try {
+                id v = [obj valueForKey:pn];
+                if (v) { emit([NSString stringWithFormat:@"  .%@ = %@", pn, NSStringFromClass([v class])]);
+                         DPDumpObj(v, depth + 1, maxDepth, seen, emit); }
+            } @catch (__unused NSException *e) {
+                emit([NSString stringWithFormat:@"  .%@ = <no getter>", pn]);
+            }
+        }
+        free(props);
+        unsigned int iv = 0;
+        Ivar *ivars = class_copyIvarList(c, &iv);
+        for (unsigned int i = 0; i < iv; i++) {
+            NSString *in_ = @(ivar_getName(ivars[i]));
+            if ([in_ hasPrefix:@"_"]) {
+                id v = object_getIvar(obj, ivars[i]);
+                if (v) { emit([NSString stringWithFormat:@"  ivar %@ = %@", in_, NSStringFromClass([v class])]);
+                         DPDumpObj(v, depth + 1, maxDepth, seen, emit); }
+            }
+        }
+        free(ivars);
+        c = [c superclass];
+    }
+}
+
+- (void)dumpTransitionRequest:(id)request {
+    [self logSplitResult:@"===== TRANSITION REQUEST DUMP BEGIN ====="];
+    DPDumpObj(request, 0, 2, [NSMutableSet set], ^(NSString *line) {
+        [self logSplitResult:line];
+    });
+    [self logSplitResult:@"===== TRANSITION REQUEST DUMP END ====="];
+}
+
 #pragma mark - PV-style fullscreen split (0.7.178)
 
 // 0.7.199: executeTransitionRequest: 每次触发都把 request 里的系统自建真实 displayItem

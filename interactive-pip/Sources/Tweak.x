@@ -412,6 +412,8 @@ static NSArray *DPInjectedShortcutItems(void) {
 
     // 0.7.199: 每次转场都抓系统自建的真实 displayItem 进缓存表（上滑待命/第二个 App 组分屏都靠它）
     [[DPWindowManager shared] cacheRealDisplayItemFromRequest:request bundleID:bid];
+    // 0.7.204: 一次性递归 dump request 对象树，定位真实 displayItem 藏在哪个字段
+    [[DPWindowManager shared] dumpTransitionRequest:request];
 
     // 0.7.198: 分屏待命中，用户手动打开的第二个 App —— 先放行 %orig 让系统正常
     // 启动它（建好真实 scene + displayItem），延迟后再组 itemA(缓存) + itemB(真实) 分屏。
