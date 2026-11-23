@@ -216,7 +216,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>交互分屏 Duo 0.7.178 · 原生 arm64e · RootHide。PV式全屏分屏。</string>
+			<string>交互分屏 Duo 0.7.179 · 原生 arm64e · RootHide。PV式全屏分屏。</string>
 			<key>label</key>
 			<string>关于</string>
 		</dict>

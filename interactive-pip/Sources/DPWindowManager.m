@@ -277,12 +277,12 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (![DPSettings shared].isEnabled) return;
     [self install];
 
+    // 0.7.179: 通用入口也走 PV式全屏分屏 —— 选 App 后全屏打开，上滑到顶再选第二个。
+    __weak typeof(self) weakSelf = self;
     [self presentAppPickerWithCompletion:^(NSString *bundleID) {
-        if (bundleID) {
-            [self openFloatingWithBundleID:bundleID];
-            DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
-            if (first) [self beginDragToKeepForWindow:first];
-        }
+        typeof(weakSelf) s = weakSelf;
+        if (!s || !bundleID.length) return;
+        [s startPVFullscreenSplitForBundleID:bundleID];
     }];
 }
 
@@ -1054,6 +1054,38 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }];
 }
 
+/// 0.7.179: 一次性建两个窗并立刻铺满分屏 —— 中间不露单个浮窗。
+- (void)createSplitPairWithFirst:(NSString *)firstBundleID second:(NSString *)secondBundleID {
+    if (!firstBundleID.length || !secondBundleID.length) return;
+    if ([firstBundleID isEqualToString:secondBundleID]) return;
+    if ([[DPSettings shared] isBundleBlacklisted:firstBundleID] ||
+        [[DPSettings shared] isBundleBlacklisted:secondBundleID]) return;
+
+    [self leaveSplit];
+    [self install];
+    for (DPFloatingWindow *w in [self.mutableFloatingWindows copy]) {
+        [self closeFloatingWindow:w animated:NO];
+    }
+
+    // 建两个窗，先隐藏避免任何中间态闪现
+    self.creatingSplit = YES;
+    [self openFloatingWithBundleID:firstBundleID];
+    [self openFloatingWithBundleID:secondBundleID];
+    self.creatingSplit = NO;
+
+    DPFloatingWindow *first = nil, *second = nil;
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        if ([w.bundleID isEqualToString:firstBundleID]) first = w;
+        else if ([w.bundleID isEqualToString:secondBundleID]) second = w;
+    }
+    if (!first || !second) {
+        NSLog(@"[InteractivePiP] createSplitPair FAILED first=%d second=%d",
+              first != nil, second != nil);
+        return;
+    }
+    [self pairWindow:first withBundleID:secondBundleID];
+}
+
 - (void)pairWindow:(DPFloatingWindow *)first withBundleID:(NSString *)bundleID {
     if (!first || !bundleID.length || [first.bundleID isEqualToString:bundleID]) return;
     if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return;
@@ -1489,23 +1521,14 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     NSLog(@"[InteractivePiP] PV split pan ENDED reachedTop=%d", reachedTop);
     if (!reachedTop) return;
 
-    // 上滑到位 → 把第一个 App 建成浮窗（作为分屏第一半），弹 picker 选第二个
+    // 上滑到位 → 先选第二个 App，再一次性建两个窗铺满分屏（全程不露单个浮窗）
     NSString *first = self.pvPendingFirstBundleID;
     self.pvPendingFirstBundleID = nil;
-    [self openFloatingWithBundleID:first];
-    DPFloatingWindow *firstWindow = nil;
-    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
-        if ([w.bundleID isEqualToString:first]) { firstWindow = w; break; }
-    }
-    if (!firstWindow) {
-        NSLog(@"[InteractivePiP] PV split: first window create FAILED");
-        return;
-    }
     __weak typeof(self) weakSelf = self;
     [self presentAppPickerWithCompletion:^(NSString *bundleID) {
         typeof(weakSelf) s = weakSelf;
-        if (!s || !bundleID.length) { return; }
-        [s pairWindow:firstWindow withBundleID:bundleID];
+        if (!s || !bundleID.length || [bundleID isEqualToString:first]) return;
+        [s createSplitPairWithFirst:first second:bundleID];
     }];
 }
 

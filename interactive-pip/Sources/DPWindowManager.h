@@ -34,6 +34,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)handlePVFullscreenSplitPanChanged:(id)gesture;
 - (void)handlePVFullscreenSplitPanEnded:(id)gesture;
 - (BOOL)isPVFullscreenSplitPending;
+/// 0.7.179: 一次性建两个窗并铺满分屏（不露单个浮窗中间态）
+- (void)createSplitPairWithFirst:(NSString *)firstBundleID second:(NSString *)secondBundleID;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;
