@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>适用于 iOS 16 RootHide 的 Duo 固定均分与悬浮窗。画面保持手机原始比例，可能留有黑边。</string>
+			<string>适用于 iOS 16 RootHide 的 Duo 双应用固定均分。画面保持手机原始比例，可能留有黑边。在 App 界面向上滑到灵动岛松手即可固定并开启分屏。</string>
 			<key>label</key>
 			<string>交互分屏 Duo</string>
 		</dict>
@@ -30,7 +30,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>图标下滑打开悬浮窗，长按选择双应用固定均分。顶部可退出分屏或关闭全部；按主屏幕键或锁屏结束会话。</string>
+			<string>图标下滑或长按选择应用；在窗口的 App 界面上滑到顶部灵动岛，松手固定该 App 并选第二个应用组成分屏。</string>
 			<key>label</key>
 			<string>启动方式</string>
 		</dict>
@@ -100,162 +100,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>悬浮窗</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>280.0</real>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>floatingWidth</string>
-			<key>label</key>
-			<string>默认宽度</string>
-			<key>max</key>
-			<real>400.0</real>
-			<key>min</key>
-			<real>180.0</real>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>500.0</real>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>floatingHeight</string>
-			<key>label</key>
-			<string>默认高度</string>
-			<key>max</key>
-			<real>700.0</real>
-			<key>min</key>
-			<real>220.0</real>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>1.0</real>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>floatingOpacity</string>
-			<key>label</key>
-			<string>不透明度</string>
-			<key>max</key>
-			<real>1.0</real>
-			<key>min</key>
-			<real>0.5</real>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>16.0</real>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>floatingCornerRadius</string>
-			<key>label</key>
-			<string>圆角半径</string>
-			<key>max</key>
-			<real>32.0</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>shelfLivePreview</string>
-			<key>label</key>
-			<string>侧栏实时画面</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>liveReflow</string>
-			<key>label</key>
-			<string>实时窗口重排</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>showBorder</string>
-			<key>label</key>
-			<string>显示边框</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.seagull.interactivepip/settings.changed</string>
-			<key>cell</key>
-			<string>PSSegmentCell</string>
-			<key>default</key>
-			<integer>2</integer>
-			<key>defaults</key>
-			<string>com.seagull.interactivepip</string>
-			<key>key</key>
-			<string>maxFloatingWindows</string>
-			<key>label</key>
-			<string>最多悬浮窗数量</string>
-			<key>validTitles</key>
-			<array>
-				<string>1</string>
-				<string>2</string>
-				<string>3</string>
-				<string>4</string>
-			</array>
-			<key>validValues</key>
-			<array>
-				<integer>1</integer>
-				<integer>2</integer>
-				<integer>3</integer>
-				<integer>4</integer>
-			</array>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
 			<string>行为</string>
 		</dict>
 		<dict>
@@ -318,7 +162,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>收藏应用优先显示。黑名单中的应用无法使用悬浮窗。</string>
+			<string>收藏应用优先显示。黑名单中的应用无法使用分屏。</string>
 			<key>label</key>
 			<string>应用管理</string>
 		</dict>
@@ -372,7 +216,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>交互分屏 Duo 0.2.1 · 原生 arm64e · RootHide。远程键盘兼容性需真机验证，失败时可从键盘帮助转全屏输入。</string>
+			<string>交互分屏 Duo 0.7.176 · 原生 arm64e · RootHide。只保留分屏交互模式。</string>
 			<key>label</key>
 			<string>关于</string>
 		</dict>
