@@ -639,8 +639,26 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 }
 
 - (id)sbMainDisplaySceneManager {
-    // 0.7.220: 不再猜 sharedInstance。枚举每个类方法，逐个试调无参的，
-    // 谁返回看起来像 scene manager 的对象就用谁。
+    // 0.7.221 实机确凿结论（split_20）：
+    //   SBMainDisplaySceneManager 类方法列表为空 → 从它自己取永远 nil
+    //   SBSceneManagerCoordinator +mainDisplaySceneManager -> SBMainDisplaySceneManager ✅
+    // 这是 PV 那条 weak 持有的 SBMainDisplaySceneManager 的正确来源。
+    Class coord = NSClassFromString(@"SBSceneManagerCoordinator");
+    if (coord) {
+        for (NSString *sel in @[@"mainDisplaySceneManager",
+                                @"secureMainDisplaySceneManager"]) {
+            SEL s = NSSelectorFromString(sel);
+            if (![coord respondsToSelector:s]) continue;
+            id mgr = ((id (*)(id, SEL))objc_msgSend)((id)coord, s);
+            if (mgr) return mgr;
+        }
+        id shared = ((id (*)(id, SEL))objc_msgSend)((id)coord, sel_registerName("sharedInstance"));
+        if (shared) {
+            id mgr = ((id (*)(id, SEL))objc_msgSend)(shared, sel_registerName("mainDisplaySceneManager"));
+            if (mgr) return mgr;
+        }
+    }
+    // 兜底：枚举每个类方法，逐个试调无参的
     for (NSString *cn in @[@"SBMainDisplaySceneManager",
                            @"SBSceneManagerCoordinator",
                            @"SBSceneManager"]) {

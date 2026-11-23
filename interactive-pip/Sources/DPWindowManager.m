@@ -2229,6 +2229,34 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     [w setParkedSnapshot:image];
     [self logSplitResult:[NSString stringWithFormat:@"snapshot drawer created %@ img=%@",
                           NSStringFromCGRect(frame), image ? @"yes" : @"nil"]];
+
+    // 0.7.221: 延时挂活 scene。上滑那一刻 App 还在前台、scene 被系统占着，
+    // 强抓必崩（0.7.182/0.7.218）。等 1.2s App 已退后台、scene 空闲，
+    // 再走成熟 attach 链（sceneManager 已从 SBSceneManagerCoordinator.mainDisplaySceneManager
+    // 正确取到 —— split_20 实证）。挂上活画面后把快照撤掉（PV updateNativeWindow: 语义）。
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        DPFloatingWindow *win = nil;
+        for (DPFloatingWindow *fw in s.floatingWindows) {
+            if ([fw.bundleID isEqualToString:bundleID]) { win = fw; break; }
+        }
+        if (!win) { [s logSplitResult:@"live attach: drawer gone, skip"]; return; }
+        if (win.sceneHost) { [s logSplitResult:@"live attach: host exists already"]; return; }
+        [win setNeedsLayout];
+        [win layoutIfNeeded];
+        DPSceneHost *host = [[DPSceneHost alloc] initWithBundleID:bundleID];
+        [win attachSceneHost:host];
+        [s ensureSceneThenAttach:bundleID host:host onAttached:^{
+            typeof(weakSelf) ss = weakSelf;
+            if (!ss) return;
+            BOOL live = host.isLive;
+            [ss logSplitResult:[NSString stringWithFormat:@"live attach %@ -> live=%d", bundleID, live]];
+            if (live) [win setParkedSnapshot:nil];
+        }];
+    });
 }
 
 /// 0.7.213: 修复 0.7.212 栈溢出崩溃 —— 上一版把系统 keyWindow 当 UIView 塞进子视图，
