@@ -1672,8 +1672,11 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
             // 只缓存 SpringBoard 认的真实 item（有 class 的对象）
             BOOL isNew = (self.pvRealItemCache[bid] == nil);
             self.pvRealItemCache[bid] = item;
-            [self logSplitResult:[NSString stringWithFormat:@"harvest CACHED real item %@ -> %@",
-                                  bid, NSStringFromClass([item class])]];
+            // 0.7.214: 每个 bundleID 只在首次收割时打一行，避免刷屏把 panBegan/panEnded 挤掉
+            if (isNew) {
+                [self logSplitResult:[NSString stringWithFormat:@"harvest CACHED real item %@ -> %@",
+                                      bid, NSStringFromClass([item class])]];
+            }
             // 0.7.211: 首次见到某个 App 的真实 item，后台 dump 它的完整字段，
             // 看清真实 SBDisplayItem 到底有哪些属性（照它复用，不再手拼空壳）
             if (isNew) {
@@ -1926,6 +1929,9 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 
 // 0.7.181: PV式 —— 任意前台 App 全屏时上滑到顶松手即触发分屏，不需要预先选择。
 - (void)handlePVFullscreenSplitPanBegan:(id)gesture {
+    // 0.7.214: 无条件打一行，确认这个 hook 到底有没有在 iOS 16.4.1 上触发
+    [self logSplitResult:[NSString stringWithFormat:@"PAN_BEGAN entered gesture=%@",
+                          gesture ? NSStringFromClass([gesture class]) : @"nil"]];
     NSString *fg = [self foregroundBundleID];
     if (!fg.length || [fg isEqualToString:@"com.apple.springboard"]) {
         self.pvSplitGestureArmed = NO;
@@ -2008,6 +2014,7 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 }
 
 - (BOOL)handlePVFullscreenSplitPanEnded:(id)gesture {
+    [self logSplitResult:[NSString stringWithFormat:@"PAN_ENDED entered armed=%d", self.pvSplitGestureArmed]];
     BOOL wasArmed = self.pvSplitGestureArmed;
     self.pvSplitGestureArmed = NO;
     if (!wasArmed) return NO;
@@ -2044,10 +2051,49 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     self.pvPendingFirstBundleID = nil;
     self.pvPendingFirstDisplayItem = nil;
 
-    BOOL parked = [self parkForegroundAppIntoPipDrawer:first];
+    BOOL parked = [self parkForegroundAppAsFloatingCard:first];
     [self logSplitResult:[NSString stringWithFormat:@"panEnded park first=%@ ok=%d", first, parked]];
     // 无论抽屉是否成功，都放行系统手势（App 正常回桌面），不再拦全屏
     return parked;
+}
+
+/// 0.7.214: 上滑挂起的真正落地 —— 用 Duo 自有 DPSceneHost 把前台 App 抓成小浮窗挂起来。
+/// 这才是用户要的"上滑挂起 App"：App 没关，变成一张小卡片悬在屏幕上，点开继续用。
+/// 不碰系统 UIWindow、不拼 SBAppLayout、不依赖 iOS16 上全断的 displayItem 路径。
+- (BOOL)parkForegroundAppAsFloatingCard:(NSString *)bundleID {
+    if (!bundleID.length) return NO;
+    if ([bundleID isEqualToString:@"com.apple.springboard"]) return NO;
+    // 已经有窗口挂在外面了就不重复建
+    if (self.floatingWindows.count > 0) {
+        [self logSplitResult:@"park: already have floating windows, skip"];
+        return NO;
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"park: creating floating card for %@", bundleID]];
+    @try {
+        // 复用成熟的浮窗创建路径：它会建 DPFloatingWindow + DPSceneHost 抓 scene
+        [self openFloatingWithBundleID:bundleID];
+    } @catch (NSException *e) {
+        [self logSplitResult:[NSString stringWithFormat:@"park EXCEPTION %@: %@", e.name, e.reason]];
+        return NO;
+    }
+    BOOL ok = (self.floatingWindows.count > 0);
+    if (ok) {
+        DPFloatingWindow *w = self.floatingWindows.firstObject;
+        // 压成"挂起"态：右侧竖条小卡片，不挡视线
+        CGFloat screenW = CGRectGetWidth([UIScreen mainScreen].bounds);
+        CGFloat screenH = CGRectGetHeight([UIScreen mainScreen].bounds);
+        CGFloat cardW = screenW * 0.34;
+        CGFloat cardH = screenH * 0.30;
+        CGRect frame = CGRectMake(screenW - cardW - 12,
+                                  screenH - cardH - 100,
+                                  cardW, cardH);
+        [w setFrame:frame];
+        [w commitSceneLayout];
+        [self logSplitResult:[NSString stringWithFormat:@"park OK card frame=%@", NSStringFromCGRect(frame)]];
+    } else {
+        [self logSplitResult:@"park FAILED: no window created"];
+    }
+    return ok;
 }
 
 /// 0.7.213: 修复 0.7.212 栈溢出崩溃 —— 上一版把系统 keyWindow 当 UIView 塞进子视图，
