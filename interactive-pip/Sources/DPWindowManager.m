@@ -1063,8 +1063,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 /// 0.7.180: PV 式 —— 上滑到顶松手后，第一个 App 直接铺成「上半屏」（不是小浮窗），
 /// 然后选第二个 App 填下半屏。
-- (void)createTopHalfWithBundleID:(NSString *)firstBundleID {
-    if (!firstBundleID.length) return;
+- (BOOL)createTopHalfWithBundleID:(NSString *)firstBundleID {
+    if (!firstBundleID.length) return NO;
     [self leaveSplit];
     [self install];
     for (DPFloatingWindow *w in [self.mutableFloatingWindows copy]) {
@@ -1080,7 +1080,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
     if (!first) {
         NSLog(@"[InteractivePiP] createTopHalf FAILED bundle=%@", firstBundleID);
-        return;
+        return NO;
     }
     // 直接铺成上半屏（PV: 松手保留后固定为上半屏）
     CGRect b = self.overlayRoot.bounds;
@@ -1097,6 +1097,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         if (!s || !bundleID.length || [bundleID isEqualToString:firstBundleID]) return;
         [s pairWindow:first withBundleID:bundleID];
     }];
+    return YES;
 }
 
 /// 0.7.179: 一次性建两个窗并立刻铺满分屏 —— 中间不露单个浮窗。
@@ -1524,52 +1525,67 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     return CGPointZero;
 }
 
+// 0.7.181: PV式 —— 任意前台 App 全屏时上滑到顶松手即触发分屏，不需要预先选择。
 - (void)handlePVFullscreenSplitPanBegan:(id)gesture {
-    if (![self isPVFullscreenSplitPending]) return;
     NSString *fg = [self foregroundBundleID];
-    if (![fg isEqualToString:self.pvPendingFirstBundleID]) return;
+    if (!fg.length || [fg isEqualToString:@"com.apple.springboard"]) {
+        self.pvSplitGestureArmed = NO;
+        return;
+    }
+    if ([[DPSettings shared] isBundleBlacklisted:fg]) {
+        self.pvSplitGestureArmed = NO;
+        return;
+    }
+    // 已经在分屏/浮窗会话里时不重复触发
+    if (self.mode == DPPresentationModeSplit) {
+        self.pvSplitGestureArmed = NO;
+        return;
+    }
     self.pvSplitGestureArmed = YES;
-    NSLog(@"[InteractivePiP] PV split pan BEGAN (armed) fg=%@", fg);
+    self.pvPendingFirstBundleID = [fg copy];
+    NSLog(@"[InteractivePiP] PV split pan BEGAN fg=%@", fg);
 }
 
 - (void)handlePVFullscreenSplitPanChanged:(id)gesture {
-    if (![self isPVFullscreenSplitPending] || !self.pvSplitGestureArmed) return;
-    // 只在手势对象支持 translationInView 时做跟手缩放，不支持就跳过（不影响松手判定）
-    if ([gesture respondsToSelector:@selector(translationInView:)]) {
-        UIView *v = ([gesture respondsToSelector:@selector(view)]) ? [gesture valueForKey:@"view"] : nil;
-        CGPoint t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(translationInView:), v);
-        // t.y < 0 表示上滑；这里记录进度，真正的视觉缩放交给 ended 后的 layoutSplit
-        if (t.y < -80) {
-            // 上滑超过阈值，标记到位候选
-        }
-    }
+    if (!self.pvSplitGestureArmed) return;
 }
 
-- (void)handlePVFullscreenSplitPanEnded:(id)gesture {
-    if (![self isPVFullscreenSplitPending]) return;
+- (BOOL)handlePVFullscreenSplitPanEnded:(id)gesture {
     BOOL wasArmed = self.pvSplitGestureArmed;
     self.pvSplitGestureArmed = NO;
-    if (!wasArmed) return;
+    if (!wasArmed) return NO;
 
-    // 判定上滑是否到位：优先读手势 translation/speed；读不到就按"前台仍是我们的App且手势结束"处理
-    BOOL reachedTop = YES;
+    // 判定是否上滑到顶：必须明显上滑（超过屏高 40%）或手指进入顶部区，避免普通回桌面被误触发
+    BOOL reachedTop = NO;
     if ([gesture respondsToSelector:@selector(translationInView:)]) {
         UIView *v = ([gesture respondsToSelector:@selector(view)]) ? [gesture valueForKey:@"view"] : nil;
         CGPoint t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(translationInView:), v);
-        reachedTop = (t.y < -80);
         CGPoint loc = [self dpsafeLocationForGesture:gesture];
-        if (v && loc.y > 0) {
-            CGFloat topZone = MAX(80.0, v.safeAreaInsets.top + 60.0);
-            reachedTop = reachedTop || (loc.y <= topZone);
-        }
+        CGFloat screenH = v ? v.bounds.size.height : 852.0;
+        CGFloat topZone = MAX(90.0, (v ? v.safeAreaInsets.top : 0) + 60.0);
+        reachedTop = (t.y < -(screenH * 0.4));
+        if (loc.y > 0 && loc.y <= topZone) reachedTop = YES;
+        NSLog(@"[InteractivePiP] PV split pan ENDED t=%@ loc=%@ screenH=%.0f topZone=%.0f reachedTop=%d",
+              NSStringFromCGPoint(t), NSStringFromCGPoint(loc), screenH, topZone, reachedTop);
+    } else {
+        // 拿不到位移信息时：只要手势正常结束且前台还是这个 App，就当作到顶
+        NSString *fg = [self foregroundBundleID];
+        reachedTop = [fg isEqualToString:self.pvPendingFirstBundleID];
+        NSLog(@"[InteractivePiP] PV split pan ENDED (no translation API) reachedTop=%d fg=%@",
+              reachedTop, fg ?: @"(none)");
     }
-    NSLog(@"[InteractivePiP] PV split pan ENDED reachedTop=%d", reachedTop);
-    if (!reachedTop) return;
+    if (!reachedTop) {
+        self.pvPendingFirstBundleID = nil;
+        return NO;
+    }
 
-    // 上滑到位 → 第一个 App 固定为上半屏，再选第二个填下半屏（PV 式）
+    // 到顶 → 该 App 固定为上半屏，再选第二个填下半屏
     NSString *first = self.pvPendingFirstBundleID;
     self.pvPendingFirstBundleID = nil;
-    [self createTopHalfWithBundleID:first];
+    if (!first.length) return NO;
+    BOOL ok = [self createTopHalfWithBundleID:first];
+    // 只有窗口真的建出来了才接管（否则放行系统回桌面，避免卡死）
+    return ok;
 }
 
 - (void)handleHomeGestureEnded {

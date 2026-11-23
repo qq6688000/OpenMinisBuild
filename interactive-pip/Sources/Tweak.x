@@ -559,26 +559,26 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 %end
 
-// ── 全面屏上滑回桌面：PanoramicView 实证入口 ─────────────────────────────
-// PV 通过 hook SBFluidSwitcherGestureManager 的 pan 手势捕获上滑。我们在手势
-// 结束时判定：若会话仍在、且前台已不是被托管的 App（即回到桌面），才拆会话。
-// 只在 Ended 触发，began/changed 阶段不动，避免打开/切换 App 时误拆。
+// ── PV式：全屏 App 内直接上滑到顶 → 该 App 变上半屏 + 选第二个（0.7.181）──
+// 不需要长按图标、不需要菜单：任意 App 全屏时从底部上滑并按住到顶部，松手即保留。
+// 与系统"上滑回桌面"区分：我们只在松手时窗口/手势到达顶部区才接管，否则放行原逻辑。
 %hook SBFluidSwitcherGestureManager
 - (void)_handleSwitcherPanGestureBegan:(id)gesture {
     %orig;
-    if ([[DPWindowManager shared] isPVFullscreenSplitPending])
-        [[DPWindowManager shared] handlePVFullscreenSplitPanBegan:gesture];
+    [[DPWindowManager shared] handlePVFullscreenSplitPanBegan:gesture];
 }
 - (void)_handleSwitcherPanGestureChanged:(id)gesture {
     %orig;
-    if ([[DPWindowManager shared] isPVFullscreenSplitPending])
-        [[DPWindowManager shared] handlePVFullscreenSplitPanChanged:gesture];
+    [[DPWindowManager shared] handlePVFullscreenSplitPanChanged:gesture];
 }
 - (void)_handleSwitcherPanGestureEnded:(id)gesture {
-    %orig;
-    if ([[DPWindowManager shared] isPVFullscreenSplitPending]) {
-        [[DPWindowManager shared] handlePVFullscreenSplitPanEnded:gesture];
+    BOOL tookOver = [[DPWindowManager shared] handlePVFullscreenSplitPanEnded:gesture];
+    if (tookOver) {
+        // 我们已接管（把该 App 固定为上半屏），不要再让系统执行"上滑回桌面"
+        NSLog(@"[InteractivePiP] PV split took over gesture, suppressing system home transition");
+        return;
     }
+    %orig;
     if ([DPWindowManager shared].mode != DPPresentationModeNone) {
         [[DPWindowManager shared] handleHomeGestureEnded];
     }

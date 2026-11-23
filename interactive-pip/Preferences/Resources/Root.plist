@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>适用于 iOS 16 RootHide 的 Duo 全屏分屏。全屏打开 App，上滑到顶固定为半屏，再选第二个 App。</string>
+			<string>适用于 iOS 16 RootHide 的 Duo 全屏分屏。任意 App 内上滑到顶松手 → 该 App 变上半屏 → 选第二个 App 填下半屏。</string>
 			<key>label</key>
 			<string>交互分屏 Duo</string>
 		</dict>
@@ -30,7 +30,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>全屏打开应用后，从屏幕底部上滑到顶部松手固定为上半屏，再选第二个 App 组成分屏。</string>
+			<string>打开任意 App 全屏后，从屏幕底部上滑到顶部并按住，松手即把该 App 固定为上半屏，再选第二个 App。无需长按图标。</string>
 			<key>label</key>
 			<string>启动方式</string>
 		</dict>
@@ -216,7 +216,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>交互分屏 Duo 0.7.180 · 原生 arm64e · RootHide。PV式全屏分屏。</string>
+			<string>交互分屏 Duo 0.7.181 · 原生 arm64e · RootHide。全屏 App 上滑分屏。</string>
 			<key>label</key>
 			<string>关于</string>
 		</dict>
