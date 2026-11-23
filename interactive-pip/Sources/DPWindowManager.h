@@ -73,8 +73,6 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 /// 允许下一次该 bundle 全屏启动（用于先拉起进程再回桌面挂画面）
 - (void)allowNextLaunchForBundleID:(NSString *)bundleID;
 
-- (void)keyboardWindowVisibilityChanged:(BOOL)visible;
-
 @end
 
 NS_ASSUME_NONNULL_END

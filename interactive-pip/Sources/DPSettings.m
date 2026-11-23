@@ -147,12 +147,6 @@ static NSString *DPPreferencesPath(void) {
     return YES;
 }
 
-// 0.7.153: keep floating windows on screen (and their scenes alive) when the user
-// goes home, so a playing video keeps running in a small window - PiP-like.
-- (BOOL)pipKeepPlaying {
-    return [self boolForKey:@"pipKeepPlaying" default:NO];
-}
-
 - (NSInteger)maxFloatingWindows {
     NSInteger n = [self integerForKey:@"maxFloatingWindows" default:2];
     return MIN(4, MAX(1, n));

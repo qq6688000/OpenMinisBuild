@@ -46,9 +46,6 @@
 @property (nonatomic, strong, nullable) UIWindow *prePickerKeyWindow;
 @property (nonatomic, assign) BOOL lastLandscapeState;
 @property (nonatomic, assign) BOOL lastLandscapeKnown;
-@property (nonatomic, strong, nullable) NSTimer *keyboardWatchTimer;
-@property (nonatomic, assign) BOOL keyboardPollVisible;
-@property (nonatomic, assign) CFTimeInterval lastKeyboardTransitionAt;
 @property (nonatomic, assign) BOOL watchingDeviceOrientation; // 0.7.126: picker search needs a key window
 @property (nonatomic, strong) NSMutableSet<NSString *> *mutableHostedBundleIDs;
 @property (nonatomic, strong) NSMutableSet<NSString *> *launchAllowlist; // 临时允许全屏一次
@@ -64,7 +61,6 @@
 @property (nonatomic) BOOL floatingHiddenOnHome;
 @property (nonatomic, strong, nullable) DPEdgeShelfWindow *edgeShelf;
 @property (nonatomic, copy) NSArray *shelfThumbnails;
-@property (nonatomic, strong, nullable) DPFloatingWindow *pipWindow;
 @property (nonatomic) NSUInteger shelfWindowCount;
 @property (nonatomic) BOOL homeGestureSettling;
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
@@ -105,19 +101,6 @@
 - (void)restorePreviousKeyWindow;
 - (id)sharedRemoteKeyboards;
 - (void)configureRemoteKeyboardsForHostedInput:(BOOL)enabled;
-- (void)enterPiPMode;
-- (void)exitPiPMode;
-- (BOOL)window:(DPFloatingWindow *)window containsFirstResponderInView:(UIView *)view;
-- (BOOL)keyboardBelongsToOurWindows;
-- (void)collapseAfterKeyboard;
-- (void)expandForKeyboardIfOurs;
-- (void)keyboardWindowVisibilityChanged:(BOOL)visible;
-- (void)pollKeyboardState;
-- (void)stopKeyboardWatch;
-- (void)startKeyboardWatchIfNeeded;
-- (BOOL)systemKeyboardVisible;
-- (void)updateEdgeShelf;
-- (NSArray<UIImage *> *)captureFloatingThumbnails;
 @end
 
 static BOOL DPDuoSystemSwitcherVisible(void) {
@@ -172,22 +155,6 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                    selector:@selector(hostedKeyboardWillShow)
                                                        name:UIKeyboardWillShowNotification
-                                                     object:nil];
-        // 0.7.167: SpringBoard often never sees the "will show" notification because the
-        // keyboard belongs to a hosted (remote) app process - the "did show" one is what
-        // actually arrives. Listen to both; the handler is idempotent while expanded.
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillShow)
-                                                       name:UIKeyboardDidShowNotification
-                                                     object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillHide)
-                                                       name:UIKeyboardDidHideNotification
-                                                     object:nil];
-        // private SpringBoard variant, present on iOS 16
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                   selector:@selector(hostedKeyboardWillShow)
-                                                       name:@"UIKeyboardWillShowNotification"
                                                      object:nil];
     }
     return self;
@@ -309,7 +276,11 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     [self install];
 
     [self presentAppPickerWithCompletion:^(NSString *bundleID) {
-        if (bundleID) [self openFloatingWithBundleID:bundleID];
+        if (bundleID) {
+            [self openFloatingWithBundleID:bundleID];
+            DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
+            if (first) [self beginDragToKeepForWindow:first];
+        }
     }];
 }
 
@@ -342,7 +313,11 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
             if (target) [self requestSplitForWindow:target];
         }
     } else {
+        // 0.7.173: 窗口模式已删除。激活一个 App 后进入「拖出即保留」预览态，
+        // 松手固定后自动进入分屏配对，不再停留为独立悬浮窗。
         [self openFloatingWithBundleID:bundleID];
+        DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
+        if (first) [self beginDragToKeepForWindow:first];
     }
 }
 
@@ -896,192 +871,6 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     self.keyWindowBeforeHostedInput = nil;
 }
 
-// 0.7.161: does this window's subtree currently own a first responder?
-- (BOOL)window:(DPFloatingWindow *)window containsFirstResponderInView:(UIView *)view {
-    (void)window;
-    if (!view) return NO;
-    if (view.isFirstResponder) return YES;
-    for (UIView *sub in view.subviews) {
-        if ([self window:window containsFirstResponderInView:sub]) return YES;
-    }
-    return NO;
-}
-
-// 0.7.165: guard against foreign keyboards. This notification fires for the whole
-// device, so we must know whether the typing target is one of our windows.
-- (BOOL)keyboardBelongsToOurWindows {
-    if (self.mutableFloatingWindows.count == 0) return NO;
-
-    // 0.7.166: the hosted app's first responder lives in ANOTHER PROCESS, so the
-    // subtree scan below almost never finds it - that is what made 0.7.164 swallow
-    // our own keyboard events and stop the expand-from-keyboard behaviour.
-    // Positive signals first:
-    //  a) our overlay window is the key window
-    for (UIWindow *cw in [UIApplication sharedApplication].windows) {
-        if (cw.isKeyWindow && cw == self.overlayWindow) return YES;
-    }
-    //  b) a first responder lives in one of our (local) subtrees
-    for (DPFloatingWindow *w in self.floatingWindows) {
-        if (w.isTiled) continue;
-        if ([self window:w containsFirstResponderInView:w]) return YES;
-    }
-
-    // Negative signal only: some OTHER app window is key and visible. Home screen
-    // keeps SpringBoard windows, which never equal a foreign app window.
-    for (UIWindow *cw in [UIApplication sharedApplication].windows) {
-        if (!cw.isKeyWindow) continue;
-        if (cw == self.overlayWindow) return YES;
-        if (cw == self.edgeShelf) return NO;
-        // SpringBoard's own windows (homescreen icons, folders, switcher) are not
-        // ours to expand for - but they also mean the user is not typing in our app.
-        NSString *cls = NSStringFromClass(cw.class);
-        if ([cls hasPrefix:@"SB"] || [cls hasPrefix:@"_UI"] || [cls containsString:@"StatusBar"]) {
-            return NO;
-        }
-    }
-    // No key window at all (transition): assume it is ours, expanding is recoverable.
-    return YES;
-}
-
-// 0.7.168: SpringBoard never receives UIRemoteKeyboard notifications reliably, which
-// is why the bar-driven expand/collapse kept failing. Poll the system keyboard window
-// instead: it is added to the screen when the keyboard comes up and removed on dismiss.
-// Cheap enough at 4 Hz while a floating window is focused.
-- (BOOL)systemKeyboardVisible {
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        NSString *cls = NSStringFromClass(w.class);
-        if (![cls containsString:@"Keyboard"]) continue;
-        if (w.hidden || w.alpha < 0.01) continue;
-        if (CGRectGetHeight(w.bounds) < 40) continue;
-        return YES;
-    }
-    return NO;
-}
-
-- (void)startKeyboardWatchIfNeeded {
-    if (self.keyboardWatchTimer) return;
-    __weak typeof(self) ws = self;
-    NSTimer *t = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-        __strong typeof(ws) self2 = ws;
-        if (!self2) { [timer invalidate]; return; }
-        [self2 pollKeyboardState];
-    }];
-    t.tolerance = 0.1;
-    self.keyboardWatchTimer = t;
-    [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
-}
-
-- (void)stopKeyboardWatch {
-    [self.keyboardWatchTimer invalidate];
-    self.keyboardWatchTimer = nil;
-    self.keyboardPollVisible = NO;
-}
-
-// 0.7.169: called from the _UIRemoteKeyboardWindow hook - the only reliable keyboard
-// signal available inside SpringBoard.
-- (void)keyboardWindowVisibilityChanged:(BOOL)visible {
-    // 0.7.171: the keyboard window hook fires for every focus/blur on the device, so
-    // reacting to it blindly made windows jump between full screen and floating.
-    // Only act when a floating window really owns the input focus, and never more
-    // often than every 400ms.
-    if (visible == self.keyboardPollVisible) return;
-    self.keyboardPollVisible = visible;
-
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - self.lastKeyboardTransitionAt < 0.4) {
-        NSLog(@"[InteractivePiP] keyboard transition debounced");
-        return;
-    }
-    self.lastKeyboardTransitionAt = now;
-
-    if (!visible) {
-        [self collapseAfterKeyboard];
-        return;
-    }
-    // Only expand when one of OUR windows holds the focus.
-    if (![self floatingWindowHasFocus]) {
-        NSLog(@"[InteractivePiP] keyboard shown but not for us");
-        return;
-    }
-    [self expandForKeyboardIfOurs];
-}
-
-// 0.7.171: does a floating window really own the first responder right now?
-- (BOOL)floatingWindowHasFocus {
-    for (DPFloatingWindow *w in self.floatingWindows) {
-        if (w.isTiled) continue;
-        if ([self window:w containsFirstResponderInView:w]) return YES;
-    }
-    // The hosted app's responder usually lives in another process, so fall back to
-    // the FIRST RESPONDER of our own window scene: only accept it when the system
-    // says a text input is active inside our overlay's hierarchy.
-    UIWindow *key = nil;
-    for (UIWindow *cw in [UIApplication sharedApplication].windows) {
-        if (cw.isKeyWindow) { key = cw; break; }
-    }
-    if (!key || key != self.overlayWindow) return NO;
-    // overlay is key, but that alone is not enough: require that the focused window
-    // is one of ours and still on screen.
-    DPFloatingWindow *f = self.focusedWindow;
-    if (!f || f.isTiled || f.hidden || f.alpha < 0.05) return NO;
-    return YES;
-}
-
-- (void)pollKeyboardState {
-    BOOL visible = [self systemKeyboardVisible];
-    if (visible == self.keyboardPollVisible) return;
-    self.keyboardPollVisible = visible;
-    if (visible && ![self floatingWindowHasFocus]) return;
-    NSLog(@"[InteractivePiP] keyboard poll visible=%d", visible);
-    if (visible) {
-        [self expandForKeyboardIfOurs];
-    } else {
-        [self collapseAfterKeyboard];
-    }
-}
-
-// Poll-driven expand: same target selection as the notification path.
-- (void)expandForKeyboardIfOurs {
-    if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) return;
-    if (![self floatingWindowHasFocus]) return;   // 0.7.171 never expand a window nobody is typing in
-    if (self.splitWindows.count) return;
-    if (self.picker) return;
-    if (self.mutableFloatingWindows.count == 0) return;
-    if (self.pipWindow) [self exitPiPMode];
-
-    DPFloatingWindow *target = nil;
-    for (DPFloatingWindow *w in self.floatingWindows) {
-        if (w.isTiled) continue;
-        if ([self window:w containsFirstResponderInView:w]) { target = w; break; }
-    }
-    if (!target && self.focusedWindow &&
-        [self.floatingWindows containsObject:self.focusedWindow] && !self.focusedWindow.isTiled) {
-        target = self.focusedWindow;
-    }
-    if (!target) {
-        for (DPFloatingWindow *w in self.floatingWindows) {
-            if (w.isTiled) continue;
-            if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
-        }
-    }
-    if (target) {
-        [target expandForKeyboardAnimated:YES];
-        NSLog(@"[InteractivePiP] keyboard expand %@", target.bundleID);
-    }
-}
-
-- (void)collapseAfterKeyboard {
-    DPFloatingWindow *target = nil;
-    for (DPFloatingWindow *w in self.floatingWindows) {
-        if (w.isTiled) continue;
-        if (w.keyboardExpanded) { target = w; break; }
-    }
-    if (target) {
-        [target collapseForKeyboardAnimated:YES];
-        NSLog(@"[InteractivePiP] keyboard collapse %@", target.bundleID);
-    }
-}
-
 - (void)hostedKeyboardWillShow {
     DPKBLog(@"WM show notify windows=%lu split=%lu",
             (unsigned long)self.floatingWindows.count, (unsigned long)self.splitWindows.count);
@@ -1094,41 +883,10 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 不抢键盘焦点、不改 maximized，只改 frame；收键盘时 collapse 还原。
     if (self.deviceLocked || !self.overlayWindow || self.overlayWindow.hidden) { DPKBLog(@"WM show:skip overlay"); return; }
     if (self.splitWindows.count) { DPKBLog(@"WM show:skip split"); return; }
-
-    // 0.7.164: this notification fires for EVERY keyboard on the device. When the
-    // user is typing in a real app (or on the home screen search) our windows must
-    // not react at all - that is what silently expanded a floating app to full
-    // screen while the user was typing somewhere else.
-    if (![self keyboardBelongsToOurWindows]) { DPKBLog(@"WM show:skip foreign keyboard"); return; }
-    // 0.7.162: in PiP mode, typing means the user wants to interact - leave PiP and
-    // expand, instead of staying stuck in the small window.
-    if (self.pipWindow) {
-        DPKBLog(@"WM show:exit pip for keyboard");
-        [self exitPiPMode];
-    }
-
-    // 0.7.160: expand the window the user is actually typing in. The old zPosition
-    // scan grabbed whichever window happened to sit highest, so opening the keyboard
-    // in window B expanded an unrelated window A that was created earlier.
     DPFloatingWindow *target = nil;
-    DPFloatingWindow *firstResponderWindow = nil;
     for (DPFloatingWindow *w in self.floatingWindows) {
         if (w.isTiled) continue;
-        // a window that currently holds a first responder in its subtree
-        if ([self window:w containsFirstResponderInView:w]) { firstResponderWindow = w; break; }
-    }
-    if (self.focusedWindow && [self.floatingWindows containsObject:self.focusedWindow] &&
-        !self.focusedWindow.isTiled) {
-        target = self.focusedWindow;
-    }
-    if (firstResponderWindow && firstResponderWindow != target) {
-        target = firstResponderWindow;
-    }
-    if (!target) {
-        for (DPFloatingWindow *w in self.floatingWindows) {
-            if (w.isTiled) continue;
-            if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
-        }
+        if (!target || w.layer.zPosition > target.layer.zPosition) target = w;
     }
     if (target) {
         [target expandForKeyboardAnimated:YES];
@@ -1144,12 +902,6 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 0.7.126: never touch the key window while the picker is up - that is the
     // picker's own search keyboard closing.
     if (self.picker) { DPKBLog(@"WM hide:skip picker"); return; }
-    // 0.7.164: only collapse windows we expanded ourselves.
-    BOOL anyExpanded = NO;
-    for (DPFloatingWindow *w in self.floatingWindows) {
-        if (w.keyboardExpanded) { anyExpanded = YES; break; }
-    }
-    if (!anyExpanded) { DPKBLog(@"WM hide:skip not-ours"); return; }
     // 键盘收起 -> 还原到弹出前的 frame。
     if (self.splitWindows.count) { [self restorePreviousKeyWindow]; return; }
     DPFloatingWindow *target = nil;
@@ -1268,7 +1020,6 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 - (void)focusWindow:(DPFloatingWindow *)window {
     if (![self.mutableFloatingWindows containsObject:window]) return;
-    [self startKeyboardWatchIfNeeded];   // 0.7.168: poll the keyboard while we have focus
     if (self.focusedWindow != window) [self restorePreviousKeyWindow];
     self.focusedWindow = window;
     for (DPFloatingWindow *other in self.mutableFloatingWindows) {
@@ -1277,6 +1028,18 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     [self prepareForHostedInput];
     [self bringOverlayToFront];
     if (self.splitDivider) [self.overlayRoot bringSubviewToFront:self.splitDivider];
+}
+
+- (void)beginDragToKeepForWindow:(DPFloatingWindow *)window {
+    if (!window) return;
+    [window beginDragPreview];
+    __weak typeof(self) weakSelf = self;
+    window.onDragPreviewEnded = ^(DPFloatingWindow *w) {
+        typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        // 松手即固定（窗口留在当前位置），随后自动弹 picker 选第二个 App 组成分屏
+        [s requestSplitForWindow:w];
+    };
 }
 
 - (void)requestSplitForWindow:(DPFloatingWindow *)window {
@@ -1713,28 +1476,10 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 // Keep floating hosts alive while Home is visible; only hide our overlay.
 // A single low-frequency timer exists only during this hidden state, does no
 // rendering or scene mutation, and stops after resume/close/split transition.
-// 0.7.157: leave the small over-the-home window and restore a normal floating window.
-// (0.7.156 declared it but the body never made it into the file - switching apps then
-// crashed SpringBoard with an unrecognized selector.)
-- (void)exitPiPMode {
-    DPFloatingWindow *w = self.pipWindow;
-    self.pipWindow = nil;
-    if (!w) return;
-    [w setPipMode:NO animated:YES];
-    [w setPipCropTop:0 pipHeightFraction:0];
-    self.floatingHiddenOnHome = NO;
-    [self bringOverlayToFront];
-    NSLog(@"[InteractivePiP] exit PiP %@", w.bundleID);
-}
-
 - (void)noteForegroundApplicationChanged:(NSString *)bundleID {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
         return;
-    }
-    // 0.7.156: leaving PiP when a real app comes to the foreground.
-    if (self.pipWindow && bundleID.length && ![bundleID isEqualToString:@"com.apple.springboard"]) {
-        [self exitPiPMode];
     }
     if (!self.floatingHiddenOnHome || self.deviceLocked || self.mode != DPPresentationModeFloating || !self.mutableFloatingWindows.count) return;
     // Empty means no foreground application, not evidence that Home was left.
@@ -1774,47 +1519,6 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         else [shots addObject:[NSNull null]];
     }
     return shots;
-}
-
-// 0.7.153: shrink to a small always-on-top live window over the home screen.
-- (void)enterPiPMode {
-    if (self.mutableFloatingWindows.count == 0) return;
-    DPFloatingWindow *w = self.focusedWindow ?: self.mutableFloatingWindows.firstObject;
-    if (!w) return;
-    self.pipWindow = w;
-    CGRect screen = self.overlayRoot.bounds;
-    CGFloat shortSide = MIN(screen.size.width, screen.size.height);
-    // 0.7.159: separate title bar ABOVE a clean 16:9 video band (like the reference
-    // screenshot). The bar height is added on top so the video keeps its own area.
-    CGFloat pipW = floor(screen.size.width * 0.62);
-    CGFloat videoH = floor(pipW * 9.0 / 16.0);
-    CGFloat pipH = videoH + 36.0;   // kDPTitleBarHeight sits above the video band
-    CGRect target = CGRectMake(MAX(12.0, screen.size.width - pipW - 14),
-                               MAX(12.0, screen.size.height - pipH - 96),
-                               pipW, pipH);
-    [w setTiled:NO];
-    [w setPipMode:YES animated:NO];   // 0.7.154: drop the title bar, content fills the window
-    // 0.7.155: slide the app up so the video band sits in this 16:9 strip.
-    // crop the app so its video band lands under our own title bar
-    [w setPipCropTop:floor(videoH * 0.42) pipHeightFraction:0.42];
-    self.overlayRoot.backgroundColor = [UIColor clearColor];
-    w.backgroundColor = [UIColor clearColor];
-    w.alpha = 1.0;
-    [w.sceneHost setSuspended:NO];
-    [UIView animateWithDuration:0.28 animations:^{
-        w.frame = target;
-        [w layoutIfNeeded];
-    } completion:^(BOOL finished) {
-        (void)finished;
-        [w layoutIfNeeded];
-        [w commitSceneLayout];
-    }];
-    self.overlayWindow.hidden = NO;
-    self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
-    [self.overlayRoot bringSubviewToFront:w];
-    [self focusWindow:w];
-    [self updateSessionControls];
-    NSLog(@"[InteractivePiP] PiP mode %@ frame=%@", w.bundleID, NSStringFromCGRect(target));
 }
 
 - (void)updateEdgeShelf {
@@ -1891,14 +1595,6 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (self.mode != DPPresentationModeFloating || self.mutableFloatingWindows.count == 0) return;
     // 0.7.152: grab the pictures while they are still on screen.
     self.shelfThumbnails = [self captureFloatingThumbnails];
-
-    // 0.7.153: PiP mode - stay on the home screen as a small live window instead of
-    // parking. The scene keeps rendering, so a playing video carries on.
-    if ([DPSettings shared].pipKeepPlaying) {
-        [self enterPiPMode];
-        return;
-    }
-
     self.floatingHiddenOnHome = YES;
     self.overlayWindow.hidden = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),

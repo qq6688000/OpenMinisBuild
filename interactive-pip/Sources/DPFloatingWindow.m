@@ -42,6 +42,7 @@ void DPKBLog(NSString *fmt, ...) {
 @property (nonatomic, assign) CGFloat floatingCornerRadiusValue;
 @property (nonatomic, assign) BOOL floatingShowsBorder;
 @property (nonatomic, assign) CGRect restoreFrame;
+@property (nonatomic, strong) UILabel *dragHintLabel;   // 0.7.173 松手保留提示
 - (CGRect)clampFrame:(CGRect)frame inBounds:(CGRect)bounds;
 - (void)leaveMaximizedState;
 - (void)updateFullscreenButton;
@@ -110,7 +111,7 @@ void DPKBLog(NSString *fmt, ...) {
 
     self.titleBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight)];
     self.titleBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    self.titleBar.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.42]; // 0.7.158 readable over video
+    self.titleBar.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.25];
     [self.chromeView addSubview:self.titleBar];
 
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(44, 0, self.bounds.size.width - 120, kDPTitleBarHeight)];
@@ -201,6 +202,45 @@ void DPKBLog(NSString *fmt, ...) {
     return last.length ? last.capitalizedString : bundleID;
 }
 
+#pragma mark - Drag-to-keep preview (0.7.173)
+
+- (void)beginDragPreview {
+    if (!self.dragHintLabel) {
+        UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 160, 34)];
+        hint.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
+        hint.textColor = [UIColor whiteColor];
+        hint.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        hint.textAlignment = NSTextAlignmentCenter;
+        hint.text = @"松手保留";
+        hint.layer.cornerRadius = 17;
+        hint.layer.cornerCurve = kCACornerCurveContinuous;
+        hint.layer.masksToBounds = YES;
+        self.dragHintLabel = hint;
+    }
+    self.dragHintLabel.center = CGPointMake(self.bounds.size.width / 2.0, -34);
+    [self addSubview:self.dragHintLabel];
+    [self bringSubviewToFront:self.dragHintLabel];
+    [self setNeedsLayout];
+    self.dragPreviewActive = YES;
+    // 预览态：轻微抬升，强调可拖动
+    [UIView animateWithDuration:0.18 animations:^{
+        self.transform = CGAffineTransformMakeScale(1.03, 1.03);
+        self.alpha = 0.92;
+    }];
+}
+
+- (void)endDragPreview {
+    self.dragPreviewActive = NO;
+    if (self.dragHintLabel) {
+        [self.dragHintLabel removeFromSuperview];
+        self.dragHintLabel = nil;
+    }
+    [UIView animateWithDuration:0.15 animations:^{
+        self.transform = CGAffineTransformIdentity;
+        self.alpha = 1.0;
+    }];
+}
+
 #pragma mark - Gestures
 
 - (void)installGestures {
@@ -251,6 +291,12 @@ void DPKBLog(NSString *fmt, ...) {
         f = [self clampFrame:f inBounds:superview.bounds];
         self.frame = f;
     } else if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled) {
+        if (self.dragPreviewActive) {
+            // 0.7.173: 拖出即保留 —— 松手后由管理端固定窗口并进入分屏配对
+            [self endDragPreview];
+            if (self.onDragPreviewEnded) self.onDragPreviewEnded(self);
+            return;
+        }
         if (self.onFrameChanged) self.onFrameChanged(self, self.frame);
     }
 }
@@ -391,21 +437,7 @@ void DPKBLog(NSString *fmt, ...) {
 - (void)expandForKeyboardAnimated:(BOOL)animated {
     DPKBLog(@"expand:call tiled=%d already=%d", self.isTiled, self.keyboardExpanded);
     if (self.isTiled) return;
-    // 0.7.162: if we already think we are expanded but the frame is clearly not
-    // fullscreen (a previous collapse never ran), redo it instead of bailing out -
-    // that is what made the keyboard stop resizing the window at all.
-    if (self.keyboardExpanded) {
-        CGRect screen = [UIScreen mainScreen].bounds;
-        if (@available(iOS 13.0, *)) {
-            UIWindowScene *ws = self.window.windowScene;
-            if (ws) screen = ws.coordinateSpace.bounds;
-        }
-        BOOL stillFullscreen = (fabs(self.frame.size.width - screen.size.width) < 2.0 &&
-                                fabs(self.frame.size.height - screen.size.height) < 2.0);
-        if (stillFullscreen) { DPKBLog(@"expand:skip already"); return; }
-        DPKBLog(@"expand:reset stale state");
-        self.keyboardExpanded = NO;
-    }
+    if (self.keyboardExpanded) { DPKBLog(@"expand:skip already"); return; }
     UIView *superview = self.superview;
     if (!superview) { DPKBLog(@"expand:skip no-sup"); return; }
     self.keyboardSavedFrame = self.frame;
@@ -515,10 +547,6 @@ void DPKBLog(NSString *fmt, ...) {
     self.clipsToBounds = tiled;
     self.chromeView.layer.cornerRadius = tiled ? 0 : _cornerRadiusValue;
     self.titleBar.hidden = tiled;
-    // 0.7.163: split panes carry no close/tile/fullscreen buttons at all.
-    self.closeButton.hidden = tiled;
-    self.fullscreenButton.hidden = tiled;
-    self.resizeHandle.hidden = tiled;
     self.blurView.hidden = tiled;
     self.resizeHandle.hidden = tiled;
     self.layer.shadowOpacity = tiled ? 0 : (self.isActive ? 0.4 : 0.25);
@@ -581,39 +609,6 @@ void DPKBLog(NSString *fmt, ...) {
     [host commitHostedFrame];
 }
 
-- (void)setPipCropTop:(CGFloat)top pipHeightFraction:(CGFloat)fraction {
-    self.pipCropTop = MAX(0.0, top);
-    (void)fraction;
-    [self setNeedsLayout];
-    [self layoutIfNeeded];
-    [self commitSceneLayout];
-}
-
-- (void)setPipMode:(BOOL)pip animated:(BOOL)animated {
-    if (_pipMode == pip) return;
-    _pipMode = pip;
-    void (^apply)(void) = ^{
-        // 0.7.158: always fully visible - a translucent bar was invisible over bright
-        // video and the window became impossible to move or close.
-        self.titleBar.alpha = 1.0;
-        self.titleBar.hidden = NO;
-        self.titleBar.userInteractionEnabled = YES;
-        [self.chromeView bringSubviewToFront:self.titleBar];
-        // content slides up under where the bar used to be
-        [self setNeedsLayout];
-        [self layoutIfNeeded];
-    };
-    if (animated) {
-        [UIView animateWithDuration:0.2 animations:apply completion:^(BOOL finished) {
-            (void)finished;
-            [self commitSceneLayout];
-        }];
-    } else {
-        apply();
-        [self commitSceneLayout];
-    }
-}
-
 - (void)commitSceneLayout {
     [self.sceneHost commitHostedFrame];
 }
@@ -621,33 +616,16 @@ void DPKBLog(NSString *fmt, ...) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.chromeView.frame = self.bounds;
-    self.titleBar.hidden = NO;
     self.chromeView.layer.cornerRadius = self.cornerRadiusValue;
     self.titleBar.frame = CGRectMake(0, 0, self.bounds.size.width, kDPTitleBarHeight);
-    CGFloat contentY = self.tiled ? 0 : kDPTitleBarHeight; // 0.7.156: PiP keeps the bar so controls stay usable
-    CGFloat contentH = MAX(0, self.bounds.size.height - contentY);
-    if (_pipMode && _pipCropTop > 0.0) {
-        // 0.7.155: the app is laid out at full height inside contentH; slide it up so
-        // the requested band is what the window shows, and clip the rest.
-        contentH = MAX(0, self.bounds.size.height);
-    }
-    self.contentContainer.frame = CGRectMake(0, contentY - (_pipMode ? _pipCropTop : 0.0),
-                                             self.bounds.size.width, contentH);
-    self.contentContainer.clipsToBounds = YES;
-    self.chromeView.clipsToBounds = YES;
+    CGFloat contentY = self.tiled ? 0 : kDPTitleBarHeight;
+    self.contentContainer.frame = CGRectMake(0, contentY,
+                                             self.bounds.size.width,
+                                             MAX(0, self.bounds.size.height - contentY));
     self.resizeHandle.frame = CGRectMake(self.bounds.size.width - kDPResizeHandle,
                                          self.bounds.size.height - kDPResizeHandle,
                                          kDPResizeHandle, kDPResizeHandle);
     [self bringSubviewToFront:self.resizeHandle];
-    // 0.7.163: keep the bar on top in PiP, but NEVER force it visible while tiled -
-    // the split pair must look like the old full-bleed panes with no buttons at all.
-    if (self.tiled) {
-        self.titleBar.hidden = YES;
-    } else {
-        self.titleBar.hidden = NO;
-        self.titleBar.alpha = 1.0;
-        [self.chromeView bringSubviewToFront:self.titleBar];
-    }
     [self layoutSceneIfNeeded];
 }
 

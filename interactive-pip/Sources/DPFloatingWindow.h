@@ -26,12 +26,6 @@ FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
 - (void)attachSceneHost:(DPSceneHost *)host;
 - (nullable DPSceneHost *)detachSceneHost;
 - (void)commitSceneLayout;
-// 0.7.154: hide the title bar and let the content fill the window (drawing-in-picture look).
-- (void)setPipMode:(BOOL)pip animated:(BOOL)animated;
-@property (nonatomic, readonly) BOOL pipMode;
-// 0.7.155: crop the hosted app so only its video band shows.
-@property (nonatomic) CGFloat pipCropTop;
-- (void)setPipCropTop:(CGFloat)top pipHeightFraction:(CGFloat)fraction;
 - (void)updateNaturalCanvasForCurrentScreen; // 0.7.131 rotation
 /// Round the pane's own chrome + content container while in Duo split.
 /// Never touches the hosted scene layer container's layer.
@@ -46,6 +40,13 @@ FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
 - (void)collapseForKeyboardAnimated:(BOOL)animated;
 /// 当前是否因键盘弹出而处于扩展态。
 @property (nonatomic, assign, readonly) BOOL keyboardExpanded;
+
+/// 0.7.173: 拖出即保留预览态。激活时窗口进入该态：顶部显示「松手保留」提示，
+/// 拖动标题栏松手后触发 onDragPreviewEnded，由管理端固定窗口并进入分屏配对。
+@property (nonatomic, assign, getter=isDragPreviewActive) BOOL dragPreviewActive;
+@property (nonatomic, copy, nullable) void (^onDragPreviewEnded)(DPFloatingWindow *window);
+- (void)beginDragPreview;
+- (void)endDragPreview;
 
 @end
 
