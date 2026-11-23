@@ -1801,15 +1801,65 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
     self.pvSplitGestureArmed = YES;
     self.pvPendingFirstBundleID = [fg copy];
-    // 0.7.201: 手指刚按下、App 稳定前台，此刻抓它的真实 displayItem 缓存备用。
-    // panEnded 时 App 已进回桌面转场动画、item 被系统挂起（app.displayItem=nil），
-    // 所以必须在 panBegan 抓，不能等 panEnded。
+    // 0.7.203: panBegan 时 App 稳定前台，它对应的 scene 一定在 connectedScenes 里活着。
+    // displayItem 不在 SBApplication 身上（只有 5 个属性），得从前台 scene 找。先枚举诊断。
+    [self diagForegroundSceneForBundleID:fg];
     id earlyItem = [self displayItemForBundleID:fg];
     if (earlyItem) self.pvPendingFirstDisplayItem = earlyItem;
     NSLog(@"[InteractivePiP] PV split pan BEGAN fg=%@ earlyItem=%@",
           fg, earlyItem ? NSStringFromClass([earlyItem class]) : @"nil");
     [self logSplitResult:[NSString stringWithFormat:@"panBegan fg=%@ earlyItem=%@",
                           fg, earlyItem ? NSStringFromClass([earlyItem class]) : @"nil"]];
+}
+
+// 0.7.203: 枚举 connectedScenes 里属于 bundleID 的 scene，打印它所有属性找 displayItem 真身
+- (void)diagForegroundSceneForBundleID:(NSString *)bundleID {
+    [self logSplitResult:[NSString stringWithFormat:@"diagScene %@: begin", bundleID]];
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *ws = (UIWindowScene *)sc;
+        // scene 的 delegation/bundleID 可能藏在多处，都试
+        NSString *sceneBundle = nil;
+        for (NSString *k in @[@"bundleIdentifier", @"bundleID", @"_bundleIdentifier",
+                              @"sceneConfiguration.name", @"session.sceneConfiguration.name"]) {
+            @try {
+                id v = [ws valueForKeyPath:k];
+                if ([v isKindOfClass:NSString.class]) { sceneBundle = v; break; }
+            } @catch (__unused NSException *e) {}
+        }
+        // sceneHandle / identity 也可能直接带 bundleID 描述
+        NSString *desc = [NSString stringWithFormat:@"%@", ws];
+        BOOL descMatch = [desc containsString:bundleID];
+        [self logSplitResult:[NSString stringWithFormat:@"diagScene %@: scene %@ state=%ld descMatch=%d desc=%@",
+                              bundleID, NSStringFromClass([ws class]), (long)ws.activationState, descMatch, desc]];
+        if (!descMatch) continue;
+
+        // 命中 QQ 的 scene —— 枚举它所有属性
+        unsigned int count = 0;
+        objc_property_t *props = class_copyPropertyList([ws class], &count);
+        for (unsigned int i = 0; i < count; i++) {
+            NSString *pname = @(property_getName(props[i]));
+            @try {
+                id val = [ws valueForKey:pname];
+                if (val && ![val isKindOfClass:NSNumber.class] && ![val isKindOfClass:NSString.class]) {
+                    [self logSplitResult:[NSString stringWithFormat:@"diagScene %@ prop %@ = %@",
+                                          bundleID, pname, NSStringFromClass([val class])]];
+                }
+            } @catch (__unused NSException *e) {}
+        }
+        free(props);
+        // 常见候选 key
+        for (NSString *k in @[@"displayItem", @"_displayItem", @"sceneHandle", @"_sceneHandle",
+                              @"sceneIdentity", @"_sceneIdentity", @"identity", @"_identity",
+                              @"scene", @"_scene", @"handle", @"_handle"]) {
+            @try {
+                id v = [ws valueForKey:k];
+                if (v) [self logSplitResult:[NSString stringWithFormat:@"diagScene %@ key %@ = %@",
+                                             bundleID, k, NSStringFromClass([v class])]];
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"diagScene %@: end", bundleID]];
 }
 
 - (void)handlePVFullscreenSplitPanChanged:(id)gesture {
