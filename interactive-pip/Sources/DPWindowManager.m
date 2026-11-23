@@ -1109,6 +1109,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (!itemA) {
         NSLog(@"[InteractivePiP] nativeSplit: itemA nil for %@ (not relaunching)", firstBundleID);
     }
+    [self logSplitResult:[NSString stringWithFormat:@"activateNativeSplit first=%@ second=%@ itemA=%d itemB=%d",
+                          firstBundleID, secondBundleID, itemA != nil, itemB != nil]];
     NSLog(@"[InteractivePiP] nativeSplit items a=%@ b=%@",
           itemA ? NSStringFromClass([itemA class]) : @"nil",
           itemB ? NSStringFromClass([itemB class]) : @"nil");
@@ -1949,6 +1951,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
                 }
                 NSLog(@"[InteractivePiP] buildPairAppLayout %@ cfg=%@ -> %@",
                       names[i], cfg, layout ? @"ok" : @"nil");
+            [self logSplitResult:[NSString stringWithFormat:@"buildPairAppLayout %@ cfg=%@ -> %@",
+                                  names[i], cfg, layout ? @"ok" : @"nil"]];
                 if (layout) return layout;
             } @catch (NSException *e) {
                 NSLog(@"[InteractivePiP] buildPairAppLayout %@ cfg=%@ ex: %@", names[i], cfg, e);
@@ -1956,6 +1960,22 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         }
     }
     return nil;
+}
+
+
+/// 0.7.190: 把分屏激活的每一步结果写到文件，用户用 Filza 就能看，不用抓日志。
+- (void)logSplitResult:(NSString *)line {
+    NSString *path = @"/var/mobile/Library/Preferences/com.seagull.interactivepip.split.txt";
+    NSString *old = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    NSString *stamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                     dateStyle:NSDateFormatterNoStyle
+                                                     timeStyle:NSDateFormatterMediumStyle];
+    NSString *entry = [NSString stringWithFormat:@"[%@] %@\n", stamp, line];
+    // 只保留最近 60 行，避免无限增长
+    NSArray *lines = [[entry stringByAppendingString:old] componentsSeparatedByString:@"\n"];
+    NSMutableArray *keep = [NSMutableArray array];
+    for (NSString *l in lines) { if (l.length) [keep addObject:l]; if (keep.count >= 60) break; }
+    [[keep componentsJoinedByString:@"\n"] writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 /// 请求系统激活一个分屏 layout（PV: requestForActivatingAppLayout:）
@@ -1986,6 +2006,9 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     NSLog(@"[InteractivePiP] activate: request=%@ layout=%@",
           request ? NSStringFromClass([request class]) : @"nil",
           NSStringFromClass([layout class]));
+    [self logSplitResult:[NSString stringWithFormat:@"request=%@ layout=%@",
+                          request ? NSStringFromClass([request class]) : @"nil",
+                          NSStringFromClass([layout class])]];
     if (!request) return NO;
 
     // 交给 SBMainWorkspace 执行
@@ -2002,6 +2025,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         @try {
             BOOL ok = ((BOOL(*)(id,SEL,id))objc_msgSend)(workspace, exec, request);
             NSLog(@"[InteractivePiP] activate: executeTransitionRequest ok=%d", ok);
+            [self logSplitResult:[NSString stringWithFormat:@"executeTransitionRequest ok=%d", ok]];
             if (ok) return YES;
         } @catch (NSException *e) {
             NSLog(@"[InteractivePiP] activate: execute ex %@", e);
