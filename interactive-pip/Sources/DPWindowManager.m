@@ -1105,7 +1105,10 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 0.7.185: 绝不在这里重新打开第一个 App —— picker 正在 dismiss 时再拉前台，
     // 两个过渡互相冲突会把主线程卡死（"随便点就卡住"的真凶）。
     id itemA = [self displayItemForBundleID:firstBundleID];
+    if (!itemA) itemA = [self makeDisplayItemForBundleID:firstBundleID];
     id itemB = [self displayItemForBundleID:secondBundleID];
+    if (!itemB) itemB = [self makeDisplayItemForBundleID:secondBundleID];
+    NSLog(@"[InteractivePiP] nativeSplit items after fallback a=%d b=%d", itemA != nil, itemB != nil);
     if (!itemA) {
         NSLog(@"[InteractivePiP] nativeSplit: itemA nil for %@ (not relaunching)", firstBundleID);
     }
@@ -1962,6 +1965,26 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     return nil;
 }
 
+
+
+/// 0.7.191: 直接构造 SBDisplayItem（真机验证 displayItemForBundleID 返回 nil 时用这个）
+- (id)makeDisplayItemForBundleID:(NSString *)bundleID {
+    if (!bundleID.length) return nil;
+    Class itemClass = NSClassFromString(@"SBDisplayItem");
+    if (!itemClass) return nil;
+    SEL make = NSSelectorFromString(@"initWithType:bundleIdentifier:uniqueIdentifier:");
+    NSMethodSignature *sig = [itemClass instanceMethodSignatureForSelector:make];
+    if (!sig || sig.numberOfArguments != 5 || sig.methodReturnType[0] != '@') return nil;
+    @try {
+        id item = ((id (*)(id, SEL, NSInteger, id, id))objc_msgSend)(
+            [itemClass alloc], make, 2, bundleID, bundleID);
+        if (item) NSLog(@"[InteractivePiP] makeDisplayItem %@ -> %@", bundleID, NSStringFromClass([item class]));
+        return item;
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] makeDisplayItem %@ ex: %@", bundleID, e);
+        return nil;
+    }
+}
 
 /// 0.7.190: 把分屏激活的每一步结果写到文件，用户用 Filza 就能看，不用抓日志。
 - (void)logSplitResult:(NSString *)line {
