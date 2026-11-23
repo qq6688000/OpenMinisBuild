@@ -2075,11 +2075,21 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
 
     __weak typeof(self) wself = self;
+    // 0.7.197: 先取真实 displayItem（FBSceneManager/SBApplicationController），
+    // 取不到再启动第二个 App 等 1.5s 后重试，仍取不到才 fallback 到手拼 item。
+    __block id realItem = [self displayItemForBundleID:secondBID];
+    [self logSplitResult:[NSString stringWithFormat:@"realItem first try=%@", realItem ? NSStringFromClass([realItem class]) : @"nil"]];
     dispatch_block_t doAdd = ^{
         __strong typeof(wself) self = wself; if (!self) return;
-        id item = [self makeDisplayItemForBundleID:secondBID];
-        if (!item) { [self logSplitResult:@"FAIL: makeDisplayItem second nil"]; return; }
-        [self logSplitResult:[NSString stringWithFormat:@"itemSecond=%@", NSStringFromClass([item class])]];
+        id item = realItem ?: [self displayItemForBundleID:secondBID];
+        BOOL isSynthetic = NO;
+        if (!item) {
+            item = [self makeDisplayItemForBundleID:secondBID];
+            isSynthetic = YES;
+            [self logSplitResult:@"FAIL: real displayItem nil, falling back to synthetic (likely rejected)"];
+        }
+        if (!item) { [self logSplitResult:@"FAIL: no displayItem at all"]; return; }
+        [self logSplitResult:[NSString stringWithFormat:@"itemSecond=%@ synthetic=%d", NSStringFromClass([item class]), isSynthetic]];
         @try {
             NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
             [inv setTarget:coord];
@@ -2107,7 +2117,14 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
                 NSMethodSignature *asig = [appC methodSignatureForSelector:oaSel];
                 if (asig && asig.numberOfArguments == 5) {
                     __strong typeof(wself) self = wself; if (!self) return;
-                    void (^cb)(void) = ^{ [self logSplitResult:@"secondApp open cb"]; doAdd(); };
+                    void (^cb)(void) = ^{
+                        [self logSplitResult:@"secondApp open cb, waiting 1.5s for real displayItem"];
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            realItem = [self displayItemForBundleID:secondBID];
+                            [self logSplitResult:[NSString stringWithFormat:@"realItem after launch=%@", realItem ? NSStringFromClass([realItem class]) : @"nil"]];
+                            doAdd();
+                        });
+                    };
                     cb = [cb copy];
                     NSInvocation *inv2 = [NSInvocation invocationWithMethodSignature:asig];
                     [inv2 setTarget:appC];
