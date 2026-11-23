@@ -2127,37 +2127,9 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     if (!bundleID.length) return NO;
     if ([bundleID isEqualToString:@"com.apple.springboard"]) return NO;
 
-    // 0.7.215: 先按 PV 的方式走系统 PiP 链路（coordinator → controllerForType: → container）
-    [self logSplitResult:@"park: probing PV-native PiP path"];
-    // 0.7.220: 枚举 scene manager 真实类方法，找可用的取 scene 入口
-    for (NSString *cn in @[@"SBMainDisplaySceneManager", @"SBSceneManagerCoordinator", @"SBSceneManager"]) {
-        Class cls = NSClassFromString(cn);
-        if (!cls) { [self logSplitResult:[NSString stringWithFormat:@"SCENE_MGR %@ absent", cn]]; continue; }
-        unsigned int mcount = 0;
-        Method *ms = class_copyMethodList(object_getClass(cls), &mcount);
-        NSMutableArray *names = [NSMutableArray array];
-        for (unsigned int i = 0; i < mcount; i++) {
-            SEL sel = method_getName(ms[i]);
-            NSString *nm = NSStringFromSelector(sel);
-            if (nm.length) [names addObject:nm];
-            if ([nm containsString:@":"]) continue;
-            @try {
-                id obj = ((id (*)(id, SEL))objc_msgSend)(cls, sel);
-                if (obj && obj != (id)cls) {
-                    [self logSplitResult:[NSString stringWithFormat:@"SCENE_MGR hit %@ +%@ -> %@", cn, nm, [obj class]]];
-                }
-            } @catch (__unused NSException *e) {}
-        }
-        if (ms) free(ms);
-        [self logSplitResult:[NSString stringWithFormat:@"SCENE_MGR %@ methods=%@", cn, [names componentsJoinedByString:@","]]];
-    }
-    id pipController = [[DPPipNativeBridge shared] resolvePipController];
-    [[DPPipNativeBridge shared] dumpPipControllerCapabilities:pipController];
-    if (pipController) {
-        [self logSplitResult:@"park: PV-native PiP controller AVAILABLE (see PIP sel lines)"];
-    } else {
-        [self logSplitResult:@"park: PV-native PiP controller NOT available, fallback to floating card"];
-    }
+    // 0.7.222: SCENE_MGR / 系统 PiP 探测已在 split_20/21 定案（入口 =
+    // SBSceneManagerCoordinator +mainDisplaySceneManager；系统 PiP 三类类方法为空、
+    // 此路不通），撤掉每次挂起 ~20 行的探测刷屏，日志只留关键行。
 
     // 0.7.217: 允许多张挂起卡片，逐个错开位置（最多 4 张，再多就把最旧的关掉）
     while (self.floatingWindows.count >= 4) {
@@ -2184,7 +2156,7 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     BOOL ok = (self.floatingWindows.count > 0);
     if (ok) {
         DPFloatingWindow *w = self.floatingWindows.firstObject;
-        [self logSplitResult:[NSString stringWithFormat:@"park OK snapshot drawer frame=%@",
+        [self logSplitResult:[NSString stringWithFormat:@"park OK top-half frame=%@",
                               NSStringFromCGRect(w.frame)]];
     } else {
         [self logSplitResult:@"park FAILED: no drawer created"];
@@ -2200,6 +2172,16 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 
     UIView *parent = [self contentParent];
     CGRect local = [parent convertRect:frame fromView:nil];
+    // 0.7.222: 同一 App 只挂一张边栏。重复上滑 → 复用已有边栏（刷新位置、置顶），
+    // 不再叠第二张（split_21 里连滑两次叠了两张、第二张还抢不到 host）。
+    for (DPFloatingWindow *existing in self.mutableFloatingWindows) {
+        if (![existing.bundleID isEqualToString:bundleID]) continue;
+        [existing setFrame:local];
+        [existing bringToFront];
+        if (self.focusedWindow != existing) self.focusedWindow = existing;
+        [self bringOverlayToFront];
+        return existing;
+    }
     DPFloatingWindow *window = [[DPFloatingWindow alloc] initWithBundleID:bundleID frame:local];
     window.contentOpacity = [DPSettings shared].floatingOpacity;
     window.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
@@ -2217,17 +2199,19 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 
 /// 0.7.219: 纯快照边栏。不抓 scene、不碰系统 window，只显示一张图。
 - (void)createSnapshotDrawerWithBundleID:(NSString *)bundleID image:(UIImage *)image {
+    // 0.7.222: 竖屏上下分屏形态（用户定案）：上滑 → 当前 App 铺成**上半屏**，
+    // 第二个 App 开出来占下半屏。不是右侧边栏。
     CGRect screenB = [UIScreen mainScreen].bounds;
     CGFloat screenW = CGRectGetWidth(screenB);
     CGFloat screenH = CGRectGetHeight(screenB);
-    CGFloat drawerW = round(screenW * 0.30);
-    CGFloat topInset = 8;
-    CGRect frame = CGRectMake(screenW - drawerW - 6, topInset, drawerW, screenH - topInset - 8);
+    CGFloat inset = 6;
+    CGFloat topH = round(screenH * 0.5) - inset;
+    CGRect frame = CGRectMake(inset, inset, screenW - inset * 2, topH);
 
     DPFloatingWindow *w = [self openEmptyFloatingWithBundleID:bundleID frame:frame];
     if (!w) return;
     [w setParkedSnapshot:image];
-    [self logSplitResult:[NSString stringWithFormat:@"snapshot drawer created %@ img=%@",
+    [self logSplitResult:[NSString stringWithFormat:@"park top-half created %@ img=%@",
                           NSStringFromCGRect(frame), image ? @"yes" : @"nil"]];
 
     // 0.7.221: 延时挂活 scene。上滑那一刻 App 还在前台、scene 被系统占着，
@@ -2244,7 +2228,16 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
             if ([fw.bundleID isEqualToString:bundleID]) { win = fw; break; }
         }
         if (!win) { [s logSplitResult:@"live attach: drawer gone, skip"]; return; }
-        if (win.sceneHost) { [s logSplitResult:@"live attach: host exists already"]; return; }
+        if (win.sceneHost) {
+            // 0.7.222: 重复上滑 → 已有 host。活的就不动；不活的补一次 retryAttach。
+            if (!win.sceneHost.isLive) {
+                [s logSplitResult:@"live attach: host exists, retrying"];
+                [win.sceneHost retryAttach];
+            } else {
+                [s logSplitResult:@"live attach: already live"];
+            }
+            return;
+        }
         [win setNeedsLayout];
         [win layoutIfNeeded];
         DPSceneHost *host = [[DPSceneHost alloc] initWithBundleID:bundleID];
