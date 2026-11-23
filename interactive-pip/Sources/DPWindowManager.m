@@ -2335,8 +2335,12 @@ static id DPDynamicGet(id obj, NSString *key) {
     if (!bundleID) return nil;
     // 0.7.199: 优先查 hook 抓的系统自建真实 item 缓存表（iOS16.6 现场取会 nil）
     id cached = self.pvRealItemCache[bundleID];
-    if (cached) return cached;
+    if (cached) {
+        [self logSplitResult:[NSString stringWithFormat:@"di %@ cache HIT %@", bundleID, NSStringFromClass([cached class])]];
+        return cached;
+    }
     NSLog(@"[InteractivePiP] displayItemForBundleID: try %@", bundleID);
+    [self logSplitResult:[NSString stringWithFormat:@"di %@ cache MISS, try live", bundleID]];
 
     // 1) FBSceneManager: 遍历已激活场景，找 bundleID 匹配的 scene 实体 → displayItem
     Class FBSceneManagerCls = NSClassFromString(@"FBSceneManager");
@@ -2346,23 +2350,27 @@ static id DPDynamicGet(id obj, NSString *key) {
             sceneManager = ((id(*)(id, SEL))objc_msgSend)(FBSceneManagerCls, NSSelectorFromString(@"sharedManager"));
         } @catch (__unused NSException *e) {}
     }
+    [self logSplitResult:[NSString stringWithFormat:@"di %@ sceneManager=%@", bundleID, sceneManager ? @"ok" : @"nil"]];
     if (sceneManager) {
         id scenes = DPDynamicGet(sceneManager, @"scenes");
+        [self logSplitResult:[NSString stringWithFormat:@"di %@ scenes=%@ count=%lu", bundleID, NSStringFromClass([scenes class]) ?: @"nil",
+                              (unsigned long)([scenes isKindOfClass:[NSArray class]] ? [scenes count] : 0)]];
         if ([scenes isKindOfClass:[NSArray class]]) {
             for (id sc in scenes) {
                 if (!sc) continue;
                 id entity = sc;
-                // scene 对象通常有 identity/identifier，取 bundleID
                 NSString *scBundle = DPDynamicGet(entity, @"bundleIdentifier");
                 if (!scBundle) scBundle = DPDynamicGet(entity, @"bundleID");
                 if (![scBundle isEqualToString:bundleID]) continue;
                 id di = DPDynamicGet(entity, @"displayItem");
+                [self logSplitResult:[NSString stringWithFormat:@"di %@ scene matched, displayItem=%@",
+                                      bundleID, di ? NSStringFromClass([di class]) : @"nil"]];
                 if (di) return di;
-                // scene 可能包在 sceneIdentity 里
                 id ident = DPDynamicGet(entity, @"sceneIdentity");
                 id di2 = DPDynamicGet(ident, @"displayItem");
                 if (di2) return di2;
             }
+            [self logSplitResult:[NSString stringWithFormat:@"di %@ no scene matched bundle", bundleID]];
         }
     }
 
@@ -2374,18 +2382,25 @@ static id DPDynamicGet(id obj, NSString *key) {
             appCtrl = ((id(*)(id, SEL))objc_msgSend)(SBAppCtrl, NSSelectorFromString(@"sharedInstance"));
         } @catch (__unused NSException *e) {}
     }
+    [self logSplitResult:[NSString stringWithFormat:@"di %@ appCtrl=%@", bundleID, appCtrl ? @"ok" : @"nil"]];
     if (appCtrl) {
         if ([appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")]) {
             @try {
                 id app = ((id(*)(id, SEL, id))objc_msgSend)(appCtrl, NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundleID);
+                [self logSplitResult:[NSString stringWithFormat:@"di %@ app=%@ displayItem=%@",
+                                      bundleID, app ? NSStringFromClass([app class]) : @"nil",
+                                      (app ? DPDynamicGet(app, @"displayItem") : nil) ? NSStringFromClass([DPDynamicGet(app, @"displayItem") class]) : @"nil"]];
                 if (app) {
                     id di = DPDynamicGet(app, @"displayItem");
                     if (di) return di;
                 }
             } @catch (__unused NSException *e) {}
+        } else {
+            [self logSplitResult:[NSString stringWithFormat:@"di %@ appCtrl lacks applicationWithBundleIdentifier:", bundleID]];
         }
     }
 
+    [self logSplitResult:[NSString stringWithFormat:@"di %@ ALL nil", bundleID]];
     return nil;
 }
 
