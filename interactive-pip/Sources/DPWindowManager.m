@@ -94,6 +94,9 @@
 @property (nonatomic, assign) CGFloat splitRatio;
 @property (nonatomic, assign) BOOL duoMode;
 @property (nonatomic, assign) BOOL creatingSplit;
+@property (nonatomic, copy, nullable) NSString *splitFirstBundleID;
+@property (nonatomic, copy, nullable) NSString *splitSecondBundleID;
+@property (nonatomic, copy, nullable) NSString *currentForegroundBundleID;
 - (void)layoutSplit;
 - (void)pairWindow:(DPFloatingWindow *)first withBundleID:(NSString *)bundleID;
 
@@ -2003,155 +2006,122 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 /// 请求系统激活一个分屏 layout（PV: requestForActivatingAppLayout:）
 - (BOOL)requestSystemActivateLayout:(id)layout {
-    [self logSplitResult:@"requestSystemActivateLayout called"];
-    if (!layout) { [self logSplitResult:@"FAIL: nil layout"]; return NO; }
+    // 0.7.195: 不再自己拼 SBSwitcherTransitionRequest（0.7.194 那路补 displayIdentity
+    // 仍被系统判为字段不全，转场静默失败）。改走 coordinator 正规入口：
+    // -addAppLayoutForDisplayItem:windowScene:completion: 让系统自己补齐所有必需字段。
+    // 第一个 App（用户上滑那个）此时已是前台 layout；把第二个 App 加进去 → 系统自动分屏。
+    (void)layout;
+    [self logSplitResult:@"requestSystemActivateLayout called (addAppLayout path)"];
 
-    // 0.7.189: 真机 probe 出来的事实 —— 不再猜：
-    //   +[SBSwitcherTransitionRequest requestForActivatingAppLayout:]  @24@0:8@16
-    //   -[SBMainWorkspace executeTransitionRequest:]                   B24@0:8@16
-    Class TRCls = NSClassFromString(@"SBSwitcherTransitionRequest");
-    if (!TRCls) {
-        NSLog(@"[InteractivePiP] activate: no SBSwitcherTransitionRequest class");
-        [self logSplitResult:@"FAIL: no SBSwitcherTransitionRequest class"];
+    NSString *frontBID = self.currentForegroundBundleID ?: self.splitFirstBundleID;
+    if (!frontBID || frontBID.length == 0) {
+        [self logSplitResult:@"FAIL: no front bundleID to anchor split"];
         return NO;
     }
-    SEL factory = NSSelectorFromString(@"requestForActivatingAppLayout:");
-    if (![TRCls respondsToSelector:factory]) {
-        NSLog(@"[InteractivePiP] activate: class method missing");
-        [self logSplitResult:@"FAIL: requestForActivatingAppLayout: missing"];
-        return NO;
-    }
+    [self logSplitResult:[NSString stringWithFormat:@"anchor frontApp=%@", frontBID]];
 
-    id request = nil;
-    @try {
-        request = ((id(*)(id, SEL, id))objc_msgSend)((id)TRCls, factory, layout);
-    } @catch (NSException *e) {
-        NSLog(@"[InteractivePiP] activate: factory ex %@", e);
-        [self logSplitResult:[NSString stringWithFormat:@"FAIL: factory ex %@", e.reason]];
-        return NO;
+    UIWindowScene *ws = nil;
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *scene = (UIWindowScene *)sc;
+        if (scene.activationState == UISceneActivationStateForegroundActive) { ws = scene; break; }
     }
-    // 0.7.194: 系统执行时会读 displayIdentity / applicationContext 等字段，
-    // 我们工厂造出来的对象缺这些。用当前主屏 windowScene 的 displayIdentity 补上。
-    if (request) {
-        SEL diSel = NSSelectorFromString(@"setDisplayIdentity:");
-        if ([request respondsToSelector:diSel]) {
-            id displayIdentity = nil;
-            for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-                if (![sc isKindOfClass:UIWindowScene.class]) continue;
-                UIWindowScene *ws = (UIWindowScene *)sc;
-                if (ws.activationState != UISceneActivationStateForegroundActive) continue;
-                @try {
-                    SEL idSel = NSSelectorFromString(@"_displayIdentity");
-                    if ([ws respondsToSelector:idSel]) {
-                        displayIdentity = ((id(*)(id,SEL))objc_msgSend)(ws, idSel);
-                    }
-                } @catch (__unused NSException *e) {}
-                break;
-            }
-            if (displayIdentity) {
-                @try {
-                    ((void(*)(id,SEL,id))objc_msgSend)(request, diSel, displayIdentity);
-                    [self logSplitResult:[NSString stringWithFormat:@"set displayIdentity=%@",
-                                          NSStringFromClass([displayIdentity class])]];
-                } @catch (NSException *e) {
-                    [self logSplitResult:[NSString stringWithFormat:@"FAIL: setDisplayIdentity ex %@", e.reason]];
-                }
-            } else {
-                [self logSplitResult:@"no displayIdentity available"];
-            }
+    if (!ws) {
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if ([sc isKindOfClass:UIWindowScene.class]) { ws = (UIWindowScene *)sc; break; }
         }
     }
-    NSLog(@"[InteractivePiP] activate: request=%@ layout=%@",
-          request ? NSStringFromClass([request class]) : @"nil",
-          NSStringFromClass([layout class]));
-    [self logSplitResult:[NSString stringWithFormat:@"request=%@ layout=%@",
-                          request ? NSStringFromClass([request class]) : @"nil",
-                          NSStringFromClass([layout class])]];
-    if (!request) { [self logSplitResult:@"FAIL: request nil"]; return NO; }
+    if (!ws) { [self logSplitResult:@"FAIL: no UIWindowScene available"]; return NO; }
+    [self logSplitResult:[NSString stringWithFormat:@"windowScene state=%ld", (long)ws.activationState]];
 
-    // 交给 SBMainWorkspace 执行
-    Class WSC = NSClassFromString(@"SBMainWorkspace");
-    id workspace = nil;
-    if (WSC && [WSC respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-        @try { workspace = ((id(*)(id,SEL))objc_msgSend)(WSC, NSSelectorFromString(@"sharedInstance")); }
-        @catch (__unused NSException *e) {}
+    Class Coord = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
+    if (!Coord) { [self logSplitResult:@"FAIL: no coordinator class"]; return NO; }
+    id coord = nil;
+    if ([Coord respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+        coord = ((id(*)(id,SEL))objc_msgSend)(Coord, NSSelectorFromString(@"sharedInstance"));
     }
-    if (!workspace) {
-        NSLog(@"[InteractivePiP] activate: no workspace");
-        [self logSplitResult:@"FAIL: no SBMainWorkspace"];
-        return NO;
-    }
-    [self logSplitResult:[NSString stringWithFormat:@"workspace=%@", NSStringFromClass([workspace class])]];
-
-    [self logSplitResult:@"entered execute stage"];
-
-    // 0.7.193: SBMainWorkspace executeTransitionRequest: 要的是 SBMainWorkspaceTransitionRequest，
-    // 直接塞 SBSwitcherTransitionRequest 会炸 -[applicationContext]。
-    // 正确路径：SBSwitcherTransitionRequest 只能交给 switcher content controller 执行。
-
-    // ① 首选：switcher content controller
-    // 0.7.194: 本机上 self.switcherContentController 是 SBDeckSwitcherViewController（卡片流，
-    // 没有 performTransition），真正的执行者是 SBMainSwitcherControllerCoordinator。
-    id content = nil;
-    {
-        Class Coord = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
-        if (Coord && [Coord respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-            @try {
-                id c = ((id(*)(id,SEL))objc_msgSend)(Coord, NSSelectorFromString(@"sharedInstance"));
-                if ([c respondsToSelector:@selector(switcherContentController:performTransitionWithRequest:gestureInitiated:)]) {
-                    content = c;
-                }
-            } @catch (__unused NSException *e) {}
+    if (!coord) {
+        id r = self.switcherContentController;
+        int hop = 0;
+        while (r && hop < 12) {
+            if ([r isKindOfClass:Coord]) { coord = r; break; }
+            r = [(id)r nextResponder];
+            hop++;
         }
     }
-    if (!content && [self.switcherContentController respondsToSelector:@selector(switcherContentController:performTransitionWithRequest:gestureInitiated:)]) {
-        content = self.switcherContentController;
+    if (!coord) { [self logSplitResult:@"FAIL: no coordinator instance"]; return NO; }
+    [self logSplitResult:[NSString stringWithFormat:@"coordinator=%@", NSStringFromClass([coord class])]];
+
+    NSString *secondBID = self.splitSecondBundleID;
+    if (!secondBID || secondBID.length == 0) {
+        [self logSplitResult:@"FAIL: no second bundleID to add"];
+        return NO;
     }
-    [self logSplitResult:[NSString stringWithFormat:@"content=%@", content ? NSStringFromClass([content class]) : @"nil"]];
-    if (content) {
-        SEL perf = NSSelectorFromString(@"switcherContentController:performTransitionWithRequest:gestureInitiated:");
-        NSMethodSignature *ps = [content methodSignatureForSelector:perf];
-        if (ps && ps.numberOfArguments == 5) {
+    [self logSplitResult:[NSString stringWithFormat:@"adding second=%@", secondBID]];
+
+    SEL addSel = NSSelectorFromString(@"addAppLayoutForDisplayItem:windowScene:completion:");
+    NSMethodSignature *sig = [coord methodSignatureForSelector:addSel];
+    if (!sig || sig.numberOfArguments != 5) {
+        [self logSplitResult:@"FAIL: coordinator lacks addAppLayout ABI"];
+        return NO;
+    }
+
+    __weak typeof(self) wself = self;
+    dispatch_block_t doAdd = ^{
+        __strong typeof(wself) self = wself; if (!self) return;
+        id item = [self makeDisplayItemForBundleID:secondBID];
+        if (!item) { [self logSplitResult:@"FAIL: makeDisplayItem second nil"]; return; }
+        [self logSplitResult:[NSString stringWithFormat:@"itemSecond=%@", NSStringFromClass([item class])]];
+        @try {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setTarget:coord];
+            [inv setSelector:addSel];
+            [inv setArgument:&item atIndex:2];
+            [inv setArgument:&ws atIndex:3];
+            void (^done)(void) = ^{ [self logSplitResult:@"addAppLayout completion called"]; };
+            id block = [done copy];
+            [inv setArgument:&block atIndex:4];
+            [inv invoke];
+            [self logSplitResult:[NSString stringWithFormat:@"addAppLayout invoked for %@ (anchor=%@)", secondBID, frontBID]];
+        } @catch (NSException *e) {
+            [self logSplitResult:[NSString stringWithFormat:@"FAIL: addAppLayout ex %@", e.reason]];
+        }
+    };
+
+    // 先确保第二个 App 已运行（否则系统建不出 displayItem）
+    Class SBSAppC = NSClassFromString(@"SBSApplicationController");
+    id appC = SBSAppC ? ((id(*)(id,SEL))objc_msgSend)(SBSAppC, NSSelectorFromString(@"sharedInstance")) : nil;
+    SEL oaSel = NSSelectorFromString(@"openApplicationWithBundleIdentifier:options:withResult:");
+    if (appC && [appC respondsToSelector:oaSel]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
             @try {
-                ((void(*)(id,SEL,id,id,BOOL))objc_msgSend)(content, perf, nil, request, NO);
-                [self logSplitResult:@"OK: performed via switcherContentController"];
-                NSLog(@"[InteractivePiP] activate: performed via switcher content controller");
-                return YES;
+                id opts = ((id(*)(id,SEL))objc_msgSend)(SBSAppC, NSSelectorFromString(@"defaultLaunchOptions"));
+                NSMethodSignature *asig = [appC methodSignatureForSelector:oaSel];
+                if (asig && asig.numberOfArguments == 5) {
+                    __strong typeof(wself) self = wself; if (!self) return;
+                    void (^cb)(void) = ^{ [self logSplitResult:@"secondApp open cb"]; doAdd(); };
+                    cb = [cb copy];
+                    NSInvocation *inv2 = [NSInvocation invocationWithMethodSignature:asig];
+                    [inv2 setTarget:appC];
+                    [inv2 setSelector:oaSel];
+                    [inv2 setArgument:&secondBID atIndex:2];
+                    [inv2 setArgument:&opts atIndex:3];
+                    [inv2 setArgument:&cb atIndex:4];
+                    [inv2 invoke];
+                    return;
+                }
+                [self logSplitResult:@"openApplication ABI mismatch, call addAppLayout anyway"];
+                doAdd();
             } @catch (NSException *e) {
-                [self logSplitResult:[NSString stringWithFormat:@"FAIL: content perf ex %@", e.reason]];
+                [self logSplitResult:[NSString stringWithFormat:@"FAIL: open ex %@, fallback to addAppLayout", e.reason]];
+                doAdd();
             }
-        } else {
-            [self logSplitResult:@"FAIL: content lacks performTransition ABI"];
-        }
+        });
+    } else {
+        [self logSplitResult:@"no openApplication API, call addAppLayout directly"];
+        doAdd();
     }
-
-    // ② 次选：把 SBSwitcherTransitionRequest 转成 workspace 能吃的请求
-    //    +[SBMainWorkspaceTransitionRequest ancillaryTransitionRequestsForTransitionRequest:] 返回数组
-    Class WTRC = NSClassFromString(@"SBMainWorkspaceTransitionRequest");
-    if (WTRC) {
-        SEL conv = NSSelectorFromString(@"ancillaryTransitionRequestsForTransitionRequest:");
-        if ([WTRC respondsToSelector:conv]) {
-            @try {
-                id arr = ((id(*)(id,SEL,id))objc_msgSend)((id)WTRC, conv, request);
-                [self logSplitResult:[NSString stringWithFormat:@"ancillary -> %@", arr ? NSStringFromClass([arr class]) : @"nil"]];
-                if ([arr isKindOfClass:NSArray.class] && [arr count]) {
-                    for (id r2 in arr) {
-                        BOOL ok2 = ((BOOL(*)(id,SEL,id))objc_msgSend)(workspace, NSSelectorFromString(@"executeTransitionRequest:"), r2);
-                        [self logSplitResult:[NSString stringWithFormat:@"exec ancillary %@ ok=%d", NSStringFromClass([r2 class]), ok2]];
-                        if (ok2) return YES;
-                    }
-                }
-            } @catch (NSException *e) {
-                [self logSplitResult:[NSString stringWithFormat:@"FAIL: ancillary ex %@", e.reason]];
-            }
-        } else {
-            [self logSplitResult:@"FAIL: no ancillaryTransitionRequests method"];
-        }
-    }
-
-    NSLog(@"[InteractivePiP] activate: ALL FAILED");
-    [self logSplitResult:@"FAIL: ALL paths failed"];
-    return NO;
+    return YES;
 }
 
 #pragma mark - Helpers
