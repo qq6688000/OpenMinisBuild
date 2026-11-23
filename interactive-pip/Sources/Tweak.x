@@ -626,6 +626,13 @@ static NSArray *DPInjectedShortcutItems(void) {
             layouts = m;
             wm.switcherAppendCalls++;
         }
+        // 0.7.205: 一次性 dump 系统真实 SBAppLayout 树 —— 里面就有每个 App 的真实 displayItem
+        // （我 20 版缺的就是它）。切换器出现时系统会调本方法，QQ/抖音的 layout 都在 arr 里。
+        static BOOL dumped = NO;
+        if (!dumped && arr.count > 0) {
+            dumped = YES;
+            [wm dumpRealAppLayouts:arr];
+        }
     }
     return layouts;
 }

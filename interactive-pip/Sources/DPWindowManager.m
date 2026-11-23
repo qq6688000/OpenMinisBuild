@@ -1619,6 +1619,21 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     [self logSplitResult:@"===== TRANSITION REQUEST DUMP END ====="];
 }
 
+// 0.7.205: dump 系统真实 SBAppLayout 数组。每个 layout 的 items/displayItem 就是
+// 真实 App 的 displayItem（我 20 版手拼的假 item 缺的就是这些字段）。切换器出现时调用一次。
+- (void)dumpRealAppLayouts:(NSArray *)layouts {
+    [self logSplitResult:[NSString stringWithFormat:@"===== REAL APP LAYOUTS (%lu) BEGIN =====",
+                          (unsigned long)layouts.count]];
+    for (id layout in layouts) {
+        if (!layout) continue;
+        [self logSplitResult:[NSString stringWithFormat:@"--- SBAppLayout %@ ---", NSStringFromClass([layout class])]];
+        DPDumpObj(layout, 0, 2, [NSMutableSet set], ^(NSString *line) {
+            [self logSplitResult:line];
+        });
+    }
+    [self logSplitResult:@"===== REAL APP LAYOUTS END ====="];
+}
+
 #pragma mark - PV-style fullscreen split (0.7.178)
 
 // 0.7.199: executeTransitionRequest: 每次触发都把 request 里的系统自建真实 displayItem

@@ -48,6 +48,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)diagForegroundSceneForBundleID:(NSString *)bundleID;
 /// 0.7.204: 递归 dump 转场 request 对象树，定位真实 displayItem 藏在哪个字段
 - (void)dumpTransitionRequest:(id)request;
+/// 0.7.205: dump 系统真实 SBAppLayout 数组（切换器出现时），含每个 App 的真实 displayItem
+- (void)dumpRealAppLayouts:(NSArray *)layouts;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;
