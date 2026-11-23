@@ -69,6 +69,8 @@
 @property (nonatomic, strong, nullable) id pvPendingFirstDisplayItem;   // 0.7.198: 第一个App前台时缓存的真实displayItem
 @property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, id> *pvRealItemCache; // 0.7.199: bundleID -> 系统自建真实displayItem
 @property (nonatomic) BOOL pvSplitGestureArmed; // 上滑手势是否已就绪（前台是我们的App）
+@property (nonatomic, copy) NSString *parkPendingBundleID;  // 0.7.224: 挂起中、还没挂活的 App
+@property (nonatomic, assign) BOOL parkHomeRescueFired;     // 0.7.224: 弹回补救已触发
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
 - (void)hideFloatingOnHome;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
@@ -2034,15 +2036,13 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         reachedTop = (t.y < -(screenH * 0.4));
         if (loc.y > 0 && loc.y <= topZone) reachedTop = YES;
     }
-    // 0.7.216: 兜底 —— 位移拿不到/不够也算挂起，只要前台还是挂起目标
-    NSString *fgNow = [self foregroundBundleID];
-    BOOL sameApp = fgNow.length && [fgNow isEqualToString:self.pvPendingFirstBundleID];
-    if (!reachedTop && sameApp) reachedTop = YES;
+    // 0.7.224: 删掉 sameApp 兜底 —— 那行让"滑一半弹回"也算挂起（split_23 的 dy=-454
+    // 弹回就是这么进来的，抽屉建了秒被关 = 合并不了）。位移不够就不挂，宁缺勿弹。
     [self logSplitResult:[NSString stringWithFormat:
-        @"pan ENDED t=%.0f,%.0f loc=%.0f,%.0f screenH=%.0f topZone=%.0f reachedTop=%d sameApp=%d fg=%@",
-        t.x, t.y, loc.x, loc.y, screenH, topZone, reachedTop, sameApp, fgNow ?: @"(none)"]];
-    NSLog(@"[InteractivePiP] PV split pan ENDED t=%@ loc=%@ reachedTop=%d fg=%@",
-          NSStringFromCGPoint(t), NSStringFromCGPoint(loc), reachedTop, fgNow);
+        @"pan ENDED t=%.0f,%.0f loc=%.0f,%.0f screenH=%.0f topZone=%.0f reachedTop=%d",
+        t.x, t.y, loc.x, loc.y, screenH, topZone, reachedTop]];
+    NSLog(@"[InteractivePiP] PV split pan ENDED t=%@ loc=%@ reachedTop=%d",
+          NSStringFromCGPoint(t), NSStringFromCGPoint(loc), reachedTop);
     if (!reachedTop) {
         [self logSplitResult:@"pan ENDED: not reached top, releasing"];
         self.pvPendingFirstBundleID = nil;
@@ -2113,10 +2113,9 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         dy = t.y;
     }
     [self logSplitResult:[NSString stringWithFormat:@"HOME_PAN fg=%@ dy=%.0f", fg, dy]];
-    // 上滑超过屏高 25% 就认为用户要挂起（底部上滑回桌面本身就是大位移，
-    // 这里只拦"明显上滑"的那批；手指轻扫回桌面不放行到挂起）
+    // 0.7.224: 阈值 0.25→0.4，与 panEnded 对齐 —— 滑一半弹回的不算挂起意图
     CGFloat screenH = CGRectGetHeight([UIScreen mainScreen].bounds);
-    if (dy > -(screenH * 0.25)) return;
+    if (dy > -(screenH * 0.4)) return;
 
     [self logSplitResult:[NSString stringWithFormat:@"HOME_PAN park trigger fg=%@ dy=%.0f", fg, dy]];
     [self parkForegroundAppAsFloatingCard:fg];
@@ -2225,11 +2224,16 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     // 强抓必崩（0.7.182/0.7.218）。等 1.2s App 已退后台、scene 空闲，
     // 再走成熟 attach 链（sceneManager 已从 SBSceneManagerCoordinator.mainDisplaySceneManager
     // 正确取到 —— split_20 实证）。挂上活画面后把快照撤掉（PV updateNativeWindow: 语义）。
+    self.parkPendingBundleID = bundleID;   // 0.7.224: 弹回补救用
+    self.parkHomeRescueFired = NO;
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+    // 0.7.224: 1.2→1.6s —— 弹回补救（补按 home）发生在 ~+1.0s，按下去后 App 需要
+    // ~0.35s 退后台，1.6s 后 scene 已空闲，避开"前台强抓"崩溃窗口（0.7.218 教训）。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         typeof(weakSelf) s = weakSelf;
         if (!s) return;
+        [s setParkPendingBundleID:nil];
         DPFloatingWindow *win = nil;
         for (DPFloatingWindow *fw in s.floatingWindows) {
             if ([fw.bundleID isEqualToString:bundleID]) { win = fw; break; }
@@ -2377,24 +2381,47 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 // Keep floating hosts alive while Home is visible; only hide our overlay.
 // A single low-frequency timer exists only during this hidden state, does no
 // rendering or scene mutation, and stops after resume/close/split transition.
+/// 0.7.224: 程序化按一次 home —— 用于"滑到一半松手、App 弹回"时把挂起意图做完。
+- (void)dpProgrammaticHomePress {
+    Class c = NSClassFromString(@"SBUIController");
+    if (!c) return;
+    id ctrl = [c respondsToSelector:@selector(sharedInstance)]
+        ? ((id (*)(id, SEL))objc_msgSend)(c, @selector(sharedInstance)) : nil;
+    if (!ctrl) {
+        [self logSplitResult:@"home press: no SBUIController"];
+        return;
+    }
+    SEL sel = @selector(handleHomeButtonSinglePressUp);
+    if ([ctrl respondsToSelector:sel]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ((void (*)(id, SEL))objc_msgSend)(ctrl, sel);
+            [self logSplitResult:@"home press sent"];
+        });
+    } else {
+        [self logSplitResult:@"home press: selector missing"];
+    }
+}
+
 - (void)noteForegroundApplicationChanged:(NSString *)bundleID {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
         return;
     }
-    // 0.7.223: 挂起抽屉的 App 被重新全屏打开 → 它的 scene 被系统收走，抽屉必黑。
-    // App 本人都全屏了，抽屉没意义 —— 直接撤掉它的抽屉（PV pair 结束语义）。
+    // 0.7.224: 只有 scene 已挂活（live）时，App 回前台才等于"用户重新全屏打开" → 关它的抽屉。
+    // 挂活之前回前台 = 用户滑到一半松手、App 弹回全屏（split_23: dy=-454 弹回，抽屉秒被
+    // 0.7.223 的关闭逻辑杀掉 = "合并不了"）。这种不关抽屉，改为补按一次 home，把用户的
+    // 上滑意图做完（PV 语义：滑过中线松手 = 挂起）。
     if (bundleID.length && ![bundleID isEqualToString:@"com.apple.springboard"]) {
-        NSMutableArray *reclaimed = nil;
-        for (DPFloatingWindow *window in self.mutableFloatingWindows) {
-            if ([window.bundleID isEqualToString:bundleID]) {
-                if (!reclaimed) reclaimed = [NSMutableArray array];
-                [reclaimed addObject:window];
+        for (DPFloatingWindow *window in [self.mutableFloatingWindows copy]) {
+            if (![window.bundleID isEqualToString:bundleID]) continue;
+            if (window.sceneHost.isLive) {
+                [self logSplitResult:[NSString stringWithFormat:@"parked app %@ back to foreground (live) -> close its drawer", bundleID]];
+                [self closeFloatingWindow:window animated:YES];
+            } else if ([self.parkPendingBundleID isEqualToString:bundleID] && !self.parkHomeRescueFired) {
+                self.parkHomeRescueFired = YES;
+                [self logSplitResult:[NSString stringWithFormat:@"parked app %@ bounced back (not live yet) -> press home to complete park", bundleID]];
+                [self dpProgrammaticHomePress];
             }
-        }
-        for (DPFloatingWindow *window in reclaimed) {
-            [self logSplitResult:[NSString stringWithFormat:@"parked app %@ back to foreground -> close its drawer", bundleID]];
-            [self closeFloatingWindow:window animated:YES];
         }
     }
     if (!self.floatingHiddenOnHome || self.deviceLocked || self.mode != DPPresentationModeFloating || !self.mutableFloatingWindows.count) return;
