@@ -575,6 +575,15 @@ static NSArray *DPInjectedShortcutItems(void) {
 // ── PV式：全屏 App 内直接上滑到顶 → 该 App 变上半屏 + 选第二个（0.7.181）──
 // 不需要长按图标、不需要菜单：任意 App 全屏时从底部上滑并按住到顶部，松手即保留。
 // 与系统"上滑回桌面"区分：我们只在松手时窗口/手势到达顶部区才接管，否则放行原逻辑。
+// 0.7.216: iOS16 底部上滑实际走 SBHomeGesturePanGestureRecognizer，
+// 先补这条链路，SBFluidSwitcherGestureManager 那条只在边缘/切换器场景触发。
+%hook SBHomeGesturePanGestureRecognizer
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
+    [[DPWindowManager shared] handleHomeGesturePanTouchesEnded:self];
+    %orig;
+}
+%end
+
 %hook SBFluidSwitcherGestureManager
 - (void)_handleSwitcherPanGestureBegan:(id)gesture {
     %orig;

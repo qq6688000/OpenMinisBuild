@@ -54,6 +54,7 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)harvestRealDisplayItemsFromSwitcherLayouts:(NSArray *)layouts;
 /// 0.7.212: 照 PV 的上滑挂起 —— 把前台 App 收成贴边抽屉
 - (BOOL)parkForegroundAppIntoPipDrawer:(NSString *)bundleID;
+- (void)handleHomeGesturePanTouchesEnded:(id)recognizer;
 - (BOOL)parkForegroundAppAsFloatingCard:(NSString *)bundleID;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;

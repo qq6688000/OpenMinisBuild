@@ -2020,26 +2020,32 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     self.pvSplitGestureArmed = NO;
     if (!wasArmed) return NO;
 
-    // 判定是否上滑到顶：必须明显上滑（超过屏高 40%）或手指进入顶部区，避免普通回桌面被误触发
+    // 判定是否上滑到顶：0.7.216 —— 不再要求苛刻位移。
+    // 只要 gesture armed（panBegan 时前台不是 SpringBoard）且松手时前台还是这个 App，
+    // 就认为用户想把当前 App 挂起。位移值只用于日志，不阻塞。
     BOOL reachedTop = NO;
+    CGPoint t = CGPointZero, loc = CGPointZero;
+    CGFloat screenH = 852.0, topZone = 90.0;
     if ([gesture respondsToSelector:@selector(translationInView:)]) {
         UIView *v = ([gesture respondsToSelector:@selector(view)]) ? [gesture valueForKey:@"view"] : nil;
-        CGPoint t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(translationInView:), v);
-        CGPoint loc = [self dpsafeLocationForGesture:gesture];
-        CGFloat screenH = v ? v.bounds.size.height : 852.0;
-        CGFloat topZone = MAX(90.0, (v ? v.safeAreaInsets.top : 0) + 60.0);
+        t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(translationInView:), v);
+        loc = [self dpsafeLocationForGesture:gesture];
+        screenH = v ? v.bounds.size.height : 852.0;
+        topZone = MAX(90.0, (v ? v.safeAreaInsets.top : 0) + 60.0);
         reachedTop = (t.y < -(screenH * 0.4));
         if (loc.y > 0 && loc.y <= topZone) reachedTop = YES;
-        NSLog(@"[InteractivePiP] PV split pan ENDED t=%@ loc=%@ screenH=%.0f topZone=%.0f reachedTop=%d",
-              NSStringFromCGPoint(t), NSStringFromCGPoint(loc), screenH, topZone, reachedTop);
-    } else {
-        // 拿不到位移信息时：只要手势正常结束且前台还是这个 App，就当作到顶
-        NSString *fg = [self foregroundBundleID];
-        reachedTop = [fg isEqualToString:self.pvPendingFirstBundleID];
-        NSLog(@"[InteractivePiP] PV split pan ENDED (no translation API) reachedTop=%d fg=%@",
-              reachedTop, fg ?: @"(none)");
     }
+    // 0.7.216: 兜底 —— 位移拿不到/不够也算挂起，只要前台还是挂起目标
+    NSString *fgNow = [self foregroundBundleID];
+    BOOL sameApp = fgNow.length && [fgNow isEqualToString:self.pvPendingFirstBundleID];
+    if (!reachedTop && sameApp) reachedTop = YES;
+    [self logSplitResult:[NSString stringWithFormat:
+        @"pan ENDED t=%.0f,%.0f loc=%.0f,%.0f screenH=%.0f topZone=%.0f reachedTop=%d sameApp=%d fg=%@",
+        t.x, t.y, loc.x, loc.y, screenH, topZone, reachedTop, sameApp, fgNow ?: @"(none)"]];
+    NSLog(@"[InteractivePiP] PV split pan ENDED t=%@ loc=%@ reachedTop=%d fg=%@",
+          NSStringFromCGPoint(t), NSStringFromCGPoint(loc), reachedTop, fgNow);
     if (!reachedTop) {
+        [self logSplitResult:@"pan ENDED: not reached top, releasing"];
         self.pvPendingFirstBundleID = nil;
         return NO;
     }
@@ -2061,6 +2067,33 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 /// 0.7.214: 上滑挂起的真正落地 —— 用 Duo 自有 DPSceneHost 把前台 App 抓成小浮窗挂起来。
 /// 这才是用户要的"上滑挂起 App"：App 没关，变成一张小卡片悬在屏幕上，点开继续用。
 /// 不碰系统 UIWindow、不拼 SBAppLayout、不依赖 iOS16 上全断的 displayItem 路径。
+/// 0.7.216: iOS16 底部上滑（SBHomeGesturePanGestureRecognizer）松手时的处理。
+/// 这条链路才是用户真正"从底部上滑"走的手势。
+- (void)handleHomeGesturePanTouchesEnded:(id)recognizer {
+    [self logSplitResult:[NSString stringWithFormat:@"HOME_PAN ended class=%@ state=%ld",
+                          recognizer ? NSStringFromClass(object_getClass(recognizer)) : @"nil",
+                          (long)([recognizer respondsToSelector:@selector(state)] ? (long)[recognizer state] : -1)]];
+    NSString *fg = [self foregroundBundleID];
+    if (!fg.length || [fg isEqualToString:@"com.apple.springboard"]) return;
+    if ([[DPSettings shared] isBundleBlacklisted:fg]) return;
+    if (self.mode == DPPresentationModeSplit) return;
+
+    // 取位移：底部上滑是负 y
+    CGFloat dy = 0;
+    if ([recognizer respondsToSelector:@selector(translationInView:)]) {
+        CGPoint t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(recognizer, @selector(translationInView:), nil);
+        dy = t.y;
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"HOME_PAN fg=%@ dy=%.0f", fg, dy]];
+    // 上滑超过屏高 25% 就认为用户要挂起（底部上滑回桌面本身就是大位移，
+    // 这里只拦"明显上滑"的那批；手指轻扫回桌面不放行到挂起）
+    CGFloat screenH = CGRectGetHeight([UIScreen mainScreen].bounds);
+    if (dy > -(screenH * 0.25)) return;
+
+    [self logSplitResult:[NSString stringWithFormat:@"HOME_PAN park trigger fg=%@ dy=%.0f", fg, dy]];
+    [self parkForegroundAppAsFloatingCard:fg];
+}
+
 - (BOOL)parkForegroundAppAsFloatingCard:(NSString *)bundleID {
     if (!bundleID.length) return NO;
     if ([bundleID isEqualToString:@"com.apple.springboard"]) return NO;
