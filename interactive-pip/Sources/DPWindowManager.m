@@ -1949,9 +1949,8 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     }
     self.pvSplitGestureArmed = YES;
     self.pvPendingFirstBundleID = [fg copy];
-    // 0.7.203: panBegan 时 App 稳定前台，它对应的 scene 一定在 connectedScenes 里活着。
-    // displayItem 不在 SBApplication 身上（只有 5 个属性），得从前台 scene 找。先枚举诊断。
-    [self diagForegroundSceneForBundleID:fg];
+    // 0.7.223: diagScene 探测已定案（connectedScenes 无 App scene，split_22 证），
+    // 撤掉每次上滑 6 行的刷屏。
     id earlyItem = [self displayItemForBundleID:fg];
     if (earlyItem) self.pvPendingFirstDisplayItem = earlyItem;
     NSLog(@"[InteractivePiP] PV split pan BEGAN fg=%@ earlyItem=%@",
@@ -2182,6 +2181,14 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         [self bringOverlayToFront];
         return existing;
     }
+    // 0.7.223: 同一时间只挂一张抽屉（PV pair-session 语义）。
+    // 挂新 App → 旧抽屉关掉（旧 App 只是回后台，随时可再挂），
+    // 否则三张全叠在上半屏同一位置（split_22 实拍）。
+    while (self.mutableFloatingWindows.count > 0) {
+        DPFloatingWindow *old = self.mutableFloatingWindows.firstObject;
+        [self logSplitResult:[NSString stringWithFormat:@"park new app -> close old drawer %@", old.bundleID]];
+        [self closeFloatingWindow:old animated:YES];
+    }
     DPFloatingWindow *window = [[DPFloatingWindow alloc] initWithBundleID:bundleID frame:local];
     window.contentOpacity = [DPSettings shared].floatingOpacity;
     window.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
@@ -2247,7 +2254,13 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
             if (!ss) return;
             BOOL live = host.isLive;
             [ss logSplitResult:[NSString stringWithFormat:@"live attach %@ -> live=%d", bundleID, live]];
-            if (live) [win setParkedSnapshot:nil];
+            if (live) {
+                [win setNeedsLayout];
+                [win layoutIfNeeded];
+                [win commitSceneLayout];      // 把 frame 真正推给远端 scene（S_MR 排版）
+                [host setSuspended:NO];       // 不让挂起画面冻结
+                [win setParkedSnapshot:nil];  // 活画面顶掉快照
+            }
         }];
     });
 }
@@ -2368,6 +2381,21 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self noteForegroundApplicationChanged:bundleID]; });
         return;
+    }
+    // 0.7.223: 挂起抽屉的 App 被重新全屏打开 → 它的 scene 被系统收走，抽屉必黑。
+    // App 本人都全屏了，抽屉没意义 —— 直接撤掉它的抽屉（PV pair 结束语义）。
+    if (bundleID.length && ![bundleID isEqualToString:@"com.apple.springboard"]) {
+        NSMutableArray *reclaimed = nil;
+        for (DPFloatingWindow *window in self.mutableFloatingWindows) {
+            if ([window.bundleID isEqualToString:bundleID]) {
+                if (!reclaimed) reclaimed = [NSMutableArray array];
+                [reclaimed addObject:window];
+            }
+        }
+        for (DPFloatingWindow *window in reclaimed) {
+            [self logSplitResult:[NSString stringWithFormat:@"parked app %@ back to foreground -> close its drawer", bundleID]];
+            [self closeFloatingWindow:window animated:YES];
+        }
     }
     if (!self.floatingHiddenOnHome || self.deviceLocked || self.mode != DPPresentationModeFloating || !self.mutableFloatingWindows.count) return;
     // Empty means no foreground application, not evidence that Home was left.
