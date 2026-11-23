@@ -1158,6 +1158,14 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         NSLog(@"[InteractivePiP] nativeSplit commit: missing items a=%d b=%d", itemA != nil, itemB != nil);
         return NO;
     }
+    // 0.7.196: addAppLayout 路径需要知道锚点 App（前台那个）和要加入的第二个 App
+    self.splitFirstBundleID = firstBundleID;
+    self.splitSecondBundleID = secondBundleID;
+    // currentForegroundBundleID 取当前前台（此时第一个 App 应该是前台）
+    NSString *fg = [self foregroundBundleID];
+    self.currentForegroundBundleID = (fg.length && ![fg isEqualToString:@"com.apple.springboard"]) ? fg : firstBundleID;
+    NSLog(@"[InteractivePiP] nativeSplit commit: anchor=%@ second=%@ fg=%@",
+          self.currentForegroundBundleID, self.splitSecondBundleID, fg);
     CGRect screen = [UIScreen mainScreen].bounds;
     BOOL vertical = screen.size.height >= screen.size.width;
     id layout = [self buildPairAppLayoutWithFirst:itemA second:itemB vertical:vertical];
