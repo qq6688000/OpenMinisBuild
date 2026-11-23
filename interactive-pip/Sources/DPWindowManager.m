@@ -63,6 +63,8 @@
 @property (nonatomic, copy) NSArray *shelfThumbnails;
 @property (nonatomic) NSUInteger shelfWindowCount;
 @property (nonatomic) BOOL homeGestureSettling;
+@property (nonatomic, copy, nullable) NSString *pvPendingFirstBundleID; // 0.7.178: PV式全屏分屏待命的第一个App
+@property (nonatomic) BOOL pvSplitGestureArmed; // 上滑手势是否已就绪（前台是我们的App）
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
 - (void)hideFloatingOnHome;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
@@ -303,20 +305,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (self.sessionParked) [self restoreParkedSession];
     [self install];
 
-    if (mode == DPPresentationModeSplit ||
-        mode == DPPresentationModeFloating ||
-        mode == DPPresentationModeNone) {
-        // 0.7.174: 所有入口统一 —— 窗口模式已删除。开第一个 App 后进入
-        // 「松手保留」预览态，松手固定后自动弹 picker 选第二个 App 组成分屏。
-        DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
-        if (first && ![first.bundleID isEqualToString:bundleID] && mode == DPPresentationModeSplit) {
-            [self pairWindow:first withBundleID:bundleID];
-        } else {
-            [self openFloatingWithBundleID:bundleID];
-            DPFloatingWindow *target = self.mutableFloatingWindows.lastObject;
-            if (target) [self beginDragToKeepForWindow:target];
-        }
-    }
+    // 0.7.178: 统一入口改为 PV式全屏分屏 —— 全屏启动 App，上滑到顶再选第二个。
+    [self startPVFullscreenSplitForBundleID:bundleID];
 }
 
 - (void)presentAppPickerWithCompletion:(void (^)(NSString * _Nullable))completion {
@@ -1409,6 +1399,114 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
             NSLog(@"[InteractivePiP] activateApplication: %@", bundleID);
         }
     }
+}
+
+#pragma mark - PV-style fullscreen split (0.7.178)
+// App 全屏前台启动；用户在 App 内从底部上滑（hook SBFluidSwitcherGestureManager），
+// 上滑到顶松手后把该 App 固定为第一半、弹 picker 选第二个，再用 layoutSplit 铺满两半。
+// 全程不创建"浮动小窗"中间态。
+
+- (BOOL)isPVFullscreenSplitPending {
+    return self.pvPendingFirstBundleID.length > 0;
+}
+
+- (void)startPVFullscreenSplitForBundleID:(NSString *)bundleID {
+    if (!bundleID.length || [bundleID isEqualToString:@"com.apple.springboard"]) return;
+    if (![DPSettings shared].isEnabled) return;
+    if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return;
+    [self.floatingHomeTimer invalidate]; self.floatingHomeTimer = nil;
+    self.floatingHiddenOnHome = NO;
+    self.edgeShelf.hidden = YES;
+    [self install];
+
+    self.pvPendingFirstBundleID = [bundleID copy];
+    self.pvSplitGestureArmed = NO;
+    // 全屏前台启动第一个 App（不 suspended、不 host 到浮窗）
+    [self.launchAllowlist addObject:bundleID];
+    [self openApplicationForeground:bundleID];
+    NSLog(@"[InteractivePiP] PV fullscreen split: launch foreground %@, waiting for swipe-up", bundleID);
+    // 0.6s 后确认 App 是否真的到了前台，便于真机定位"全屏没起来"的问题
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(weakSelf) s = weakSelf;
+        if (!s || ![s.pvPendingFirstBundleID isEqualToString:bundleID]) return;
+        NSString *fg = [s foregroundBundleID];
+        NSLog(@"[InteractivePiP] PV split 0.6s check: fg=%@ expected=%@ match=%d",
+              fg ?: @"(none)", bundleID, [fg isEqualToString:bundleID]);
+    });
+}
+
+// 安全读取手势的位置/位移（系统私有手势类未必有 translationInView:）
+- (CGPoint)dpsafeLocationForGesture:(id)gesture {
+    if ([gesture respondsToSelector:@selector(locationInView:)]) {
+        UIView *v = nil;
+        if ([gesture respondsToSelector:@selector(view)]) v = [gesture valueForKey:@"view"];
+        return ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(locationInView:), v);
+    }
+    return CGPointZero;
+}
+
+- (void)handlePVFullscreenSplitPanBegan:(id)gesture {
+    if (![self isPVFullscreenSplitPending]) return;
+    NSString *fg = [self foregroundBundleID];
+    if (![fg isEqualToString:self.pvPendingFirstBundleID]) return;
+    self.pvSplitGestureArmed = YES;
+    NSLog(@"[InteractivePiP] PV split pan BEGAN (armed) fg=%@", fg);
+}
+
+- (void)handlePVFullscreenSplitPanChanged:(id)gesture {
+    if (![self isPVFullscreenSplitPending] || !self.pvSplitGestureArmed) return;
+    // 只在手势对象支持 translationInView 时做跟手缩放，不支持就跳过（不影响松手判定）
+    if ([gesture respondsToSelector:@selector(translationInView:)]) {
+        UIView *v = ([gesture respondsToSelector:@selector(view)]) ? [gesture valueForKey:@"view"] : nil;
+        CGPoint t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(translationInView:), v);
+        // t.y < 0 表示上滑；这里记录进度，真正的视觉缩放交给 ended 后的 layoutSplit
+        if (t.y < -80) {
+            // 上滑超过阈值，标记到位候选
+        }
+    }
+}
+
+- (void)handlePVFullscreenSplitPanEnded:(id)gesture {
+    if (![self isPVFullscreenSplitPending]) return;
+    BOOL wasArmed = self.pvSplitGestureArmed;
+    self.pvSplitGestureArmed = NO;
+    if (!wasArmed) return;
+
+    // 判定上滑是否到位：优先读手势 translation/speed；读不到就按"前台仍是我们的App且手势结束"处理
+    BOOL reachedTop = YES;
+    if ([gesture respondsToSelector:@selector(translationInView:)]) {
+        UIView *v = ([gesture respondsToSelector:@selector(view)]) ? [gesture valueForKey:@"view"] : nil;
+        CGPoint t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(gesture, @selector(translationInView:), v);
+        reachedTop = (t.y < -80);
+        CGPoint loc = [self dpsafeLocationForGesture:gesture];
+        if (v && loc.y > 0) {
+            CGFloat topZone = MAX(80.0, v.safeAreaInsets.top + 60.0);
+            reachedTop = reachedTop || (loc.y <= topZone);
+        }
+    }
+    NSLog(@"[InteractivePiP] PV split pan ENDED reachedTop=%d", reachedTop);
+    if (!reachedTop) return;
+
+    // 上滑到位 → 把第一个 App 建成浮窗（作为分屏第一半），弹 picker 选第二个
+    NSString *first = self.pvPendingFirstBundleID;
+    self.pvPendingFirstBundleID = nil;
+    [self openFloatingWithBundleID:first];
+    DPFloatingWindow *firstWindow = nil;
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        if ([w.bundleID isEqualToString:first]) { firstWindow = w; break; }
+    }
+    if (!firstWindow) {
+        NSLog(@"[InteractivePiP] PV split: first window create FAILED");
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [self presentAppPickerWithCompletion:^(NSString *bundleID) {
+        typeof(weakSelf) s = weakSelf;
+        if (!s || !bundleID.length) { return; }
+        [s pairWindow:firstWindow withBundleID:bundleID];
+    }];
 }
 
 - (void)handleHomeGestureEnded {

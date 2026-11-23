@@ -28,6 +28,13 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)handleActivationForBundleID:(NSString *)bundleID;
 - (void)handleActivationForBundleID:(NSString *)bundleID preferredMode:(DPPresentationMode)mode;
 
+/// 0.7.178: PV式全屏分屏 —— App全屏前台启动，上滑到顶后固定为第一半并选第二个。
+- (void)startPVFullscreenSplitForBundleID:(NSString *)bundleID;
+- (void)handlePVFullscreenSplitPanBegan:(id)gesture;
+- (void)handlePVFullscreenSplitPanChanged:(id)gesture;
+- (void)handlePVFullscreenSplitPanEnded:(id)gesture;
+- (BOOL)isPVFullscreenSplitPending;
+
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;
 - (void)openFloatingWithBundleID:(NSString *)bundleID;

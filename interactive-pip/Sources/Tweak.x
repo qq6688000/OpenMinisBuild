@@ -139,8 +139,8 @@ static id DPSettingsByKeepingSceneForeground(id scene, id settings) {
     NSString *bid = DPBundleIDFromIconView(self.iconView);
     if (!bid.length) return;
     DPHaptic();
-    DPPresentationMode mode = DPPresentationModeFloating;
-    [[DPWindowManager shared] handleActivationForBundleID:bid preferredMode:mode];
+    // 0.7.178: PV式全屏分屏
+    [[DPWindowManager shared] startPVFullscreenSplitForBundleID:bid];
 }
 
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
@@ -156,8 +156,8 @@ static id DPSettingsByKeepingSceneForeground(id scene, id settings) {
 
     // 系统快捷菜单可能失效：用我们自己的选择面板（走 WindowManager 的 mode chooser）
     DPHaptic();
-    // 直接走询问模式，界面更统一，也避免 SpringBoard present 失败
-    [[DPWindowManager shared] handleActivationForBundleID:bid preferredMode:DPPresentationModeFloating];
+    // 0.7.178: PV式全屏分屏
+    [[DPWindowManager shared] startPVFullscreenSplitForBundleID:bid];
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -315,7 +315,8 @@ static BOOL DPHandleShortcutType(NSString *type, NSString *bundleID, id iconView
     if (!bid.length) bid = DPBundleIDFromIconView(iconView);
     if (!bid.length) return YES; // 吞掉，避免系统再处理坏项
     DPHaptic();
-    [[DPWindowManager shared] handleActivationForBundleID:bid preferredMode:mode];
+    // 0.7.178: PV式全屏分屏 —— App全屏启动，上滑到顶固定为第一半再选第二个。
+    [[DPWindowManager shared] startPVFullscreenSplitForBundleID:bid];
     return YES;
 }
 
@@ -563,8 +564,21 @@ static NSArray *DPInjectedShortcutItems(void) {
 // 结束时判定：若会话仍在、且前台已不是被托管的 App（即回到桌面），才拆会话。
 // 只在 Ended 触发，began/changed 阶段不动，避免打开/切换 App 时误拆。
 %hook SBFluidSwitcherGestureManager
+- (void)_handleSwitcherPanGestureBegan:(id)gesture {
+    %orig;
+    if ([[DPWindowManager shared] isPVFullscreenSplitPending])
+        [[DPWindowManager shared] handlePVFullscreenSplitPanBegan:gesture];
+}
+- (void)_handleSwitcherPanGestureChanged:(id)gesture {
+    %orig;
+    if ([[DPWindowManager shared] isPVFullscreenSplitPending])
+        [[DPWindowManager shared] handlePVFullscreenSplitPanChanged:gesture];
+}
 - (void)_handleSwitcherPanGestureEnded:(id)gesture {
     %orig;
+    if ([[DPWindowManager shared] isPVFullscreenSplitPending]) {
+        [[DPWindowManager shared] handlePVFullscreenSplitPanEnded:gesture];
+    }
     if ([DPWindowManager shared].mode != DPPresentationModeNone) {
         [[DPWindowManager shared] handleHomeGestureEnded];
     }
