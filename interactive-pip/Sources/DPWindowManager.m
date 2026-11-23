@@ -4,6 +4,7 @@
 #import "DPAppPicker.h"
 #import "DPEdgeShelfWindow.h"
 #import "DPPipDrawerController.h"
+#import "DPPipNativeBridge.h"
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
@@ -2063,6 +2064,17 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 - (BOOL)parkForegroundAppAsFloatingCard:(NSString *)bundleID {
     if (!bundleID.length) return NO;
     if ([bundleID isEqualToString:@"com.apple.springboard"]) return NO;
+
+    // 0.7.215: 先按 PV 的方式走系统 PiP 链路（coordinator → controllerForType: → container）
+    [self logSplitResult:@"park: probing PV-native PiP path"];
+    id pipController = [[DPPipNativeBridge shared] resolvePipController];
+    [[DPPipNativeBridge shared] dumpPipControllerCapabilities:pipController];
+    if (pipController) {
+        [self logSplitResult:@"park: PV-native PiP controller AVAILABLE (see PIP sel lines)"];
+    } else {
+        [self logSplitResult:@"park: PV-native PiP controller NOT available, fallback to floating card"];
+    }
+
     // 已经有窗口挂在外面了就不重复建
     if (self.floatingWindows.count > 0) {
         [self logSplitResult:@"park: already have floating windows, skip"];
@@ -2474,6 +2486,11 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     NSMutableArray *keep = [NSMutableArray array];
     for (NSString *l in lines) { if (l.length) [keep addObject:l]; if (keep.count >= 60) break; }
     [[keep componentsJoinedByString:@"\n"] writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+/// 0.7.215: 给 DPPipNativeBridge 用的日志出口（同一文件隔离，避免循环依赖）
+void DPPipLog(NSString *line) {
+    [[DPWindowManager shared] logSplitResult:line];
 }
 
 /// 请求系统激活一个分屏 layout（PV: requestForActivatingAppLayout:）
