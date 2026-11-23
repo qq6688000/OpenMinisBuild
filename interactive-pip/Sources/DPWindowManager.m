@@ -2008,13 +2008,32 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (TRCls) {
         @try {
             id req = [TRCls new];
+            // 0.7.188: 本工程已验证的真实 setter 是 setActivatingDisplayItem:，
+            // 以及 toAppLayout / transitionContext。按它们的真实形态填。
+            SEL setItem = NSSelectorFromString(@"setActivatingDisplayItem:");
             SEL setLayout = NSSelectorFromString(@"setAppLayout:");
-            SEL setSource = NSSelectorFromString(@"setSource:");
+            SEL setToLayout = NSSelectorFromString(@"setToAppLayout:");
+            // 先设 toAppLayout（双 item 布局）——这才是分屏形态
+            if ([req respondsToSelector:setToLayout]) {
+                ((void(*)(id, SEL, id))objc_msgSend)(req, setToLayout, layout);
+                NSLog(@"[InteractivePiP] req setToAppLayout ok");
+            }
             if ([req respondsToSelector:setLayout]) {
                 ((void(*)(id, SEL, id))objc_msgSend)(req, setLayout, layout);
+                NSLog(@"[InteractivePiP] req setAppLayout ok");
             }
-            if ([req respondsToSelector:setSource]) {
-                ((void(*)(id, SEL, NSInteger))objc_msgSend)(req, setSource, 1); // 1 = 用户操作
+            // activatingDisplayItem 用一个真实 item（从 layout 里取第一个）
+            if ([req respondsToSelector:setItem]) {
+                id firstItem = nil;
+                SEL itemsSel = NSSelectorFromString(@"allItems");
+                if ([layout respondsToSelector:itemsSel]) {
+                    id arr = ((id(*)(id,SEL))objc_msgSend)(layout, itemsSel);
+                    if ([arr isKindOfClass:NSArray.class] && [arr count]) firstItem = [arr firstObject];
+                }
+                if (firstItem) {
+                    ((void(*)(id, SEL, id))objc_msgSend)(req, setItem, firstItem);
+                    NSLog(@"[InteractivePiP] req setActivatingDisplayItem=%@", NSStringFromClass([firstItem class]));
+                }
             }
             NSLog(@"[InteractivePiP] requestSystemActivate: built SBSwitcherTransitionRequest %@", req);
 
@@ -2565,6 +2584,42 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
     }
     free(classes);
     NSLog(@"[InteractivePiP] probe requestForActivatingAppLayout: hits=%@", hits);
+
+    // 0.7.188: 同时把结果写到固定文件，方便用 Filza 直接看，不用抓系统日志。
+    NSString *path = @"/var/mobile/Library/Preferences/com.seagull.interactivepip.probe.txt";
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"requestForActivatingAppLayout hosts:\n%@\n\n", hits];
+    // 顺便记录几个关键类的相关方法，一次问清
+    NSArray *clsNames = @[@"SBMainWorkspaceTransitionRequest", @"SBSwitcherTransitionRequest",
+                          @"SBMainSwitcherControllerCoordinator", @"SBMainWorkspace"];
+    for (NSString *cn in clsNames) {
+        Class C = NSClassFromString(cn);
+        if (!C) { [out appendFormat:@"%@: NOT FOUND\n", cn]; continue; }
+        [out appendFormat:@"=== %@ ===\n", cn];
+        unsigned int mc = 0;
+        // 类方法
+        Method *cms = class_copyMethodList(object_getClass(C), &mc);
+        for (unsigned int i = 0; i < mc; i++) {
+            const char *nm = sel_getName(method_getName(cms[i]));
+            if (strstr(nm, "Layout") || strstr(nm, "Transition") || strstr(nm, "Activat") || strstr(nm, "request")) {
+                [out appendFormat:@"  +%s  %s\n", nm, method_getTypeEncoding(cms[i])];
+            }
+        }
+        free(cms);
+        // 实例方法
+        mc = 0;
+        Method *ims = class_copyMethodList(C, &mc);
+        for (unsigned int i = 0; i < mc; i++) {
+            const char *nm = sel_getName(method_getName(ims[i]));
+            if (strstr(nm, "Layout") || strstr(nm, "Transition") || strstr(nm, "Activat") || strstr(nm, "request")) {
+                [out appendFormat:@"  -%s  %s\n", nm, method_getTypeEncoding(ims[i])];
+            }
+        }
+        free(ims);
+        [out appendString:@"\n"];
+    }
+    [out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSLog(@"[InteractivePiP] probe written to %@", path);
 }
 
 @end
