@@ -1957,11 +1957,100 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
     if (!workspace) { NSLog(@"[InteractivePiP] requestSystemActivate: no workspace"); return NO; }
 
-    // 1) SBMainWorkspaceTransitionRequest 工厂
-    for (NSString *factory in @[@"requestForActivatingAppLayout:",
-                                @"requestWithAppLayout:",
-                                @"_requestForActivatingAppLayout:"]) {
-        SEL fsel = NSSelectorFromString(factory);
+    // 0.7.184: PV 用的是 +[? requestForActivatingAppLayout:] —— 类方法。
+    // 依次尝试：候选类上的类方法 → workspace 实例方法 → 直接提交 layout。
+    NSArray<NSString *> *factoryNames = @[@"requestForActivatingAppLayout:",
+                                          @"requestWithAppLayout:",
+                                          @"_requestForActivatingAppLayout:"];
+    NSArray<NSString *> *candidateClasses = @[@"SBMainWorkspaceTransitionRequest",
+                                             @"SBWorkspaceTransitionRequest",
+                                             @"SBMainWorkspace"];
+
+    for (NSString *clsName in candidateClasses) {
+        Class C = NSClassFromString(clsName);
+        if (!C) continue;
+        for (NSString *fname in factoryNames) {
+            SEL fsel = NSSelectorFromString(fname);
+            // 类方法
+            if (![C respondsToSelector:fsel]) continue;
+            @try {
+                id req = ((id(*)(id, SEL, id))objc_msgSend)((id)C, fsel, layout);
+                NSLog(@"[InteractivePiP] requestSystemActivate: %@ %@ -> %@", clsName, fname, req ? @"req" : @"nil");
+                if (!req) continue;
+                // req 自己可能能 execute
+                SEL selfExec = NSSelectorFromString(@"execute");
+                if ([req respondsToSelector:selfExec]) {
+                    ((void(*)(id, SEL))objc_msgSend)(req, selfExec);
+                    NSLog(@"[InteractivePiP] requestSystemActivate: executed via req execute, cls=%@", clsName);
+                    return YES;
+                }
+                SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
+                if ([workspace respondsToSelector:exec]) {
+                    BOOL ok = ((BOOL(*)(id, SEL, id))objc_msgSend)(workspace, exec, req);
+                    NSLog(@"[InteractivePiP] requestSystemActivate via %@/%@ workspace-exec ok=%d", clsName, fname, ok);
+                    if (ok) return YES;
+                }
+            } @catch (NSException *e) {
+                NSLog(@"[InteractivePiP] requestSystemActivate %@/%@ ex: %@", clsName, fname, e);
+            }
+        }
+    }
+
+    NSLog(@"[InteractivePiP] requestSystemActivate: trying SBSwitcherTransitionRequest path");
+    // 0.7.184: PV 实际用的路径 —— SBSwitcherTransitionRequest + setAppLayout: + setSource:
+    Class TRCls = NSClassFromString(@"SBSwitcherTransitionRequest");
+    if (TRCls) {
+        @try {
+            id req = [TRCls new];
+            SEL setLayout = NSSelectorFromString(@"setAppLayout:");
+            SEL setSource = NSSelectorFromString(@"setSource:");
+            if ([req respondsToSelector:setLayout]) {
+                ((void(*)(id, SEL, id))objc_msgSend)(req, setLayout, layout);
+            }
+            if ([req respondsToSelector:setSource]) {
+                ((void(*)(id, SEL, NSInteger))objc_msgSend)(req, setSource, 1); // 1 = 用户操作
+            }
+            NSLog(@"[InteractivePiP] requestSystemActivate: built SBSwitcherTransitionRequest %@", req);
+
+            // 交给 switcher content controller 执行
+            Class CoordCls = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
+            id coord = nil;
+            if (CoordCls && [CoordCls respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+                coord = ((id(*)(id, SEL))objc_msgSend)(CoordCls, NSSelectorFromString(@"sharedInstance"));
+            }
+            id content = nil;
+            if (coord) {
+                for (NSString *g in @[@"switcherContentController", @"_switcherContentController"]) {
+                    SEL gs = NSSelectorFromString(g);
+                    if ([coord respondsToSelector:gs]) { content = ((id(*)(id,SEL))objc_msgSend)(coord, gs); break; }
+                }
+            }
+            if (!content) content = self.switcherContentController;
+            NSLog(@"[InteractivePiP] requestSystemActivate: content=%@", content ? NSStringFromClass([content class]) : @"nil");
+            if (content) {
+                for (NSString *m in @[@"performTransitionWithRequest:gestureInitiated:",
+                                      @"performTransitionWithRequest:",
+                                      @"requestTransitionWithRequest:"]) {
+                    SEL ms = NSSelectorFromString(m);
+                    if (![content respondsToSelector:ms]) continue;
+                    NSMethodSignature *sig = [content methodSignatureForSelector:ms];
+                    if (sig.numberOfArguments == 3) {
+                        ((void(*)(id,SEL,id))objc_msgSend)(content, ms, req);
+                    } else if (sig.numberOfArguments == 4) {
+                        ((void(*)(id,SEL,id,BOOL))objc_msgSend)(content, ms, req, NO);
+                    } else continue;
+                    NSLog(@"[InteractivePiP] requestSystemActivate: performed via %@", m);
+                    return YES;
+                }
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[InteractivePiP] requestSystemActivate switcherReq ex: %@", e);
+        }
+    }
+
+    // 实例方法兜底
+    for (NSString *fname in factoryNames) {
+        SEL fsel = NSSelectorFromString(fname);
         if (![workspace respondsToSelector:fsel]) continue;
         @try {
             id req = ((id(*)(id, SEL, id))objc_msgSend)(workspace, fsel, layout);
@@ -1969,13 +2058,14 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
             SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
             if ([workspace respondsToSelector:exec]) {
                 BOOL ok = ((BOOL(*)(id, SEL, id))objc_msgSend)(workspace, exec, req);
-                NSLog(@"[InteractivePiP] requestSystemActivate via %@ ok=%d", factory, ok);
+                NSLog(@"[InteractivePiP] requestSystemActivate instance %@ ok=%d", fname, ok);
                 if (ok) return YES;
             }
         } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] requestSystemActivate %@ ex: %@", factory, e);
+            NSLog(@"[InteractivePiP] requestSystemActivate instance %@ ex: %@", fname, e);
         }
     }
+    NSLog(@"[InteractivePiP] requestSystemActivate: ALL paths failed");
     return NO;
 }
 
