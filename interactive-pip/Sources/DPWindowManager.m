@@ -3,6 +3,7 @@
 #import "DPSceneHost.h"
 #import "DPAppPicker.h"
 #import "DPEdgeShelfWindow.h"
+#import "DPPipDrawerController.h"
 #import "DPSettings.h"
 #import "DPPassthroughWindow.h"
 #import <objc/message.h>
@@ -2035,31 +2036,53 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         return NO;
     }
 
-    // 到顶 → 该 App 固定为上半屏，缓存它作为前台时的真实 displayItem（系统建的）
-    // 0.7.198: 保留 pvPendingFirstBundleID —— tryActivate 靠它判断第二个 App ≠ 第一个。
-    // 等 executeTransitionRequest: hook 拦到用户手动开的第二个 App 再激活。10s 超时防卡死。
+    // 0.7.212: 照 PV 的上滑挂起 —— 不拼 SBAppLayout、不等第二个 App。
+    // 上滑到顶＝把当前 App 挂起成贴边抽屉（PiP 容器），用户随时点开继续用，
+    // 也可以从主屏打开另一个 App，形成"一全屏 + 一抽屉"的并排状态。
     NSString *first = self.pvPendingFirstBundleID;
     if (!first.length) return NO;
-    // 0.7.201: 此刻 QQ 可能已在回桌面动画里，先枚举 SBApplication 属性找 displayItem 真身
-    [self diagSBApplicationProperties:first];
-    id firstItem = [self displayItemForBundleID:first];
-    self.pvPendingFirstDisplayItem = firstItem;
-    NSLog(@"[InteractivePiP] PV split: cached firstItem=%@ for %@, waiting for second app",
-          firstItem ? NSStringFromClass([firstItem class]) : @"nil", first);
-    [self logSplitResult:[NSString stringWithFormat:@"panEnded cached first=%@ item=%@, awaiting 2nd app",
-                          first, firstItem ? NSStringFromClass([firstItem class]) : @"nil"]];
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        typeof(weakSelf) s = weakSelf;
-        if (s && [s.pvPendingFirstBundleID isEqualToString:first]) {
-            NSLog(@"[InteractivePiP] PV split: 10s timeout, clearing pending first=%@", first);
-            [s logSplitResult:@"timeout 10s waiting for 2nd app, cleared"];
-            s.pvPendingFirstBundleID = nil;
-            s.pvPendingFirstDisplayItem = nil;
+    self.pvPendingFirstBundleID = nil;
+    self.pvPendingFirstDisplayItem = nil;
+
+    BOOL parked = [self parkForegroundAppIntoPipDrawer:first];
+    [self logSplitResult:[NSString stringWithFormat:@"panEnded park first=%@ ok=%d", first, parked]];
+    // 无论抽屉是否成功，都放行系统手势（App 正常回桌面），不再拦全屏
+    return parked;
+}
+
+/// 0.7.212: 照 PV —— 把当前前台的 App 视图收成贴边抽屉。
+- (BOOL)parkForegroundAppIntoPipDrawer:(NSString *)bundleID {
+    if (!bundleID.length) return NO;
+    // 1) 先问系统要不要给 PiP 容器（PV 的 PVPIPEmbedding 路径）
+    id pipContainer = [[DPPipDrawerController shared] makeSystemPiPContainerForBundleID:bundleID];
+    [self logSplitResult:[NSString stringWithFormat:@"park pipContainer=%@",
+                          pipContainer ? NSStringFromClass([pipContainer class]) : @"nil"]];
+
+    // 2) 找该 App 当前的前台 scene 视图（挂起前它是活的）
+    UIView *contentView = nil;
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *ws = (UIWindowScene *)sc;
+        if (ws.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *w in ws.windows) {
+            if (w.isKeyWindow) { contentView = w; break; }
         }
-    });
-    // 通知系统这个 App 不拦截全屏（它要回桌面待命）
-    return YES;
+        if (contentView) break;
+    }
+    if (!contentView) {
+        [self logSplitResult:@"park: no active window found"];
+        return NO;
+    }
+    UIView *host = contentView.superview ?: contentView;
+    BOOL ok = [[DPPipDrawerController shared] parkContentView:contentView
+                                                   inHostView:host
+                                                        edge:1
+                                                    bundleID:bundleID];
+    if (ok && pipContainer) {
+        [self logSplitResult:[NSString stringWithFormat:@"park: system PiP container available (%@), drawer used as fallback",
+                              NSStringFromClass([pipContainer class])]];
+    }
+    return ok;
 }
 
 - (void)handleHomeGestureEnded {
