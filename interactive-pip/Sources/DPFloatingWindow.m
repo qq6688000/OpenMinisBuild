@@ -299,6 +299,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         self.islandPanTracking = YES;
         self.islandPanDirectionLocked = NO;
         self.activeIslandPan = gr;
+        NSLog(@"[InteractivePiP] contentPan Began view=%@ bundle=%@", NSStringFromClass(gr.view.class), self.bundleID);
         return;
     }
 
@@ -307,6 +308,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         CGPoint t0 = [gr translationInView:superview];
         if (t0.y < -24 && fabs(t0.y) > fabs(t0.x) * 1.2) {
             self.islandPanDirectionLocked = YES;
+            NSLog(@"[InteractivePiP] contentPan direction LOCKED up t0=%@ bundle=%@", NSStringFromCGPoint(t0), self.bundleID);
             self.islandPanStartOrigin = self.frame.origin;
             [self bringToFront];
             if (self.onFocus) self.onFocus(self);
@@ -353,14 +355,16 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         self.islandPanDirectionLocked = NO;
         self.activeIslandPan = nil;
         if (self.dragHintLabel) { [self.dragHintLabel removeFromSuperview]; self.dragHintLabel = nil; }
-        if (!wasLocked || gr.state == UIGestureRecognizerStateCancelled) return;
-        // 判定：窗口顶部是否被推到灵动岛附近
+        // 0.7.177: 即使手势被系统手势打断成 Cancelled，只要窗口已被推到顶部区，也判定保留。
+        // 判定依据改成「窗口当前位置」而非「方向锁」，避免系统抢手势后 wasLocked 丢失。
         CGFloat topY = CGRectGetMinY(self.frame);
-        CGFloat islandZone = MAX(60.0, superview.safeAreaInsets.top + 40.0);
-        if (topY <= islandZone) {
+        CGFloat islandZone = MAX(80.0, superview.safeAreaInsets.top + 60.0);
+        NSLog(@"[InteractivePiP] contentPan END state=%ld locked=%d topY=%.1f zone=%.1f bundle=%@",
+              (long)gr.state, wasLocked, topY, islandZone, self.bundleID);
+        if (wasLocked && topY <= islandZone) {
             [self haptic:UIImpactFeedbackStyleMedium];
             if (self.onSwipeUpToIsland) self.onSwipeUpToIsland(self);
-        } else {
+        } else if (wasLocked) {
             // 没推到位，弹回原位
             CGRect f = self.frame;
             f.origin.y = self.islandPanStartOrigin.y;
@@ -400,8 +404,19 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         f = [self clampFrame:f inBounds:superview.bounds];
         self.frame = f;
     } else if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled) {
+        // 0.7.177: 拖到屏幕顶部（灵动岛区）松手 → 固定该 App 并进入分屏。
+        // 不依赖 dragPreviewActive（0.7.175 起不再预先置位），直接按松手位置判定。
+        if (gr.state == UIGestureRecognizerStateEnded) {
+            CGFloat topY = CGRectGetMinY(self.frame);
+            CGFloat islandZone = MAX(80.0, superview.safeAreaInsets.top + 60.0);
+            if (topY <= islandZone) {
+                [self haptic:UIImpactFeedbackStyleMedium];
+                if (self.onSwipeUpToIsland) self.onSwipeUpToIsland(self);
+                return;
+            }
+        }
         if (self.dragPreviewActive) {
-            // 0.7.173: 拖出即保留 —— 松手后由管理端固定窗口并进入分屏配对
+            // 兼容旧路径：松手保留
             [self endDragPreview];
             if (self.onDragPreviewEnded) self.onDragPreviewEnded(self);
             return;
