@@ -303,21 +303,19 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (self.sessionParked) [self restoreParkedSession];
     [self install];
 
-    if (mode == DPPresentationModeSplit) {
+    if (mode == DPPresentationModeSplit ||
+        mode == DPPresentationModeFloating ||
+        mode == DPPresentationModeNone) {
+        // 0.7.174: 所有入口统一 —— 窗口模式已删除。开第一个 App 后进入
+        // 「松手保留」预览态，松手固定后自动弹 picker 选第二个 App 组成分屏。
         DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
-        if (first && ![first.bundleID isEqualToString:bundleID]) {
+        if (first && ![first.bundleID isEqualToString:bundleID] && mode == DPPresentationModeSplit) {
             [self pairWindow:first withBundleID:bundleID];
         } else {
             [self openFloatingWithBundleID:bundleID];
             DPFloatingWindow *target = self.mutableFloatingWindows.lastObject;
-            if (target) [self requestSplitForWindow:target];
+            if (target) [self beginDragToKeepForWindow:target];
         }
-    } else {
-        // 0.7.173: 窗口模式已删除。激活一个 App 后进入「拖出即保留」预览态，
-        // 松手固定后自动进入分屏配对，不再停留为独立悬浮窗。
-        [self openFloatingWithBundleID:bundleID];
-        DPFloatingWindow *first = self.mutableFloatingWindows.lastObject;
-        if (first) [self beginDragToKeepForWindow:first];
     }
 }
 

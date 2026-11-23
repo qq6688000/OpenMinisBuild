@@ -320,12 +320,9 @@ static BOOL DPHandleShortcutType(NSString *type, NSString *bundleID, id iconView
 }
 
 static NSArray *DPInjectedShortcutItems(void) {
-    id floatItem = DPMakeShortcutItem(@"com.seagull.interactivepip.action.float",
-                                      @"悬浮窗打开",
-                                      @"小窗叠在桌面上",
-                                      @"rectangle.on.rectangle");
+    // 0.7.174: 窗口模式已删除 —— 只保留「Duo 分屏」一项。
+    // 之前的「悬浮窗打开 / 小窗叠在桌面上」已移除。
     NSMutableArray *out = [NSMutableArray array];
-    if (floatItem) [out addObject:floatItem];
     id splitItem = DPMakeShortcutItem(@"com.seagull.interactivepip.action.split", @"Duo 分屏", @"双应用各占半屏", @"rectangle.split.2x1");
     if (splitItem) [out addObject:splitItem];
     return out;
