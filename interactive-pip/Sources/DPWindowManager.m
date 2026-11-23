@@ -1083,6 +1083,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     // 注意：调用本方法时系统正在执行"App 缩小回桌面"的过渡动画，
     // 必须等它跑完再弹 picker，否则会把动画冻住或弹不出来。
     NSLog(@"[InteractivePiP] nativeSplit: first=%@ scheduling picker", firstBundleID);
+    [self probeSplitActivationAPI];
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -2520,4 +2521,34 @@ static BOOL DPHasPreviewDetail(UIImage *image) {
     return pv;
 }
 
+#pragma mark - 0.7.186 runtime probe for split activation API
+// 运行时枚举所有类，找出谁实现了 +requestForActivatingAppLayout:
+// 真机上打日志，一次性定位正确的宿主类，不再靠猜。
+- (void)probeSplitActivationAPI {
+    SEL target = NSSelectorFromString(@"requestForActivatingAppLayout:");
+    int count = objc_getClassList(NULL, 0);
+    if (count <= 0) { NSLog(@"[InteractivePiP] probe: no classes"); return; }
+    Class *classes = (Class *)malloc(sizeof(Class) * count);
+    if (!classes) return;
+    count = objc_getClassList(classes, count);
+    NSMutableArray *hits = [NSMutableArray array];
+    for (int i = 0; i < count; i++) {
+        Class C = classes[i];
+        const char *nm = class_getName(C);
+        if (!nm) continue;
+        if (strncmp(nm, "SB", 2) != 0 && strncmp(nm, "FB", 2) != 0) continue;
+        // 类方法
+        if (class_getClassMethod(C, target)) {
+            [hits addObject:[NSString stringWithFormat:@"+%s", nm]];
+        }
+        // 实例方法
+        if (class_getInstanceMethod(C, target)) {
+            [hits addObject:[NSString stringWithFormat:@"-%s", nm]];
+        }
+    }
+    free(classes);
+    NSLog(@"[InteractivePiP] probe requestForActivatingAppLayout: hits=%@", hits);
+}
+
 @end
+
