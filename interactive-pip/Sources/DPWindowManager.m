@@ -2151,8 +2151,10 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
                           parkedImage ? [NSString stringWithFormat:@"%.0fx%.0f",
                                          parkedImage.size.width, parkedImage.size.height] : @"nil"]];
     @try {
-        // 复用成熟的浮窗创建路径：它会建 DPFloatingWindow + DPSceneHost 抓 scene
-        [self openFloatingWithBundleID:bundleID];
+        // 0.7.219 修崩溃：上滑这一刻 App 还在前台，它的 scene 被系统占着，
+        // 绝不能建 DPSceneHost 去抓 scene（0.7.182 / 0.7.218 两次都是这么崩的）。
+        // 只建一个纯快照边栏，不碰任何 scene。
+        [self createSnapshotDrawerWithBundleID:bundleID image:parkedImage];
     } @catch (NSException *e) {
         [self logSplitResult:[NSString stringWithFormat:@"park EXCEPTION %@: %@", e.name, e.reason]];
         return NO;
@@ -2160,28 +2162,51 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     BOOL ok = (self.floatingWindows.count > 0);
     if (ok) {
         DPFloatingWindow *w = self.floatingWindows.firstObject;
-        // 0.7.218 照 PV 的 SlideOver 抽屉形态，不是悬浮小窗：
-        // 抽屉占满整屏高度，贴右侧，宽度约屏幕 30%（iOS SlideOver 标准比例）。
-        // 后续可拖动 tongue 展开/收起。
-        CGRect screenB = [UIScreen mainScreen].bounds;
-        CGFloat screenW = CGRectGetWidth(screenB);
-        CGFloat screenH = CGRectGetHeight(screenB);
-        CGFloat drawerW = round(screenW * 0.30);
-        // PV 抽屉是整屏高三段式：上边缘贴屏幕顶部（安全区下），下贴 Home 条
-        CGFloat topInset = 8;
-        CGRect frame = CGRectMake(screenW - drawerW - 6,
-                                  topInset,
-                                  drawerW,
-                                  screenH - topInset - 8);
-        [w setFrame:frame];
-        [w commitSceneLayout];
-        if (parkedImage) [w setParkedSnapshot:parkedImage];
-        [self logSplitResult:[NSString stringWithFormat:@"park OK drawer frame=%@ w=%.0f (slideover %.0f%%)",
-                              NSStringFromCGRect(frame), drawerW, 30.0]];
+        [self logSplitResult:[NSString stringWithFormat:@"park OK snapshot drawer frame=%@",
+                              NSStringFromCGRect(w.frame)]];
     } else {
-        [self logSplitResult:@"park FAILED: no window created"];
+        [self logSplitResult:@"park FAILED: no drawer created"];
     }
     return ok;
+}
+
+/// 0.7.219: 只建一个空的 DPFloatingWindow，绝不 attach scene host。
+/// 用于"上滑挂起"：App 还在前台运行，抓 scene 必崩（0.7.182/0.7.218 两次教训）。
+- (DPFloatingWindow *)openEmptyFloatingWithBundleID:(NSString *)bundleID frame:(CGRect)frame {
+    if (!bundleID.length) return nil;
+    if (!self.overlayRoot) [self install];
+
+    UIView *parent = [self contentParent];
+    CGRect local = [parent convertRect:frame fromView:nil];
+    DPFloatingWindow *window = [[DPFloatingWindow alloc] initWithBundleID:bundleID frame:local];
+    window.contentOpacity = [DPSettings shared].floatingOpacity;
+    window.cornerRadiusValue = [DPSettings shared].floatingCornerRadius;
+    window.showsBorder = YES;
+    __weak typeof(self) weakSelf = self;
+    window.onClose = ^(DPFloatingWindow *w) { [weakSelf closeFloatingWindow:w animated:YES]; };
+    window.onFocus = ^(DPFloatingWindow *w) { [weakSelf focusWindow:w]; };
+    [parent addSubview:window];
+    [self.mutableFloatingWindows addObject:window];
+    self.focusedWindow = window;
+    self.mode = DPPresentationModeFloating;
+    [self bringOverlayToFront];
+    return window;
+}
+
+/// 0.7.219: 纯快照边栏。不抓 scene、不碰系统 window，只显示一张图。
+- (void)createSnapshotDrawerWithBundleID:(NSString *)bundleID image:(UIImage *)image {
+    CGRect screenB = [UIScreen mainScreen].bounds;
+    CGFloat screenW = CGRectGetWidth(screenB);
+    CGFloat screenH = CGRectGetHeight(screenB);
+    CGFloat drawerW = round(screenW * 0.30);
+    CGFloat topInset = 8;
+    CGRect frame = CGRectMake(screenW - drawerW - 6, topInset, drawerW, screenH - topInset - 8);
+
+    DPFloatingWindow *w = [self openEmptyFloatingWithBundleID:bundleID frame:frame];
+    if (!w) return;
+    [w setParkedSnapshot:image];
+    [self logSplitResult:[NSString stringWithFormat:@"snapshot drawer created %@ img=%@",
+                          NSStringFromCGRect(frame), image ? @"yes" : @"nil"]];
 }
 
 /// 0.7.213: 修复 0.7.212 栈溢出崩溃 —— 上一版把系统 keyWindow 当 UIView 塞进子视图，

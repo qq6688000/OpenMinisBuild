@@ -56,6 +56,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)parkForegroundAppIntoPipDrawer:(NSString *)bundleID;
 - (void)handleHomeGesturePanTouchesEnded:(id)recognizer;
 - (BOOL)parkForegroundAppAsFloatingCard:(NSString *)bundleID;
+- (DPFloatingWindow *)openEmptyFloatingWithBundleID:(NSString *)bundleID frame:(CGRect)frame;
+- (void)createSnapshotDrawerWithBundleID:(NSString *)bundleID image:(UIImage *)image;
 - (UIImage *)captureForegroundSnapshot;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
