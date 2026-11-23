@@ -64,6 +64,7 @@
 @property (nonatomic) NSUInteger shelfWindowCount;
 @property (nonatomic) BOOL homeGestureSettling;
 @property (nonatomic, copy, nullable) NSString *pvPendingFirstBundleID; // 0.7.178: PV式全屏分屏待命的第一个App
+@property (nonatomic, strong, nullable) id pvPendingFirstDisplayItem;   // 0.7.198: 第一个App前台时缓存的真实displayItem
 @property (nonatomic) BOOL pvSplitGestureArmed; // 上滑手势是否已就绪（前台是我们的App）
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
 - (void)hideFloatingOnHome;
@@ -1082,23 +1083,13 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 /// 然后选第二个 App 填下半屏。
 - (BOOL)createTopHalfWithBundleID:(NSString *)firstBundleID {
     if (!firstBundleID.length) return NO;
-    // 0.7.183: 系统原生分屏 —— 不建窗口、不抓 scene。
-    // 注意：调用本方法时系统正在执行"App 缩小回桌面"的过渡动画，
-    // 必须等它跑完再弹 picker，否则会把动画冻住或弹不出来。
-    NSLog(@"[InteractivePiP] nativeSplit: first=%@ scheduling picker", firstBundleID);
-    [self probeSplitActivationAPI];
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        typeof(weakSelf) s = weakSelf;
-        if (!s) return;
-        [s presentAppPickerWithCompletion:^(NSString *secondBundleID) {
-            typeof(weakSelf) s2 = weakSelf;
-            if (!s2 || !secondBundleID.length) return;
-            if ([secondBundleID isEqualToString:firstBundleID]) return;
-            [s2 activateNativeSplitFirst:firstBundleID second:secondBundleID];
-        }];
-    });
+    // 0.7.198: 不再弹 picker。第一个 App 的真实 displayItem 已在 panEnded 缓存
+    // （pvPendingFirstDisplayItem）。进入"等第二个 App"状态 —— 用户手动点开任意
+    // 第二个 App，executeTransitionRequest: hook 拦到它系统自建的真实 displayItem
+    // 后，与本缓存的 itemA 组分屏。彻底不再自己拉 App、不再手拼 item。
+    NSLog(@"[InteractivePiP] nativeSplit: first=%@ waiting for user to open second app", firstBundleID);
+    [self logSplitResult:[NSString stringWithFormat:@"waiting for second app (first=%@ itemA=%@)",
+                          firstBundleID, self.pvPendingFirstDisplayItem ? @"ok" : @"nil"]];
     return YES;
 }
 
@@ -1559,6 +1550,62 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 }
 
 #pragma mark - PV-style fullscreen split (0.7.178)
+
+// 0.7.198: 分屏待命中，用户手动打开了第二个 App。系统正在为它建真实 displayItem，
+// 我们从 transition request 取它，跟 panEnded 时缓存的第一个 App 真实 item 组分屏。
+// 返回 YES 表示已接管（hook 不再走单开）。
+- (BOOL)tryActivatePendingSplitForLaunchedBundleID:(NSString *)bundleID request:(id)request {
+    // 0.7.198: 待命判断靠缓存的第一个 App 真实 displayItem（panEnded 时它还是前台、系统建的）
+    if (!self.pvPendingFirstDisplayItem || self.pvPendingFirstBundleID.length == 0) return NO;
+    if (!bundleID.length || [bundleID isEqualToString:self.pvPendingFirstBundleID]) return NO;
+    if ([[DPSettings shared] isBundleBlacklisted:bundleID]) return NO;
+
+    id itemA = self.pvPendingFirstDisplayItem;
+    id itemB = nil;
+    @try { itemB = [request valueForKey:@"activatingDisplayItem"]; } @catch (__unused NSException *e) {}
+    if (!itemB) {
+        @try { itemB = [request valueForKey:@"displayItem"]; } @catch (__unused NSException *e) {}
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"pending split hit second=%@ itemA=%@ itemB=%@",
+                          bundleID, itemA ? @"ok" : @"nil", itemB ? NSStringFromClass([itemB class]) : @"nil"]];
+    NSLog(@"[InteractivePiP] pending split: second=%@ itemA=%@ itemB=%@", bundleID,
+          itemA ? NSStringFromClass([itemA class]) : @"nil",
+          itemB ? NSStringFromClass([itemB class]) : @"nil");
+
+    // itemB 取不到就等 0.6s 再取（系统可能还在建 scene）
+    if (!itemB) {
+        NSString *firstBID = self.pvPendingFirstBundleID;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id b = [self displayItemForBundleID:bundleID];
+            [self logSplitResult:[NSString stringWithFormat:@"retry itemB=%@", b ? @"ok" : @"nil"]];
+            if (b) [self activateNativeSplitFirst:firstBID second:bundleID];
+        });
+        return NO; // 先放行让系统正常启动
+    }
+
+    [self logSplitResult:[NSString stringWithFormat:@"pending layout: activating first=%@ second=%@",
+                          self.pvPendingFirstBundleID, bundleID]];
+    NSString *firstBID = self.pvPendingFirstBundleID;
+    // 接管后清掉待命标记
+    self.pvPendingFirstBundleID = nil;
+    self.pvPendingFirstDisplayItem = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self activateNativeSplitFirst:firstBID second:bundleID];
+    });
+    return YES;
+}
+
+- (void)activateNativeSplitWithCachedFirst:(id)itemA secondItem:(id)itemB {
+    CGRect screen = [UIScreen mainScreen].bounds;
+    BOOL vertical = screen.size.height >= screen.size.width;
+    id layout = [self buildPairAppLayoutWithFirst:itemA second:itemB vertical:vertical];
+    if (!layout) { [self logSplitResult:@"FAIL: retry layout nil"]; return; }
+    [self requestSystemActivateLayout:layout];
+    self.pvPendingFirstBundleID = nil;
+    self.pvPendingFirstDisplayItem = nil;
+}
+
+
 // App 全屏前台启动；用户在 App 内从底部上滑（hook SBFluidSwitcherGestureManager），
 // 上滑到顶松手后把该 App 固定为第一半、弹 picker 选第二个，再用 layoutSplit 铺满两半。
 // 全程不创建"浮动小窗"中间态。
@@ -1658,13 +1705,29 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         return NO;
     }
 
-    // 到顶 → 该 App 固定为上半屏，再选第二个填下半屏
+    // 到顶 → 该 App 固定为上半屏，缓存它作为前台时的真实 displayItem（系统建的）
+    // 0.7.198: 保留 pvPendingFirstBundleID —— tryActivate 靠它判断第二个 App ≠ 第一个。
+    // 等 executeTransitionRequest: hook 拦到用户手动开的第二个 App 再激活。10s 超时防卡死。
     NSString *first = self.pvPendingFirstBundleID;
-    self.pvPendingFirstBundleID = nil;
     if (!first.length) return NO;
-    BOOL ok = [self createTopHalfWithBundleID:first];
-    // 只有窗口真的建出来了才接管（否则放行系统回桌面，避免卡死）
-    return ok;
+    id firstItem = [self displayItemForBundleID:first];
+    self.pvPendingFirstDisplayItem = firstItem;
+    NSLog(@"[InteractivePiP] PV split: cached firstItem=%@ for %@, waiting for second app",
+          firstItem ? NSStringFromClass([firstItem class]) : @"nil", first);
+    [self logSplitResult:[NSString stringWithFormat:@"panEnded cached first=%@ item=%@, awaiting 2nd app",
+                          first, firstItem ? NSStringFromClass([firstItem class]) : @"nil"]];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(weakSelf) s = weakSelf;
+        if (s && [s.pvPendingFirstBundleID isEqualToString:first]) {
+            NSLog(@"[InteractivePiP] PV split: 10s timeout, clearing pending first=%@", first);
+            [s logSplitResult:@"timeout 10s waiting for 2nd app, cleared"];
+            s.pvPendingFirstBundleID = nil;
+            s.pvPendingFirstDisplayItem = nil;
+        }
+    });
+    // 通知系统这个 App 不拦截全屏（它要回桌面待命）
+    return YES;
 }
 
 - (void)handleHomeGestureEnded {

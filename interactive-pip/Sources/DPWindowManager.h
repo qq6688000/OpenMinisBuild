@@ -38,6 +38,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)createSplitPairWithFirst:(NSString *)firstBundleID second:(NSString *)secondBundleID;
 /// 0.7.180: PV式 —— 松手后第一个 App 直接铺成上半屏，再选第二个填下半屏
 - (BOOL)createTopHalfWithBundleID:(NSString *)firstBundleID;
+/// 0.7.198: 分屏待命中，用户手动打开了第二个 App —— 拦截改判成分屏
+- (BOOL)tryActivatePendingSplitForLaunchedBundleID:(NSString *)bundleID request:(id)request;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;

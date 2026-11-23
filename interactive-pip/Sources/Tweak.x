@@ -410,6 +410,14 @@ static NSArray *DPInjectedShortcutItems(void) {
         } @catch (__unused NSException *e) {}
     }
 
+    // 0.7.198: 分屏待命中，用户手动打开的第二个 App —— 先放行 %orig 让系统正常
+    // 启动它（建好真实 scene + displayItem），延迟后再组 itemA(缓存) + itemB(真实) 分屏。
+    if (bid.length && [[DPWindowManager shared] isPVFullscreenSplitPending]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[DPWindowManager shared] tryActivatePendingSplitForLaunchedBundleID:bid request:request];
+        });
+    }
+
     BOOL shouldSuppress = [[DPWindowManager shared] shouldSuppressFullscreenForBundleID:bid];
     BOOL ok = %orig;
     if (shouldSuppress && bid.length) {
