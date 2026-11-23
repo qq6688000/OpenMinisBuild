@@ -1934,19 +1934,25 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
             if ([sig getArgumentTypeAtIndex:j][0] != 'q') valid = NO;
         }
         if (!valid) continue;
-        @try {
-            id allocated = [cls alloc];
-            id layout;
-            if (i == 0) {
-                // configuration: 1 = 分屏（PV 实测值），environment: 1
-                layout = ((id (*)(id, SEL, id, NSInteger, NSInteger, NSInteger))objc_msgSend)(allocated, sel, roles, 1, 1, 0);
-            } else {
-                layout = ((id (*)(id, SEL, id, NSInteger, NSInteger))objc_msgSend)(allocated, sel, roles, 1, i == 1 ? 0 : 1);
+        // 0.7.189: configuration 不写死，逐个试（1=fullscreen 2=split 3=center）
+        NSArray<NSNumber *> *cfgs = (n == 6) ? @[@2, @1, @3, @0] : @[@0];
+        for (NSNumber *cfg in cfgs) {
+            @try {
+                id allocated = [cls alloc];
+                id layout;
+                if (n == 6) {
+                    layout = ((id (*)(id, SEL, id, NSInteger, NSInteger, NSInteger))objc_msgSend)(
+                        allocated, sel, roles, (NSInteger)cfg.integerValue, 1, 0);
+                } else {
+                    layout = ((id (*)(id, SEL, id, NSInteger, NSInteger))objc_msgSend)(
+                        allocated, sel, roles, (NSInteger)cfg.integerValue, 1);
+                }
+                NSLog(@"[InteractivePiP] buildPairAppLayout %@ cfg=%@ -> %@",
+                      names[i], cfg, layout ? @"ok" : @"nil");
+                if (layout) return layout;
+            } @catch (NSException *e) {
+                NSLog(@"[InteractivePiP] buildPairAppLayout %@ cfg=%@ ex: %@", names[i], cfg, e);
             }
-            NSLog(@"[InteractivePiP] buildPairAppLayout %lu -> %@", (unsigned long)i+1, layout ? @"ok" : @"nil");
-            if (layout) return layout;
-        } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] buildPairAppLayout %@ ex: %@", names[i], e);
         }
     }
     return nil;
@@ -1955,159 +1961,67 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 /// 请求系统激活一个分屏 layout（PV: requestForActivatingAppLayout:）
 - (BOOL)requestSystemActivateLayout:(id)layout {
     if (!layout) return NO;
-    Class WS = NSClassFromString(@"SBMainWorkspace");
+
+    // 0.7.189: 真机 probe 出来的事实 —— 不再猜：
+    //   +[SBSwitcherTransitionRequest requestForActivatingAppLayout:]  @24@0:8@16
+    //   -[SBMainWorkspace executeTransitionRequest:]                   B24@0:8@16
+    Class TRCls = NSClassFromString(@"SBSwitcherTransitionRequest");
+    if (!TRCls) {
+        NSLog(@"[InteractivePiP] activate: no SBSwitcherTransitionRequest class");
+        return NO;
+    }
+    SEL factory = NSSelectorFromString(@"requestForActivatingAppLayout:");
+    if (![TRCls respondsToSelector:factory]) {
+        NSLog(@"[InteractivePiP] activate: class method missing");
+        return NO;
+    }
+
+    id request = nil;
+    @try {
+        request = ((id(*)(id, SEL, id))objc_msgSend)((id)TRCls, factory, layout);
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] activate: factory ex %@", e);
+        return NO;
+    }
+    NSLog(@"[InteractivePiP] activate: request=%@ layout=%@",
+          request ? NSStringFromClass([request class]) : @"nil",
+          NSStringFromClass([layout class]));
+    if (!request) return NO;
+
+    // 交给 SBMainWorkspace 执行
+    Class WSC = NSClassFromString(@"SBMainWorkspace");
     id workspace = nil;
-    if (WS && [WS respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-        @try { workspace = ((id(*)(id, SEL))objc_msgSend)(WS, NSSelectorFromString(@"sharedInstance")); }
+    if (WSC && [WSC respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+        @try { workspace = ((id(*)(id,SEL))objc_msgSend)(WSC, NSSelectorFromString(@"sharedInstance")); }
         @catch (__unused NSException *e) {}
     }
-    if (!workspace) { NSLog(@"[InteractivePiP] requestSystemActivate: no workspace"); return NO; }
+    if (!workspace) { NSLog(@"[InteractivePiP] activate: no workspace"); return NO; }
 
-    // 0.7.184: PV 用的是 +[? requestForActivatingAppLayout:] —— 类方法。
-    // 依次尝试：候选类上的类方法 → workspace 实例方法 → 直接提交 layout。
-    NSArray<NSString *> *factoryNames = @[@"requestForActivatingAppLayout:",
-                                          @"requestWithAppLayout:",
-                                          @"_requestForActivatingAppLayout:"];
-    NSArray<NSString *> *candidateClasses = @[@"SBMainWorkspaceTransitionRequest",
-                                             @"SBWorkspaceTransitionRequest",
-                                             @"SBMainWorkspace"];
-
-    for (NSString *clsName in candidateClasses) {
-        Class C = NSClassFromString(clsName);
-        if (!C) continue;
-        for (NSString *fname in factoryNames) {
-            SEL fsel = NSSelectorFromString(fname);
-            // 类方法
-            if (![C respondsToSelector:fsel]) continue;
+    SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
+    if ([workspace respondsToSelector:exec]) {
+        @try {
+            BOOL ok = ((BOOL(*)(id,SEL,id))objc_msgSend)(workspace, exec, request);
+            NSLog(@"[InteractivePiP] activate: executeTransitionRequest ok=%d", ok);
+            if (ok) return YES;
+        } @catch (NSException *e) {
+            NSLog(@"[InteractivePiP] activate: execute ex %@", e);
+        }
+    }
+    // 兜底：走 switcher content controller 的 performTransition 通道
+    id content = self.switcherContentController;
+    if (content) {
+        SEL perf = NSSelectorFromString(@"switcherContentController:performTransitionWithRequest:gestureInitiated:");
+        if ([content respondsToSelector:perf]) {
             @try {
-                id req = ((id(*)(id, SEL, id))objc_msgSend)((id)C, fsel, layout);
-                NSLog(@"[InteractivePiP] requestSystemActivate: %@ %@ -> %@", clsName, fname, req ? @"req" : @"nil");
-                if (!req) continue;
-                // req 自己可能能 execute
-                SEL selfExec = NSSelectorFromString(@"execute");
-                if ([req respondsToSelector:selfExec]) {
-                    ((void(*)(id, SEL))objc_msgSend)(req, selfExec);
-                    NSLog(@"[InteractivePiP] requestSystemActivate: executed via req execute, cls=%@", clsName);
-                    return YES;
-                }
-                SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
-                if ([workspace respondsToSelector:exec]) {
-                    BOOL ok = ((BOOL(*)(id, SEL, id))objc_msgSend)(workspace, exec, req);
-                    NSLog(@"[InteractivePiP] requestSystemActivate via %@/%@ workspace-exec ok=%d", clsName, fname, ok);
-                    if (ok) return YES;
-                }
+                ((void(*)(id,SEL,id,id,BOOL))objc_msgSend)(content, perf, nil, request, NO);
+                NSLog(@"[InteractivePiP] activate: performed via switcher content controller");
+                return YES;
             } @catch (NSException *e) {
-                NSLog(@"[InteractivePiP] requestSystemActivate %@/%@ ex: %@", clsName, fname, e);
+                NSLog(@"[InteractivePiP] activate: content ex %@", e);
             }
         }
     }
-
-    NSLog(@"[InteractivePiP] requestSystemActivate: trying SBSwitcherTransitionRequest path");
-    // 0.7.184: PV 实际用的路径 —— SBSwitcherTransitionRequest + setAppLayout: + setSource:
-    Class TRCls = NSClassFromString(@"SBSwitcherTransitionRequest");
-    if (TRCls) {
-        @try {
-            id req = [TRCls new];
-            // 0.7.188: 本工程已验证的真实 setter 是 setActivatingDisplayItem:，
-            // 以及 toAppLayout / transitionContext。按它们的真实形态填。
-            SEL setItem = NSSelectorFromString(@"setActivatingDisplayItem:");
-            SEL setLayout = NSSelectorFromString(@"setAppLayout:");
-            SEL setToLayout = NSSelectorFromString(@"setToAppLayout:");
-            // 先设 toAppLayout（双 item 布局）——这才是分屏形态
-            if ([req respondsToSelector:setToLayout]) {
-                ((void(*)(id, SEL, id))objc_msgSend)(req, setToLayout, layout);
-                NSLog(@"[InteractivePiP] req setToAppLayout ok");
-            }
-            if ([req respondsToSelector:setLayout]) {
-                ((void(*)(id, SEL, id))objc_msgSend)(req, setLayout, layout);
-                NSLog(@"[InteractivePiP] req setAppLayout ok");
-            }
-            // activatingDisplayItem 用一个真实 item（从 layout 里取第一个）
-            if ([req respondsToSelector:setItem]) {
-                id firstItem = nil;
-                SEL itemsSel = NSSelectorFromString(@"allItems");
-                if ([layout respondsToSelector:itemsSel]) {
-                    id arr = ((id(*)(id,SEL))objc_msgSend)(layout, itemsSel);
-                    if ([arr isKindOfClass:NSArray.class] && [arr count]) firstItem = [arr firstObject];
-                }
-                if (firstItem) {
-                    ((void(*)(id, SEL, id))objc_msgSend)(req, setItem, firstItem);
-                    NSLog(@"[InteractivePiP] req setActivatingDisplayItem=%@", NSStringFromClass([firstItem class]));
-                }
-            }
-            NSLog(@"[InteractivePiP] requestSystemActivate: built SBSwitcherTransitionRequest %@", req);
-
-            // 0.7.187: 交给我们已 hook 验证过的真实转场接收者。
-            // 本机 iOS 上 SBFluidSwitcherViewController / SBMainSwitcherControllerCoordinator
-            // 都实现了 switcherContentController:performTransitionWithRequest:gestureInitiated:，
-            // 优先用 switcher 里登记的 controller，再退到 sharedInstance。
-            id content = self.switcherContentController;
-            if (!content) {
-                for (NSString *cn in @[@"SBFluidSwitcherViewController", @"SBMainSwitcherControllerCoordinator"]) {
-                    Class C = NSClassFromString(cn);
-                    if (!C) continue;
-                    if ([C respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-                        id inst = ((id(*)(id,SEL))objc_msgSend)(C, NSSelectorFromString(@"sharedInstance"));
-                        if ([inst respondsToSelector:@selector(switcherContentController:performTransitionWithRequest:gestureInitiated:)]) {
-                            content = inst; break;
-                        }
-                        for (NSString *g in @[@"switcherContentController", @"_switcherContentController"]) {
-                            SEL gs = NSSelectorFromString(g);
-                            if ([inst respondsToSelector:gs]) {
-                                id c2 = ((id(*)(id,SEL))objc_msgSend)(inst, gs);
-                                if (c2) { content = c2; break; }
-                            }
-                        }
-                        if (content) break;
-                    }
-                }
-            }
-            NSLog(@"[InteractivePiP] requestSystemActivate: content=%@", content ? NSStringFromClass([content class]) : @"nil");
-            NSLog(@"[InteractivePiP] requestSystemActivate: content=%@", content ? NSStringFromClass([content class]) : @"nil");
-            if (content) {
-                for (NSString *m in @[@"performTransitionWithRequest:gestureInitiated:",
-                                      @"performTransitionWithRequest:",
-                                      @"requestTransitionWithRequest:"]) {
-                    SEL ms = NSSelectorFromString(m);
-                    if (![content respondsToSelector:ms]) continue;
-                    NSMethodSignature *sig = [content methodSignatureForSelector:ms];
-                    if (sig.numberOfArguments == 3) {
-                        ((void(*)(id,SEL,id))objc_msgSend)(content, ms, req);
-                    } else if (sig.numberOfArguments == 4) {
-                        ((void(*)(id,SEL,id,BOOL))objc_msgSend)(content, ms, req, NO);
-                    } else continue;
-                    NSLog(@"[InteractivePiP] requestSystemActivate: performed via %@", m);
-                    // 0.7.187: 给用户可见反馈，便于无日志时判断是否走到这一步
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{
-                        NSLog(@"[InteractivePiP] nativeSplit: if you still see ONE app, the transition was ignored");
-                    });
-                    return YES;
-                }
-            }
-        } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] requestSystemActivate switcherReq ex: %@", e);
-        }
-    }
-
-    // 实例方法兜底
-    for (NSString *fname in factoryNames) {
-        SEL fsel = NSSelectorFromString(fname);
-        if (![workspace respondsToSelector:fsel]) continue;
-        @try {
-            id req = ((id(*)(id, SEL, id))objc_msgSend)(workspace, fsel, layout);
-            if (!req) continue;
-            SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
-            if ([workspace respondsToSelector:exec]) {
-                BOOL ok = ((BOOL(*)(id, SEL, id))objc_msgSend)(workspace, exec, req);
-                NSLog(@"[InteractivePiP] requestSystemActivate instance %@ ok=%d", fname, ok);
-                if (ok) return YES;
-            }
-        } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] requestSystemActivate instance %@ ex: %@", fname, e);
-        }
-    }
-    NSLog(@"[InteractivePiP] requestSystemActivate: ALL paths failed");
+    NSLog(@"[InteractivePiP] activate: ALL FAILED");
     return NO;
 }
 
