@@ -2050,30 +2050,30 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     return parked;
 }
 
-/// 0.7.212: 照 PV —— 把当前前台的 App 视图收成贴边抽屉。
+/// 0.7.213: 修复 0.7.212 栈溢出崩溃 —— 上一版把系统 keyWindow 当 UIView 塞进子视图，
+/// 导致 UIWindow convertRect:fromCoordinateSpace: 递归爆栈（STACK GUARD / SIGSEGV）。
+/// 铁律：绝不动系统 UIWindow 的视图层级。抽屉只能操作我们自己创建的 window。
 - (BOOL)parkForegroundAppIntoPipDrawer:(NSString *)bundleID {
     if (!bundleID.length) return NO;
-    // 1) 先问系统要不要给 PiP 容器（PV 的 PVPIPEmbedding 路径）
+    // 1) 探测系统 PiP 容器（PV 的 PVPIPEmbedding 路径）
     id pipContainer = [[DPPipDrawerController shared] makeSystemPiPContainerForBundleID:bundleID];
     [self logSplitResult:[NSString stringWithFormat:@"park pipContainer=%@",
                           pipContainer ? NSStringFromClass([pipContainer class]) : @"nil"]];
 
-    // 2) 找该 App 当前的前台 scene 视图（挂起前它是活的）
+    // 2) 只接受我们自己拥有的视图（overlayRoot / 我们窗里的内容），绝不碰系统 UIWindow。
     UIView *contentView = nil;
-    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-        if (![sc isKindOfClass:UIWindowScene.class]) continue;
-        UIWindowScene *ws = (UIWindowScene *)sc;
-        if (ws.activationState != UISceneActivationStateForegroundActive) continue;
-        for (UIWindow *w in ws.windows) {
-            if (w.isKeyWindow) { contentView = w; break; }
-        }
-        if (contentView) break;
+    if ([self respondsToSelector:NSSelectorFromString(@"overlayRoot")]) {
+        @try {
+            UIView *root = [self valueForKey:@"overlayRoot"];
+            if ([root isKindOfClass:UIView.class] && root.superview) contentView = root;
+        } @catch (__unused NSException *e) {}
     }
     if (!contentView) {
-        [self logSplitResult:@"park: no active window found"];
+        [self logSplitResult:@"park: no owned view to park (refusing to touch system UIWindow)"];
         return NO;
     }
-    UIView *host = contentView.superview ?: contentView;
+    UIView *host = contentView.superview;
+    if (!host) return NO;
     BOOL ok = [[DPPipDrawerController shared] parkContentView:contentView
                                                    inHostView:host
                                                         edge:1

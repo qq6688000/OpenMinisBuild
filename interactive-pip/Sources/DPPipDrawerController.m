@@ -31,6 +31,19 @@ static NSString *const kDPDrawerTongueKey = @"dp.drawer.tongue";
                   edge:(NSInteger)edge
                bundleID:(NSString *)bundleID {
     if (!contentView) return NO;
+    // 0.7.213 铁律：绝不把 UIWindow 变成别处的子视图 ——
+    // UIWindow 一旦成为非 root 子视图，convertRect:fromCoordinateSpace: 会递归爆栈
+    // （0.7.212 就是这样让 SpringBoard SIGSEGV / STACK GUARD 连续崩 4 次）。
+    if ([contentView isKindOfClass:UIWindow.class] || [hostView isKindOfClass:UIWindow.class]) {
+        NSLog(@"[InteractivePiP] refused to park UIWindow (would stack-overflow) content=%@ host=%@",
+              NSStringFromClass([contentView class]), NSStringFromClass([hostView class]));
+        return NO;
+    }
+    // 也不能挂到一个会反过来包含自己的视图里
+    if ([hostView isDescendantOfView:contentView] || hostView == contentView) {
+        NSLog(@"[InteractivePiP] refused: host is descendant of content");
+        return NO;
+    }
     [self tearDown];
 
     _contentView = contentView;
