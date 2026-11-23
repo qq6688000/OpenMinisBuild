@@ -617,6 +617,19 @@ static NSArray *DPInjectedShortcutItems(void) {
     NSArray *arr = [layouts isKindOfClass:[NSArray class]] ? layouts : nil;
     DPWindowManager *wm = [DPWindowManager shared];
     wm.switcherSourceCalls++;
+    // 0.7.208: 无条件落盘钩子入口 —— 分清 REAL APP LAYOUTS 没出现是「开关没开」还是「钩子没触发」
+    {
+        BOOL dbg = [[NSUserDefaults standardUserDefaults] boolForKey:@"sg.split.dumpLayouts"];
+        NSMutableArray *ids = [NSMutableArray array];
+        for (id L in arr) {
+            id di = nil;
+            @try { di = [L valueForKey:@"displayItem"]; } @catch (__unused NSException *e) {}
+            [ids addObject:[NSString stringWithFormat:@"%@(di=%@)", NSStringFromClass([L class]),
+                            di ? NSStringFromClass([di class]) : @"nil"]];
+        }
+        [wm logSplitResult:[NSString stringWithFormat:@"layoutHook fired dump=%d count=%lu %@",
+                            dbg, (unsigned long)arr.count, ids]];
+    }
     [wm observeSwitcherContentController:controller];
     if (arr) {
         id ourLayout = [wm currentSwitcherLayout];
