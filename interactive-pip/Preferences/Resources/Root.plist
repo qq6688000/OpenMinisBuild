@@ -197,6 +197,20 @@
 			<string>操作</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.seagull.interactivepip/settings.changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.seagull.interactivepip</string>
+			<key>key</key>
+			<string>sg.split.dumpLayouts</string>
+			<key>label</key>
+			<string>诊断 dump 布局</string>
+		</dict>
+		<dict>
 			<key>action</key>
 			<string>respring</string>
 			<key>cell</key>
@@ -216,7 +230,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>交互分屏 Duo 0.7.206 · 原生 arm64e · RootHide。全屏 App 上滑分屏。</string>
+			<string>交互分屏 Duo 0.7.207 · 原生 arm64e · RootHide。全屏 App 上滑分屏。</string>
 			<key>label</key>
 			<string>关于</string>
 		</dict>
