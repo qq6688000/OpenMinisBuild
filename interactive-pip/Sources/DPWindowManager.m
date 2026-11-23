@@ -2108,10 +2108,12 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         [self logSplitResult:@"park: PV-native PiP controller NOT available, fallback to floating card"];
     }
 
-    // 已经有窗口挂在外面了就不重复建
-    if (self.floatingWindows.count > 0) {
-        [self logSplitResult:@"park: already have floating windows, skip"];
-        return NO;
+    // 0.7.217: 允许多张挂起卡片，逐个错开位置（最多 4 张，再多就把最旧的关掉）
+    while (self.floatingWindows.count >= 4) {
+        DPFloatingWindow *old = self.floatingWindows.lastObject;
+        [self logSplitResult:@"park: too many cards, closing oldest"];
+        @try { [old closeAnimated:NO completion:nil]; } @catch (__unused NSException *e) {}
+        if (self.floatingWindows.count >= 4) break;
     }
     [self logSplitResult:[NSString stringWithFormat:@"park: creating floating card for %@", bundleID]];
     @try {
@@ -2124,17 +2126,22 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     BOOL ok = (self.floatingWindows.count > 0);
     if (ok) {
         DPFloatingWindow *w = self.floatingWindows.firstObject;
-        // 压成"挂起"态：右侧竖条小卡片，不挡视线
+        // 压成"挂起"态：右侧竖条小卡片，不挡视线；多张时往上错开
         CGFloat screenW = CGRectGetWidth([UIScreen mainScreen].bounds);
         CGFloat screenH = CGRectGetHeight([UIScreen mainScreen].bounds);
         CGFloat cardW = screenW * 0.34;
         CGFloat cardH = screenH * 0.30;
-        CGRect frame = CGRectMake(screenW - cardW - 12,
-                                  screenH - cardH - 100,
-                                  cardW, cardH);
+        NSUInteger idx = self.floatingWindows.count - 1;   // 本次新加的排最前
+        CGFloat offsetY = (CGFloat)idx * (cardH * 0.42);
+        CGFloat topY = 90 + offsetY;
+        // 别掉出屏幕
+        CGFloat maxY = screenH - cardH - 40;
+        CGFloat y = MIN(topY, maxY);
+        CGRect frame = CGRectMake(screenW - cardW - 12, y, cardW, cardH);
         [w setFrame:frame];
         [w commitSceneLayout];
-        [self logSplitResult:[NSString stringWithFormat:@"park OK card frame=%@", NSStringFromCGRect(frame)]];
+        [self logSplitResult:[NSString stringWithFormat:@"park OK card idx=%lu frame=%@",
+                              (unsigned long)idx, NSStringFromCGRect(frame)]];
     } else {
         [self logSplitResult:@"park FAILED: no window created"];
     }

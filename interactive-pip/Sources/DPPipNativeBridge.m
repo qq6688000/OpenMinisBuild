@@ -54,9 +54,24 @@ static id DPCall(id obj, NSString *selName, NSArray *args) {
               coordCls != Nil, pipCls != Nil, containerCls != Nil]);
     if (!coordCls) return nil;
 
+    // 0.7.217: 把 coordinator / controller 的类方法名全部打进日志，找真实访问器
+    for (Class c in @[coordCls, pipCls ?: NSObject.class]) {
+        if (!c) continue;
+        unsigned int n = 0;
+        Method *ms = class_copyMethodList(object_getClass(c), &n);
+        NSMutableString *names = [NSMutableString string];
+        for (unsigned int i = 0; i < n && i < 40; i++) {
+            [names appendFormat:@"%@,", NSStringFromSelector(method_getName(ms[i]))];
+        }
+        free(ms);
+        DPPipLog([NSString stringWithFormat:@"PIP %@ class-methods: %@",
+                  NSStringFromClass(c), names]);
+    }
+
     // 1) 拿 coordinator 单例（PV 也走 sharedInstance）
     id coord = nil;
-    for (NSString *n in @[@"sharedInstance", @"sharedCoordinator", @"shared"]) {
+    for (NSString *n in @[@"sharedInstance", @"sharedCoordinator", @"shared",
+                          @"sharedInstanceIfExists", @"defaultCoordinator"]) {
         coord = DPCall(coordCls, n, @[]);
         if (coord) { DPPipLog([NSString stringWithFormat:@"PIP coordinator via +%@ -> %@", n,
                               NSStringFromClass(object_getClass(coord))]); break; }
@@ -65,7 +80,21 @@ static id DPCall(id obj, NSString *selName, NSArray *args) {
     if (!coord && [coordCls instancesRespondToSelector:NSSelectorFromString(@"sharedInstance")]) {
         coord = DPCall([coordCls new], @"sharedInstance", @[]);
     }
-    if (!coord) { DPPipLog(@"PIP coordinator NOT FOUND"); return nil; }
+    if (!coord) { DPPipLog(@"PIP coordinator NOT FOUND"); }
+    // 0.7.217: 即使拿不到 coordinator，也直接从 SBPIPController 类本身试单例
+    if (!coord && pipCls) {
+        for (NSString *n in @[@"sharedInstance", @"shared", @"defaultController",
+                              @"sharedInstanceIfExists"]) {
+            id c = DPCall(pipCls, n, @[]);
+            if (c) {
+                DPPipLog([NSString stringWithFormat:@"PIP controller direct +%@ -> %@",
+                          n, NSStringFromClass(object_getClass(c))]);
+                return c;
+            }
+        }
+        DPPipLog(@"PIP controller direct: all nil");
+    }
+    if (!coord) return nil;
 
     // 2) controllerForType:  (参数类型 q)
     // SBWindowingItemPIPControllerType / SBPIPControllerType 常见取值 0/1/2 都试
