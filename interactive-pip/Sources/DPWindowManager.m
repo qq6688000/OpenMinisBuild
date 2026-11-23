@@ -1616,6 +1616,69 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         } @catch (__unused NSException *e) {}
     }
     [self logSplitResult:[NSString stringWithFormat:@"diagApp %@: done", bundleID]];
+
+    // 0.7.202: 照 PV 正解 —— 走 SBMainDisplaySceneManager / sceneEntity / _displayItemForEntity:
+    // 我之前两条路（FBSceneManager / app.displayItem）对象就找错了。
+    Class MainDSM = NSClassFromString(@"SBMainDisplaySceneManager");
+    if (MainDSM && [MainDSM respondsToSelector:NSSelectorFromString(@"mainDisplaySceneManager")]) {
+        id mdsm = ((id(*)(id, SEL))objc_msgSend)(MainDSM, NSSelectorFromString(@"mainDisplaySceneManager"));
+        [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ MainDisplaySceneManager=%@",
+                              bundleID, mdsm ? NSStringFromClass([mdsm class]) : @"nil"]];
+        if (mdsm) {
+            // 试常见集合属性
+            for (NSString *k in @[@"scenes", @"appLayouts", @"displayItems", @"sceneEntities",
+                                  @"activeScene", @"mainScene", @"foregroundScene"]) {
+                @try {
+                    id v = [mdsm valueForKey:k];
+                    if (v) [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ MDSM.%@ = %@ (count=%lu)",
+                                                 bundleID, k, NSStringFromClass([v class]),
+                                                 (unsigned long)([v isKindOfClass:NSArray.class] ? [v count] : 0)]];
+                } @catch (__unused NSException *e) {}
+            }
+            // 从 appCtrl 拿 app，再从 app 拿 sceneEntity，最后 _displayItemForEntity:
+            Class SBAppCtrl = NSClassFromString(@"SBApplicationController");
+            id appCtrl = (SBAppCtrl && [SBAppCtrl respondsToSelector:NSSelectorFromString(@"sharedInstance")])
+                ? ((id(*)(id, SEL))objc_msgSend)(SBAppCtrl, NSSelectorFromString(@"sharedInstance")) : nil;
+            id app = (appCtrl && [appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")])
+                ? ((id(*)(id, SEL, id))objc_msgSend)(appCtrl, NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundleID) : nil;
+            [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ app=%@ probing sceneHandle/entity",
+                                  bundleID, app ? NSStringFromClass([app class]) : @"nil"]];
+            if (app) {
+                for (NSString *k in @[@"sceneHandle", @"_sceneHandle", @"sceneEntity", @"_sceneEntity",
+                                      @"applicationSceneEntity", @"_applicationSceneEntity",
+                                      @"mainSceneHandle", @"_mainDisplaySceneHandle", @"handle"]) {
+                    id ent = nil;
+                    @try { ent = [app valueForKey:k]; } @catch (__unused NSException *e) {}
+                    if (!ent) continue;
+                    [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ app.%@ = %@",
+                                          bundleID, k, NSStringFromClass([ent class])]];
+                    // 关键：用 PV 的 _displayItemForEntity: 从 entity 取真实 item
+                    SEL die = NSSelectorFromString(@"_displayItemForEntity:");
+                    id owner = mdsm;
+                    if (![owner respondsToSelector:die] && appCtrl && [appCtrl respondsToSelector:die]) owner = appCtrl;
+                    if (owner && [owner respondsToSelector:die]) {
+                        @try {
+                            id di = ((id(*)(id, SEL, id))objc_msgSend)(owner, die, ent);
+                            [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ _displayItemForEntity: -> %@",
+                                                  bundleID, di ? NSStringFromClass([di class]) : @"nil"]];
+                            if (di) {
+                                if (!self.pvRealItemCache) self.pvRealItemCache = [NSMutableDictionary dictionary];
+                                self.pvRealItemCache[bundleID] = di;
+                                [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ CACHED real item via entity!", bundleID]];
+                            }
+                        } @catch (NSException *e) {
+                            [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ _displayItemForEntity: EX %@",
+                                                  bundleID, e.reason]];
+                        }
+                    } else {
+                        [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ nobody responds _displayItemForEntity:", bundleID]];
+                    }
+                }
+            }
+        }
+    } else {
+        [self logSplitResult:[NSString stringWithFormat:@"diagApp %@ no SBMainDisplaySceneManager/mainDisplaySceneManager", bundleID]];
+    }
 }
 
 
@@ -2389,12 +2452,46 @@ static id DPDynamicGet(id obj, NSString *key) {
     if (!bundleID) return nil;
     // 0.7.199: 优先查 hook 抓的系统自建真实 item 缓存表（iOS16.6 现场取会 nil）
     id cached = self.pvRealItemCache[bundleID];
-    if (cached) {
-        [self logSplitResult:[NSString stringWithFormat:@"di %@ cache HIT %@", bundleID, NSStringFromClass([cached class])]];
-        return cached;
-    }
+    if (cached) return cached;
     NSLog(@"[InteractivePiP] displayItemForBundleID: try %@", bundleID);
-    [self logSplitResult:[NSString stringWithFormat:@"di %@ cache MISS, try live", bundleID]];
+
+    // 0.7.202: PV 正解优先 —— SBMainDisplaySceneManager + app.sceneHandle + _displayItemForEntity:
+    // 我之前两条路（FBSceneManager / app.displayItem）对象就找错了，iOS16.6 上都断。
+    Class SBAppCtrl = NSClassFromString(@"SBApplicationController");
+    id appCtrl = (SBAppCtrl && [SBAppCtrl respondsToSelector:NSSelectorFromString(@"sharedInstance")])
+        ? ((id(*)(id, SEL))objc_msgSend)(SBAppCtrl, NSSelectorFromString(@"sharedInstance")) : nil;
+    id app = (appCtrl && [appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")])
+        ? ((id(*)(id, SEL, id))objc_msgSend)(appCtrl, NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundleID) : nil;
+    if (app) {
+        Class MainDSM = NSClassFromString(@"SBMainDisplaySceneManager");
+        id mdsm = (MainDSM && [MainDSM respondsToSelector:NSSelectorFromString(@"mainDisplaySceneManager")])
+            ? ((id(*)(id, SEL))objc_msgSend)(MainDSM, NSSelectorFromString(@"mainDisplaySceneManager")) : nil;
+        SEL die = NSSelectorFromString(@"_displayItemForEntity:");
+        // _displayItemForEntity: 的接收者：优先 MainDisplaySceneManager，回退 appCtrl
+        id owner = (mdsm && [mdsm respondsToSelector:die]) ? mdsm
+                 : ((appCtrl && [appCtrl respondsToSelector:die]) ? appCtrl : nil);
+        if (owner) {
+            for (NSString *k in @[@"sceneHandle", @"_sceneHandle", @"sceneEntity", @"_sceneEntity",
+                                  @"applicationSceneEntity", @"_applicationSceneEntity",
+                                  @"mainSceneHandle", @"_mainDisplaySceneHandle", @"handle",
+                                  @"_scene", @"scene"]) {
+                id ent = nil;
+                @try { ent = [app valueForKey:k]; } @catch (__unused NSException *e) {}
+                if (!ent) continue;
+                @try {
+                    id di = ((id(*)(id, SEL, id))objc_msgSend)(owner, die, ent);
+                    NSLog(@"[InteractivePiP] PV path %@.%@ -> item %@",
+                          bundleID, k, di ? NSStringFromClass([di class]) : @"nil");
+                    if (di) {
+                        if (!self.pvRealItemCache) self.pvRealItemCache = [NSMutableDictionary dictionary];
+                        self.pvRealItemCache[bundleID] = di;
+                        return di;
+                    }
+                } @catch (__unused NSException *e) {}
+            }
+        }
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"di %@ PV path miss, fall to legacy", bundleID]];
 
     // 1) FBSceneManager: 遍历已激活场景，找 bundleID 匹配的 scene 实体 → displayItem
     Class FBSceneManagerCls = NSClassFromString(@"FBSceneManager");
@@ -2429,13 +2526,7 @@ static id DPDynamicGet(id obj, NSString *key) {
     }
 
     // 2) SBApplicationController: applicationWithBundleIdentifier → displayItem
-    Class SBAppCtrl = NSClassFromString(@"SBApplicationController");
-    id appCtrl = nil;
-    if (SBAppCtrl && [SBAppCtrl respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-        @try {
-            appCtrl = ((id(*)(id, SEL))objc_msgSend)(SBAppCtrl, NSSelectorFromString(@"sharedInstance"));
-        } @catch (__unused NSException *e) {}
-    }
+    //    (0.7.202: SBAppCtrl/appCtrl 已在 PV 正路里取过，这里直接复用)
     [self logSplitResult:[NSString stringWithFormat:@"di %@ appCtrl=%@", bundleID, appCtrl ? @"ok" : @"nil"]];
     if (appCtrl) {
         if ([appCtrl respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")]) {
