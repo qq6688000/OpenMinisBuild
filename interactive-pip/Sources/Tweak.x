@@ -626,12 +626,20 @@ static NSArray *DPInjectedShortcutItems(void) {
             layouts = m;
             wm.switcherAppendCalls++;
         }
-        // 0.7.205: 一次性 dump 系统真实 SBAppLayout 树 —— 里面就有每个 App 的真实 displayItem
-        // （我 20 版缺的就是它）。切换器出现时系统会调本方法，QQ/抖音的 layout 都在 arr 里。
+        // 0.7.206: dump 默认关闭（在切换器同步主路径做深度反射会崩 SpringBoard 进安全模式）。
+        // 只在用户手动打开开关 sg.split.dumpLayouts 后，下一帧异步在后台线程跑一次。
         static BOOL dumped = NO;
-        if (!dumped && arr.count > 0) {
+        BOOL wantDump = [[NSUserDefaults standardUserDefaults] boolForKey:@"sg.split.dumpLayouts"];
+        if (!dumped && wantDump && arr.count > 0) {
             dumped = YES;
-            [wm dumpRealAppLayouts:arr];
+            NSArray *snapshot = [arr copy];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                @try {
+                    [wm dumpRealAppLayouts:snapshot];
+                } @catch (NSException *e) {
+                    NSLog(@"[InteractivePiP] dumpRealAppLayouts ex %@", e);
+                }
+            });
         }
     }
     return layouts;

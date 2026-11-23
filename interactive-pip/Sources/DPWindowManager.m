@@ -1600,11 +1600,15 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         Ivar *ivars = class_copyIvarList(c, &iv);
         for (unsigned int i = 0; i < iv; i++) {
             NSString *in_ = @(ivar_getName(ivars[i]));
-            if ([in_ hasPrefix:@"_"]) {
+            if (![in_ hasPrefix:@"_"]) continue;
+            // 只读对象类型 ivar：非 @ 类型（int/指针/struct）用 object_getIvar 会拿到垃圾值 → 崩
+            const char *enc = ivar_getTypeEncoding(ivars[i]);
+            if (!enc || enc[0] != '@') continue;
+            @try {
                 id v = object_getIvar(obj, ivars[i]);
                 if (v) { emit([NSString stringWithFormat:@"  ivar %@ = %@", in_, NSStringFromClass([v class])]);
                          DPDumpObj(v, depth + 1, maxDepth, seen, emit); }
-            }
+            } @catch (__unused NSException *e) {}
         }
         free(ivars);
         c = [c superclass];
@@ -1627,7 +1631,9 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     for (id layout in layouts) {
         if (!layout) continue;
         [self logSplitResult:[NSString stringWithFormat:@"--- SBAppLayout %@ ---", NSStringFromClass([layout class])]];
-        DPDumpObj(layout, 0, 2, [NSMutableSet set], ^(NSString *line) {
+        // 深度 1：只展开 layout 本身 + 它的直接 items，不再往 SBDisplayItem 深处递归
+        // （0.7.205 深度 2 在主线程同步跑触发了安全模式；现在后台线程 + 深度 1 更安全）
+        DPDumpObj(layout, 0, 1, [NSMutableSet set], ^(NSString *line) {
             [self logSplitResult:line];
         });
     }
