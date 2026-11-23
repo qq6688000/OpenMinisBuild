@@ -1,6 +1,6 @@
 Package: com.seagull.interactivepip
 Name: InteractivePiP Duo
-Version: 0.7.191
+Version: 0.7.192
 Architecture: iphoneos-arm64e
 Description: Native live-scene floating windows and dual-app split for iOS 16 RootHide. True arm64e (Apple ld -fixup_chains).
 Maintainer: InteractivePiP Contributors

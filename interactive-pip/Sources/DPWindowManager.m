@@ -2003,7 +2003,8 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 /// 请求系统激活一个分屏 layout（PV: requestForActivatingAppLayout:）
 - (BOOL)requestSystemActivateLayout:(id)layout {
-    if (!layout) return NO;
+    [self logSplitResult:@"requestSystemActivateLayout called"];
+    if (!layout) { [self logSplitResult:@"FAIL: nil layout"]; return NO; }
 
     // 0.7.189: 真机 probe 出来的事实 —— 不再猜：
     //   +[SBSwitcherTransitionRequest requestForActivatingAppLayout:]  @24@0:8@16
@@ -2011,11 +2012,13 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     Class TRCls = NSClassFromString(@"SBSwitcherTransitionRequest");
     if (!TRCls) {
         NSLog(@"[InteractivePiP] activate: no SBSwitcherTransitionRequest class");
+        [self logSplitResult:@"FAIL: no SBSwitcherTransitionRequest class"];
         return NO;
     }
     SEL factory = NSSelectorFromString(@"requestForActivatingAppLayout:");
     if (![TRCls respondsToSelector:factory]) {
         NSLog(@"[InteractivePiP] activate: class method missing");
+        [self logSplitResult:@"FAIL: requestForActivatingAppLayout: missing"];
         return NO;
     }
 
@@ -2024,6 +2027,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         request = ((id(*)(id, SEL, id))objc_msgSend)((id)TRCls, factory, layout);
     } @catch (NSException *e) {
         NSLog(@"[InteractivePiP] activate: factory ex %@", e);
+        [self logSplitResult:[NSString stringWithFormat:@"FAIL: factory ex %@", e.reason]];
         return NO;
     }
     NSLog(@"[InteractivePiP] activate: request=%@ layout=%@",
@@ -2032,7 +2036,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     [self logSplitResult:[NSString stringWithFormat:@"request=%@ layout=%@",
                           request ? NSStringFromClass([request class]) : @"nil",
                           NSStringFromClass([layout class])]];
-    if (!request) return NO;
+    if (!request) { [self logSplitResult:@"FAIL: request nil"]; return NO; }
 
     // 交给 SBMainWorkspace 执行
     Class WSC = NSClassFromString(@"SBMainWorkspace");
@@ -2041,9 +2045,18 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         @try { workspace = ((id(*)(id,SEL))objc_msgSend)(WSC, NSSelectorFromString(@"sharedInstance")); }
         @catch (__unused NSException *e) {}
     }
-    if (!workspace) { NSLog(@"[InteractivePiP] activate: no workspace"); return NO; }
+    if (!workspace) {
+        NSLog(@"[InteractivePiP] activate: no workspace");
+        [self logSplitResult:@"FAIL: no SBMainWorkspace"];
+        return NO;
+    }
+    [self logSplitResult:[NSString stringWithFormat:@"workspace=%@", NSStringFromClass([workspace class])]];
 
+    [self logSplitResult:@"entered execute stage"];
     SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
+    if (![workspace respondsToSelector:exec]) {
+        [self logSplitResult:@"FAIL: workspace lacks executeTransitionRequest:"];
+    }
     if ([workspace respondsToSelector:exec]) {
         @try {
             BOOL ok = ((BOOL(*)(id,SEL,id))objc_msgSend)(workspace, exec, request);
@@ -2052,6 +2065,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
             if (ok) return YES;
         } @catch (NSException *e) {
             NSLog(@"[InteractivePiP] activate: execute ex %@", e);
+            [self logSplitResult:[NSString stringWithFormat:@"FAIL: execute ex %@", e.reason]];
         }
     }
     // 兜底：走 switcher content controller 的 performTransition 通道
@@ -2069,6 +2083,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         }
     }
     NSLog(@"[InteractivePiP] activate: ALL FAILED");
+    [self logSplitResult:@"FAIL: ALL paths failed"];
     return NO;
 }
 
