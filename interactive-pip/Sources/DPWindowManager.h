@@ -40,6 +40,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (BOOL)createTopHalfWithBundleID:(NSString *)firstBundleID;
 /// 0.7.198: 分屏待命中，用户手动打开了第二个 App —— 拦截改判成分屏
 - (BOOL)tryActivatePendingSplitForLaunchedBundleID:(NSString *)bundleID request:(id)request;
+/// 0.7.199: 每次转场都抓 request 里的系统自建真实 displayItem 按 bundleID 缓存
+- (void)cacheRealDisplayItemFromRequest:(id)request bundleID:(NSString *)bundleID;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;

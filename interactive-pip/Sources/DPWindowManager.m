@@ -65,6 +65,7 @@
 @property (nonatomic) BOOL homeGestureSettling;
 @property (nonatomic, copy, nullable) NSString *pvPendingFirstBundleID; // 0.7.178: PV式全屏分屏待命的第一个App
 @property (nonatomic, strong, nullable) id pvPendingFirstDisplayItem;   // 0.7.198: 第一个App前台时缓存的真实displayItem
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, id> *pvRealItemCache; // 0.7.199: bundleID -> 系统自建真实displayItem
 @property (nonatomic) BOOL pvSplitGestureArmed; // 上滑手势是否已就绪（前台是我们的App）
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
 - (void)hideFloatingOnHome;
@@ -1551,6 +1552,30 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 #pragma mark - PV-style fullscreen split (0.7.178)
 
+// 0.7.199: executeTransitionRequest: 每次触发都把 request 里的系统自建真实 displayItem
+// 按 bundleID 缓存。上滑待命和第二个 App 组分屏都从这张表取真实 item，不再靠
+// displayItemForBundleID:（它在 iOS16.6 取不到）也不手拼。
+- (void)cacheRealDisplayItemFromRequest:(id)request bundleID:(NSString *)bundleID {
+    if (!request || !bundleID.length) return;
+    id item = nil;
+    @try { item = [request valueForKey:@"activatingDisplayItem"]; } @catch (__unused NSException *e) {}
+    if (!item) { @try { item = [request valueForKey:@"displayItem"]; } @catch (__unused NSException *e) {} }
+    if (!item) return;
+    if (!self.pvRealItemCache) self.pvRealItemCache = [NSMutableDictionary dictionary];
+    self.pvRealItemCache[bundleID] = item;
+    NSLog(@"[InteractivePiP] cached real item %@ -> %@", bundleID, NSStringFromClass([item class]));
+}
+
+// 从缓存表取真实 item，取不到回退 displayItemForBundleID:
+- (nullable id)realDisplayItemForBundleID:(NSString *)bundleID {
+    if (!bundleID.length) return nil;
+    id item = self.pvRealItemCache[bundleID];
+    if (item) return item;
+    return [self displayItemForBundleID:bundleID];
+}
+
+
+
 // 0.7.198: 分屏待命中，用户手动打开了第二个 App。系统正在为它建真实 displayItem，
 // 我们从 transition request 取它，跟 panEnded 时缓存的第一个 App 真实 item 组分屏。
 // 返回 YES 表示已接管（hook 不再走单开）。
@@ -2308,6 +2333,9 @@ static id DPDynamicGet(id obj, NSString *key) {
 
 - (nullable id)displayItemForBundleID:(NSString *)bundleID {
     if (!bundleID) return nil;
+    // 0.7.199: 优先查 hook 抓的系统自建真实 item 缓存表（iOS16.6 现场取会 nil）
+    id cached = self.pvRealItemCache[bundleID];
+    if (cached) return cached;
     NSLog(@"[InteractivePiP] displayItemForBundleID: try %@", bundleID);
 
     // 1) FBSceneManager: 遍历已激活场景，找 bundleID 匹配的 scene 实体 → displayItem
