@@ -1065,39 +1065,69 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 /// 然后选第二个 App 填下半屏。
 - (BOOL)createTopHalfWithBundleID:(NSString *)firstBundleID {
     if (!firstBundleID.length) return NO;
-    [self leaveSplit];
-    [self install];
-    for (DPFloatingWindow *w in [self.mutableFloatingWindows copy]) {
-        [self closeFloatingWindow:w animated:NO];
-    }
-    self.creatingSplit = YES;
-    [self openFloatingWithBundleID:firstBundleID];
-    self.creatingSplit = NO;
-
-    DPFloatingWindow *first = nil;
-    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
-        if ([w.bundleID isEqualToString:firstBundleID]) { first = w; break; }
-    }
-    if (!first) {
-        NSLog(@"[InteractivePiP] createTopHalf FAILED bundle=%@", firstBundleID);
-        return NO;
-    }
-    // 直接铺成上半屏（PV: 松手保留后固定为上半屏）
-    CGRect b = self.overlayRoot.bounds;
-    first.transform = CGAffineTransformIdentity;
-    first.alpha = 1;
-    [first setSplitCardCornerRadius:26.0];
-    first.frame = CGRectMake(b.origin.x, b.origin.y, b.size.width, floor(b.size.height / 2.0));
-    [first setNeedsLayout]; [first layoutIfNeeded]; [first commitSceneLayout];
-    NSLog(@"[InteractivePiP] createTopHalf %@ frame=%@", firstBundleID, NSStringFromCGRect(first.frame));
-
+    // 0.7.182: 系统原生分屏 —— 不建自己的窗口、不抓 scene。
+    // 先弹 picker 选第二个 App，再构造 SBAppLayout 交给系统铺成两半。
+    NSLog(@"[InteractivePiP] nativeSplit: first=%@ pick second", firstBundleID);
     __weak typeof(self) weakSelf = self;
-    [self presentAppPickerWithCompletion:^(NSString *bundleID) {
+    [self presentAppPickerWithCompletion:^(NSString *secondBundleID) {
         typeof(weakSelf) s = weakSelf;
-        if (!s || !bundleID.length || [bundleID isEqualToString:firstBundleID]) return;
-        [s pairWindow:first withBundleID:bundleID];
+        if (!s || !secondBundleID.length) return;
+        if ([secondBundleID isEqualToString:firstBundleID]) return;
+        [s activateNativeSplitFirst:firstBundleID second:secondBundleID];
     }];
     return YES;
+}
+
+/// 0.7.182: 用 SBAppLayout + SBMainWorkspace 让系统自己把两个 App 铺成两半。
+- (BOOL)activateNativeSplitFirst:(NSString *)firstBundleID second:(NSString *)secondBundleID {
+    if (!firstBundleID.length || !secondBundleID.length) return NO;
+    id itemA = [self displayItemForBundleID:firstBundleID];
+    id itemB = [self displayItemForBundleID:secondBundleID];
+    NSLog(@"[InteractivePiP] nativeSplit items a=%@ b=%@",
+          itemA ? NSStringFromClass([itemA class]) : @"nil",
+          itemB ? NSStringFromClass([itemB class]) : @"nil");
+
+    // 第二个 App 未运行时没有 scene，先启动它（后台挂起即可），再取 displayItem
+    if (!itemB) {
+        NSLog(@"[InteractivePiP] nativeSplit: launching second %@", secondBundleID);
+        [self.launchAllowlist addObject:secondBundleID];
+        if (![self openApplicationSuspended:secondBundleID]) {
+            [self openApplicationForeground:secondBundleID];
+        }
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            typeof(weakSelf) s = weakSelf;
+            if (!s) return;
+            id b2 = [s displayItemForBundleID:secondBundleID];
+            NSLog(@"[InteractivePiP] nativeSplit retry itemB=%@",
+                  b2 ? NSStringFromClass([b2 class]) : @"nil");
+            if (!b2) return;
+            [s commitNativeSplitFirst:firstBundleID itemA:[s displayItemForBundleID:firstBundleID]
+                              second:secondBundleID itemB:b2];
+        });
+        return YES;
+    }
+    return [self commitNativeSplitFirst:firstBundleID itemA:itemA second:secondBundleID itemB:itemB];
+}
+
+- (BOOL)commitNativeSplitFirst:(NSString *)firstBundleID itemA:(id)itemA
+                        second:(NSString *)secondBundleID itemB:(id)itemB {
+    if (!itemA || !itemB) {
+        NSLog(@"[InteractivePiP] nativeSplit commit: missing items a=%d b=%d", itemA != nil, itemB != nil);
+        return NO;
+    }
+    CGRect screen = [UIScreen mainScreen].bounds;
+    BOOL vertical = screen.size.height >= screen.size.width;
+    id layout = [self buildPairAppLayoutWithFirst:itemA second:itemB vertical:vertical];
+    if (!layout) {
+        NSLog(@"[InteractivePiP] nativeSplit: layout build failed");
+        return NO;
+    }
+    BOOL ok = [self requestSystemActivateLayout:layout];
+    NSLog(@"[InteractivePiP] nativeSplit %@ + %@ activate ok=%d vertical=%d",
+          firstBundleID, secondBundleID, ok, vertical);
+    return ok;
 }
 
 /// 0.7.179: 一次性建两个窗并立刻铺满分屏 —— 中间不露单个浮窗。
@@ -1841,6 +1871,85 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
     // Do not re-show the overlay after Home; that repaints split panes over
     // the home screen. Session stays alive and is rebuilt on next activation.
+}
+
+#pragma mark - Native system split (0.7.182)
+// PV 式真分屏：不改 scene、不建自己的窗口。构造双 item 的 SBAppLayout，
+// 交给 SBMainWorkspace 提交，让系统自己把两个 App 铺成两半。
+// App 全程在系统自己的 scene 里渲染 —— 原生、流畅、能进 switcher、能划掉。
+
+- (id)buildPairAppLayoutWithFirst:(id)firstItem second:(id)secondItem vertical:(BOOL)vertical {
+    if (!firstItem || !secondItem) return nil;
+    Class cls = NSClassFromString(@"SBAppLayout");
+    if (!cls) return nil;
+    // SBAppLayoutRole: 1=primary 2=side(左右) 3=top 4=bottom(上下)
+    NSNumber *roleA = vertical ? @3 : @1;
+    NSNumber *roleB = vertical ? @4 : @2;
+    NSDictionary *roles = @{roleA: firstItem, roleB: secondItem};
+    NSArray<NSString *> *names = @[
+        @"initWithItemsForLayoutRoles:configuration:environment:preferredDisplayOrdinal:",
+        @"initWithItemsForLayoutRoles:environment:preferredDisplayOrdinal:",
+        @"initWithItemsForLayoutRoles:configuration:environment:"];
+    for (NSUInteger i = 0; i < names.count; i++) {
+        SEL sel = NSSelectorFromString(names[i]);
+        NSMethodSignature *sig = [cls instanceMethodSignatureForSelector:sel];
+        NSUInteger n = i == 0 ? 6 : 5;
+        if (!sig || sig.numberOfArguments != n || sig.methodReturnType[0] != '@') continue;
+        if ([sig getArgumentTypeAtIndex:2][0] != '@') continue;
+        BOOL valid = YES;
+        for (NSUInteger j = 3; j < n; j++) {
+            if ([sig getArgumentTypeAtIndex:j][0] != 'q') valid = NO;
+        }
+        if (!valid) continue;
+        @try {
+            id allocated = [cls alloc];
+            id layout;
+            if (i == 0) {
+                // configuration: 1 = 分屏（PV 实测值），environment: 1
+                layout = ((id (*)(id, SEL, id, NSInteger, NSInteger, NSInteger))objc_msgSend)(allocated, sel, roles, 1, 1, 0);
+            } else {
+                layout = ((id (*)(id, SEL, id, NSInteger, NSInteger))objc_msgSend)(allocated, sel, roles, 1, i == 1 ? 0 : 1);
+            }
+            NSLog(@"[InteractivePiP] buildPairAppLayout %lu -> %@", (unsigned long)i+1, layout ? @"ok" : @"nil");
+            if (layout) return layout;
+        } @catch (NSException *e) {
+            NSLog(@"[InteractivePiP] buildPairAppLayout %@ ex: %@", names[i], e);
+        }
+    }
+    return nil;
+}
+
+/// 请求系统激活一个分屏 layout（PV: requestForActivatingAppLayout:）
+- (BOOL)requestSystemActivateLayout:(id)layout {
+    if (!layout) return NO;
+    Class WS = NSClassFromString(@"SBMainWorkspace");
+    id workspace = nil;
+    if (WS && [WS respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+        @try { workspace = ((id(*)(id, SEL))objc_msgSend)(WS, NSSelectorFromString(@"sharedInstance")); }
+        @catch (__unused NSException *e) {}
+    }
+    if (!workspace) { NSLog(@"[InteractivePiP] requestSystemActivate: no workspace"); return NO; }
+
+    // 1) SBMainWorkspaceTransitionRequest 工厂
+    for (NSString *factory in @[@"requestForActivatingAppLayout:",
+                                @"requestWithAppLayout:",
+                                @"_requestForActivatingAppLayout:"]) {
+        SEL fsel = NSSelectorFromString(factory);
+        if (![workspace respondsToSelector:fsel]) continue;
+        @try {
+            id req = ((id(*)(id, SEL, id))objc_msgSend)(workspace, fsel, layout);
+            if (!req) continue;
+            SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
+            if ([workspace respondsToSelector:exec]) {
+                BOOL ok = ((BOOL(*)(id, SEL, id))objc_msgSend)(workspace, exec, req);
+                NSLog(@"[InteractivePiP] requestSystemActivate via %@ ok=%d", factory, ok);
+                if (ok) return YES;
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[InteractivePiP] requestSystemActivate %@ ex: %@", factory, e);
+        }
+    }
+    return NO;
 }
 
 #pragma mark - Helpers
