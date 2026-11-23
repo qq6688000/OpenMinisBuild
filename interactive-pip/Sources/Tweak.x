@@ -573,13 +573,11 @@ static NSArray *DPInjectedShortcutItems(void) {
 }
 - (void)_handleSwitcherPanGestureEnded:(id)gesture {
     BOOL tookOver = [[DPWindowManager shared] handlePVFullscreenSplitPanEnded:gesture];
-    if (tookOver) {
-        // 我们已接管（把该 App 固定为上半屏），不要再让系统执行"上滑回桌面"
-        NSLog(@"[InteractivePiP] PV split took over gesture, suppressing system home transition");
-        return;
-    }
+    // 0.7.183: 绝不能跳过 %orig。系统在 ended 时已经开始"App缩成卡片"的过渡，
+    // 跳过会把这个动画冻在半路（就是"卡住不动"的原因）。
+    // 正确做法：正常放行，让系统完成缩小/回桌面，我们再在桌面之上拉起分屏。
     %orig;
-    if ([DPWindowManager shared].mode != DPPresentationModeNone) {
+    if (!tookOver && [DPWindowManager shared].mode != DPPresentationModeNone) {
         [[DPWindowManager shared] handleHomeGestureEnded];
     }
 }

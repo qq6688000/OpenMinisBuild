@@ -316,8 +316,22 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }
     [self install];
     [self bringOverlayToFront];
+    // 0.7.183: 系统分屏模式下没有浮窗，bringOverlayToFront 会因为 count==0 把 overlay 隐藏，
+    // 导致 picker 弹不出来（"卡住"）。这里强制把它拉起来。
+    if (self.overlayWindow) {
+        self.overlayWindow.hidden = NO;
+        self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 90.0;
+        if (@available(iOS 13.0, *)) {
+            UIWindowScene *scene = [self activeWindowScene];
+            if (scene && self.overlayWindow.windowScene != scene) {
+                self.overlayWindow.windowScene = scene;
+                self.overlayWindow.frame = scene.coordinateSpace.bounds;
+                self.overlayRoot.frame = self.overlayWindow.bounds;
+            }
+        }
+    }
     UIViewController *host = self.overlayWindow.rootViewController;
-    if (!host) { if (completion) completion(nil); return; }
+    if (!host) { NSLog(@"[InteractivePiP] picker: no host VC"); if (completion) completion(nil); return; }
 
     // 0.7.127: mount the picker in a MODALLY PRESENTED view controller. Hanging it
     // straight on our passthrough window makes it first responder but the system
@@ -1065,16 +1079,22 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 /// 然后选第二个 App 填下半屏。
 - (BOOL)createTopHalfWithBundleID:(NSString *)firstBundleID {
     if (!firstBundleID.length) return NO;
-    // 0.7.182: 系统原生分屏 —— 不建自己的窗口、不抓 scene。
-    // 先弹 picker 选第二个 App，再构造 SBAppLayout 交给系统铺成两半。
-    NSLog(@"[InteractivePiP] nativeSplit: first=%@ pick second", firstBundleID);
+    // 0.7.183: 系统原生分屏 —— 不建窗口、不抓 scene。
+    // 注意：调用本方法时系统正在执行"App 缩小回桌面"的过渡动画，
+    // 必须等它跑完再弹 picker，否则会把动画冻住或弹不出来。
+    NSLog(@"[InteractivePiP] nativeSplit: first=%@ scheduling picker", firstBundleID);
     __weak typeof(self) weakSelf = self;
-    [self presentAppPickerWithCompletion:^(NSString *secondBundleID) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
         typeof(weakSelf) s = weakSelf;
-        if (!s || !secondBundleID.length) return;
-        if ([secondBundleID isEqualToString:firstBundleID]) return;
-        [s activateNativeSplitFirst:firstBundleID second:secondBundleID];
-    }];
+        if (!s) return;
+        [s presentAppPickerWithCompletion:^(NSString *secondBundleID) {
+            typeof(weakSelf) s2 = weakSelf;
+            if (!s2 || !secondBundleID.length) return;
+            if ([secondBundleID isEqualToString:firstBundleID]) return;
+            [s2 activateNativeSplitFirst:firstBundleID second:secondBundleID];
+        }];
+    });
     return YES;
 }
 
@@ -1083,6 +1103,13 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     if (!firstBundleID.length || !secondBundleID.length) return NO;
     id itemA = [self displayItemForBundleID:firstBundleID];
     id itemB = [self displayItemForBundleID:secondBundleID];
+    // 若第一个 App 在上滑回桌面后已不在前台，它的 displayItem 可能失效 —— 先拉回前台
+    if (!itemA) {
+        NSLog(@"[InteractivePiP] nativeSplit: itemA nil, relaunching %@", firstBundleID);
+        [self.launchAllowlist addObject:firstBundleID];
+        [self openApplicationForeground:firstBundleID];
+        itemA = [self displayItemForBundleID:firstBundleID];
+    }
     NSLog(@"[InteractivePiP] nativeSplit items a=%@ b=%@",
           itemA ? NSStringFromClass([itemA class]) : @"nil",
           itemB ? NSStringFromClass([itemB class]) : @"nil");
