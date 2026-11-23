@@ -418,6 +418,13 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
         [weakSelf focusWindow:w];
     };
     window.onSplit = ^(DPFloatingWindow *w) { [weakSelf requestSplitForWindow:w]; };
+    // 0.7.180: 上滑到顶松手 → 该 App 直接铺成上半屏，再选第二个填下半屏。
+    // 必须在这里统一挂，不能只在 beginDragToKeepForWindow 里挂（那条路径已废弃）。
+    window.onSwipeUpToIsland = ^(DPFloatingWindow *w) {
+        typeof(weakSelf) s = weakSelf;
+        if (!s || !w) return;
+        [s createTopHalfWithBundleID:w.bundleID];
+    };
     window.onFrameChanged = ^(DPFloatingWindow *w, CGRect f) {
         [[DPSettings shared] setLastFloatingFrame:f];
         (void)w;
@@ -1054,6 +1061,44 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     }];
 }
 
+/// 0.7.180: PV 式 —— 上滑到顶松手后，第一个 App 直接铺成「上半屏」（不是小浮窗），
+/// 然后选第二个 App 填下半屏。
+- (void)createTopHalfWithBundleID:(NSString *)firstBundleID {
+    if (!firstBundleID.length) return;
+    [self leaveSplit];
+    [self install];
+    for (DPFloatingWindow *w in [self.mutableFloatingWindows copy]) {
+        [self closeFloatingWindow:w animated:NO];
+    }
+    self.creatingSplit = YES;
+    [self openFloatingWithBundleID:firstBundleID];
+    self.creatingSplit = NO;
+
+    DPFloatingWindow *first = nil;
+    for (DPFloatingWindow *w in self.mutableFloatingWindows) {
+        if ([w.bundleID isEqualToString:firstBundleID]) { first = w; break; }
+    }
+    if (!first) {
+        NSLog(@"[InteractivePiP] createTopHalf FAILED bundle=%@", firstBundleID);
+        return;
+    }
+    // 直接铺成上半屏（PV: 松手保留后固定为上半屏）
+    CGRect b = self.overlayRoot.bounds;
+    first.transform = CGAffineTransformIdentity;
+    first.alpha = 1;
+    [first setSplitCardCornerRadius:26.0];
+    first.frame = CGRectMake(b.origin.x, b.origin.y, b.size.width, floor(b.size.height / 2.0));
+    [first setNeedsLayout]; [first layoutIfNeeded]; [first commitSceneLayout];
+    NSLog(@"[InteractivePiP] createTopHalf %@ frame=%@", firstBundleID, NSStringFromCGRect(first.frame));
+
+    __weak typeof(self) weakSelf = self;
+    [self presentAppPickerWithCompletion:^(NSString *bundleID) {
+        typeof(weakSelf) s = weakSelf;
+        if (!s || !bundleID.length || [bundleID isEqualToString:firstBundleID]) return;
+        [s pairWindow:first withBundleID:bundleID];
+    }];
+}
+
 /// 0.7.179: 一次性建两个窗并立刻铺满分屏 —— 中间不露单个浮窗。
 - (void)createSplitPairWithFirst:(NSString *)firstBundleID second:(NSString *)secondBundleID {
     if (!firstBundleID.length || !secondBundleID.length) return;
@@ -1521,15 +1566,10 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     NSLog(@"[InteractivePiP] PV split pan ENDED reachedTop=%d", reachedTop);
     if (!reachedTop) return;
 
-    // 上滑到位 → 先选第二个 App，再一次性建两个窗铺满分屏（全程不露单个浮窗）
+    // 上滑到位 → 第一个 App 固定为上半屏，再选第二个填下半屏（PV 式）
     NSString *first = self.pvPendingFirstBundleID;
     self.pvPendingFirstBundleID = nil;
-    __weak typeof(self) weakSelf = self;
-    [self presentAppPickerWithCompletion:^(NSString *bundleID) {
-        typeof(weakSelf) s = weakSelf;
-        if (!s || !bundleID.length || [bundleID isEqualToString:first]) return;
-        [s createSplitPairWithFirst:first second:bundleID];
-    }];
+    [self createTopHalfWithBundleID:first];
 }
 
 - (void)handleHomeGestureEnded {
@@ -1790,6 +1830,12 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 #pragma mark - Helpers
 
 - (CGRect)initialFloatingFrameInBounds:(CGRect)bounds {
+    // 0.7.180: PV 式 —— 新窗默认就是「上半屏」尺寸，视觉上像 App 缩成卡片后的形态，
+    // 而不是 280x500 的小浮窗。用户上滑即固定为上半屏。
+    if (bounds.size.width > 0 && bounds.size.height > 0) {
+        CGFloat h = floor(bounds.size.height / 2.0);
+        return CGRectMake(bounds.origin.x, bounds.origin.y, bounds.size.width, h);
+    }
     CGRect last = [DPSettings shared].lastFloatingFrame;
     if (!CGRectIsNull(last) && !CGRectIsEmpty(last)) {
         last.size.width = MIN(last.size.width, bounds.size.width);
@@ -1801,10 +1847,7 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     CGSize size = [DPSettings shared].defaultFloatingSize;
     size.width = MIN(size.width, bounds.size.width - 24);
     size.height = MIN(size.height, bounds.size.height - 48);
-    CGFloat x = bounds.size.width - size.width - 12;
-    CGFloat y = MAX(48, (bounds.size.height - size.height) / 2.0);
-    CGFloat stagger = self.mutableFloatingWindows.count * 24.0;
-    return CGRectMake(x - stagger, y + stagger, size.width, size.height);
+    return CGRectMake(0, 0, size.width, size.height);
 }
 
 - (NSString *)foregroundBundleID {
