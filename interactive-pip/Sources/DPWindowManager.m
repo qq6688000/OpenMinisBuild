@@ -2018,20 +2018,32 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
             }
             NSLog(@"[InteractivePiP] requestSystemActivate: built SBSwitcherTransitionRequest %@", req);
 
-            // 交给 switcher content controller 执行
-            Class CoordCls = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
-            id coord = nil;
-            if (CoordCls && [CoordCls respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-                coord = ((id(*)(id, SEL))objc_msgSend)(CoordCls, NSSelectorFromString(@"sharedInstance"));
-            }
-            id content = nil;
-            if (coord) {
-                for (NSString *g in @[@"switcherContentController", @"_switcherContentController"]) {
-                    SEL gs = NSSelectorFromString(g);
-                    if ([coord respondsToSelector:gs]) { content = ((id(*)(id,SEL))objc_msgSend)(coord, gs); break; }
+            // 0.7.187: 交给我们已 hook 验证过的真实转场接收者。
+            // 本机 iOS 上 SBFluidSwitcherViewController / SBMainSwitcherControllerCoordinator
+            // 都实现了 switcherContentController:performTransitionWithRequest:gestureInitiated:，
+            // 优先用 switcher 里登记的 controller，再退到 sharedInstance。
+            id content = self.switcherContentController;
+            if (!content) {
+                for (NSString *cn in @[@"SBFluidSwitcherViewController", @"SBMainSwitcherControllerCoordinator"]) {
+                    Class C = NSClassFromString(cn);
+                    if (!C) continue;
+                    if ([C respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+                        id inst = ((id(*)(id,SEL))objc_msgSend)(C, NSSelectorFromString(@"sharedInstance"));
+                        if ([inst respondsToSelector:@selector(switcherContentController:performTransitionWithRequest:gestureInitiated:)]) {
+                            content = inst; break;
+                        }
+                        for (NSString *g in @[@"switcherContentController", @"_switcherContentController"]) {
+                            SEL gs = NSSelectorFromString(g);
+                            if ([inst respondsToSelector:gs]) {
+                                id c2 = ((id(*)(id,SEL))objc_msgSend)(inst, gs);
+                                if (c2) { content = c2; break; }
+                            }
+                        }
+                        if (content) break;
+                    }
                 }
             }
-            if (!content) content = self.switcherContentController;
+            NSLog(@"[InteractivePiP] requestSystemActivate: content=%@", content ? NSStringFromClass([content class]) : @"nil");
             NSLog(@"[InteractivePiP] requestSystemActivate: content=%@", content ? NSStringFromClass([content class]) : @"nil");
             if (content) {
                 for (NSString *m in @[@"performTransitionWithRequest:gestureInitiated:",
@@ -2046,6 +2058,11 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
                         ((void(*)(id,SEL,id,BOOL))objc_msgSend)(content, ms, req, NO);
                     } else continue;
                     NSLog(@"[InteractivePiP] requestSystemActivate: performed via %@", m);
+                    // 0.7.187: 给用户可见反馈，便于无日志时判断是否走到这一步
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        NSLog(@"[InteractivePiP] nativeSplit: if you still see ONE app, the transition was ignored");
+                    });
                     return YES;
                 }
             }
