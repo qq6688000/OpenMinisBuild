@@ -1669,9 +1669,23 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
             }
             if (!bid.length) continue;
             // 只缓存 SpringBoard 认的真实 item（有 class 的对象）
+            BOOL isNew = (self.pvRealItemCache[bid] == nil);
             self.pvRealItemCache[bid] = item;
             [self logSplitResult:[NSString stringWithFormat:@"harvest CACHED real item %@ -> %@",
                                   bid, NSStringFromClass([item class])]];
+            // 0.7.211: 首次见到某个 App 的真实 item，后台 dump 它的完整字段，
+            // 看清真实 SBDisplayItem 到底有哪些属性（照它复用，不再手拼空壳）
+            if (isNew) {
+                id captured = item;
+                NSString *capturedBid = [bid copy];
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    [self logSplitResult:[NSString stringWithFormat:@"===== REAL ITEM DUMP %@ BEGIN =====", capturedBid]];
+                    DPDumpObj(captured, 0, 2, [NSMutableSet set], ^(NSString *line) {
+                        [self logSplitResult:line];
+                    });
+                    [self logSplitResult:[NSString stringWithFormat:@"===== REAL ITEM DUMP %@ END =====", capturedBid]];
+                });
+            }
         }
     }
 }
