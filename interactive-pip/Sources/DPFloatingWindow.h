@@ -48,6 +48,10 @@ FOUNDATION_EXPORT void DPKBLog(NSString *fmt, ...);
 - (void)beginDragPreview;
 - (void)endDragPreview;
 
+/// 0.7.175: 在 App 界面上滑到灵动岛位置固定 → 开启分屏。
+/// 松手回调由管理端把该窗口固定为分屏第一屏并弹 picker 选第二个 App。
+@property (nonatomic, copy, nullable) void (^onSwipeUpToIsland)(DPFloatingWindow *window);
+
 @end
 
 NS_ASSUME_NONNULL_END

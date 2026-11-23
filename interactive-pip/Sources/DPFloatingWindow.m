@@ -43,6 +43,11 @@ void DPKBLog(NSString *fmt, ...) {
 @property (nonatomic, assign) BOOL floatingShowsBorder;
 @property (nonatomic, assign) CGRect restoreFrame;
 @property (nonatomic, strong) UILabel *dragHintLabel;   // 0.7.173 松手保留提示
+@property (nonatomic, strong) UIView *swipeCaptureView;  // 0.7.175 全窗上滑捕获层
+@property (nonatomic, assign) CGPoint islandPanStartOrigin;
+@property (nonatomic, assign) BOOL islandPanTracking;
+@property (nonatomic, assign) BOOL islandPanDirectionLocked;  // 0.7.175 方向已确认向上
+@property (nonatomic, weak) UIPanGestureRecognizer *activeIslandPan; // 只响应锁定的那个手势
 - (CGRect)clampFrame:(CGRect)frame inBounds:(CGRect)bounds;
 - (void)leaveMaximizedState;
 - (void)updateFullscreenButton;
@@ -258,6 +263,110 @@ void DPKBLog(NSString *fmt, ...) {
     UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
     pinch.cancelsTouchesInView = YES;
     [self.titleBar addGestureRecognizer:pinch];
+
+    // 0.7.175: 在 contentContainer（App 场景区）加上滑手势。向上滑到灵动岛 → 固定进分屏。
+    // delegate 只放行「向上」手势，其余方向交给 App 自己处理，不干扰 App 点击/滚动。
+    UIPanGestureRecognizer *islandPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipeUpToIsland:)];
+    islandPan.delegate = self;
+    islandPan.cancelsTouchesInView = NO;
+    [self.contentContainer addGestureRecognizer:islandPan];
+}
+
+// 0.7.175: 只让上滑手势生效，其余方向放行给 App，且不与其它手势冲突。
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    // 0.7.175: contentContainer 的上滑捕获层允许开始，实际方向判定在 Changed 里做
+    //（Began 时 velocity 常常还是 0，靠速度判断会漏触发）。其余手势照常放行。
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // 标题栏拖动/缩放与本捕获层允许同时识别，避免上滑被吞
+    return YES;
+}
+
+- (void)handleSwipeUpToIsland:(UIPanGestureRecognizer *)gr {
+    if (self.isTiled || self.keyboardExpanded) return;
+    UIView *superview = self.superview;
+    if (!superview) return;
+
+    // 多手势去重：只响应第一个锁定的手势
+    if (self.activeIslandPan && self.activeIslandPan != gr &&
+        gr.state != UIGestureRecognizerStateBegan) return;
+
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        if (self.islandPanTracking) return;  // 两个手势同时触发时只取第一个
+        self.islandPanTracking = YES;
+        self.islandPanDirectionLocked = NO;
+        self.activeIslandPan = gr;
+        return;
+    }
+
+    // 第一次位移：锁定方向。必须是明确向上滑，否则放弃，交回 App 自己处理。
+    if (gr.state == UIGestureRecognizerStateChanged && self.islandPanTracking && !self.islandPanDirectionLocked) {
+        CGPoint t0 = [gr translationInView:superview];
+        if (t0.y < -24 && fabs(t0.y) > fabs(t0.x) * 1.2) {
+            self.islandPanDirectionLocked = YES;
+            self.islandPanStartOrigin = self.frame.origin;
+            [self bringToFront];
+            if (self.onFocus) self.onFocus(self);
+            [self haptic:UIImpactFeedbackStyleLight];
+            if (!self.dragHintLabel) {
+                UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 220, 34)];
+                hint.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
+                hint.textColor = [UIColor whiteColor];
+                hint.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+                hint.textAlignment = NSTextAlignmentCenter;
+                hint.text = @"继续上滑";
+                hint.layer.cornerRadius = 17;
+                hint.layer.cornerCurve = kCACornerCurveContinuous;
+                hint.layer.masksToBounds = YES;
+                self.dragHintLabel = hint;
+            }
+            [self.superview addSubview:self.dragHintLabel];
+            [self.superview bringSubviewToFront:self.dragHintLabel];
+        } else if (t0.y > 24 || fabs(t0.x) > fabs(t0.y) * 1.2) {
+            // 向下/横向：不是我们的手势，放弃本次追踪
+            self.islandPanTracking = NO;
+            return;
+        } else {
+            return; // 位移太小，继续观察
+        }
+    }
+
+    if (gr.state == UIGestureRecognizerStateChanged && self.islandPanDirectionLocked) {
+        CGPoint t = [gr translationInView:superview];
+        CGRect f = self.frame;
+        // 上滑跟手：窗口跟着手指上移（只允许向上）
+        f.origin.y = MIN(self.islandPanStartOrigin.y, self.islandPanStartOrigin.y + t.y);
+        f.origin.x = self.islandPanStartOrigin.x;
+        f = [self clampFrame:f inBounds:superview.bounds];
+        self.frame = f;
+        // 到灵动岛区域切换提示为「松手保留」
+        CGFloat topY = CGRectGetMinY(f);
+        CGFloat islandZone = MAX(60.0, superview.safeAreaInsets.top + 40.0);
+        self.dragHintLabel.text = (topY <= islandZone) ? @"松手保留" : @"继续上滑";
+        self.dragHintLabel.center = CGPointMake(CGRectGetMidX(f), CGRectGetMinY(f) - 26);
+    } else if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled) {
+        BOOL wasLocked = self.islandPanDirectionLocked;
+        self.islandPanTracking = NO;
+        self.islandPanDirectionLocked = NO;
+        self.activeIslandPan = nil;
+        if (self.dragHintLabel) { [self.dragHintLabel removeFromSuperview]; self.dragHintLabel = nil; }
+        if (!wasLocked || gr.state == UIGestureRecognizerStateCancelled) return;
+        // 判定：窗口顶部是否被推到灵动岛附近
+        CGFloat topY = CGRectGetMinY(self.frame);
+        CGFloat islandZone = MAX(60.0, superview.safeAreaInsets.top + 40.0);
+        if (topY <= islandZone) {
+            [self haptic:UIImpactFeedbackStyleMedium];
+            if (self.onSwipeUpToIsland) self.onSwipeUpToIsland(self);
+        } else {
+            // 没推到位，弹回原位
+            CGRect f = self.frame;
+            f.origin.y = self.islandPanStartOrigin.y;
+            [UIView animateWithDuration:0.22 animations:^{ self.frame = f; }];
+        }
+    }
 }
 
 - (void)handleTitlePan:(UIPanGestureRecognizer *)gr {
@@ -575,6 +684,11 @@ void DPKBLog(NSString *fmt, ...) {
     host.view.frame = self.contentContainer.bounds;
     host.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.contentContainer addSubview:host.view];
+    // 0.7.175: host.view 覆盖在 contentContainer 之上会吞触摸，单独给它挂一个上滑手势。
+    UIPanGestureRecognizer *islandPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipeUpToIsland:)];
+    islandPan.delegate = self;
+    islandPan.cancelsTouchesInView = NO;
+    [host.view addGestureRecognizer:islandPan];
     [host setHostedFrame:self.contentContainer.bounds];
 }
 

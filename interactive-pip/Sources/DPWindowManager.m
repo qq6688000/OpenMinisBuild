@@ -1030,14 +1030,28 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
 - (void)beginDragToKeepForWindow:(DPFloatingWindow *)window {
     if (!window) return;
-    [window beginDragPreview];
+    // 0.7.175: 不再预先显示「松手保留」提示——提示只在用户真正上滑/拖动过程中出现。
     __weak typeof(self) weakSelf = self;
     window.onDragPreviewEnded = ^(DPFloatingWindow *w) {
         typeof(weakSelf) s = weakSelf;
         if (!s) return;
         // 松手即固定（窗口留在当前位置），随后自动弹 picker 选第二个 App 组成分屏
+        [s endDragPreviewForWindow:w];
         [s requestSplitForWindow:w];
     };
+    // 0.7.175: App 内容区上滑到灵动岛松手 → 固定并进入分屏配对
+    window.onSwipeUpToIsland = ^(DPFloatingWindow *w) {
+        typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        [s endDragPreviewForWindow:w];
+        [s requestSplitForWindow:w];
+    };
+}
+
+- (void)endDragPreviewForWindow:(DPFloatingWindow *)window {
+    if (!window) return;
+    [window endDragPreview];
+    window.onDragPreviewEnded = nil;
 }
 
 - (void)requestSplitForWindow:(DPFloatingWindow *)window {
