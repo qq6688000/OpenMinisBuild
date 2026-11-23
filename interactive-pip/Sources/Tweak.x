@@ -617,18 +617,14 @@ static NSArray *DPInjectedShortcutItems(void) {
     NSArray *arr = [layouts isKindOfClass:[NSArray class]] ? layouts : nil;
     DPWindowManager *wm = [DPWindowManager shared];
     wm.switcherSourceCalls++;
-    // 0.7.208: 无条件落盘钩子入口 —— 分清 REAL APP LAYOUTS 没出现是「开关没开」还是「钩子没触发」
-    {
-        BOOL dbg = [[NSUserDefaults standardUserDefaults] boolForKey:@"sg.split.dumpLayouts"];
-        NSMutableArray *ids = [NSMutableArray array];
-        for (id L in arr) {
-            id di = nil;
-            @try { di = [L valueForKey:@"displayItem"]; } @catch (__unused NSException *e) {}
-            [ids addObject:[NSString stringWithFormat:@"%@(di=%@)", NSStringFromClass([L class]),
-                            di ? NSStringFromClass([di class]) : @"nil"]];
-        }
-        [wm logSplitResult:[NSString stringWithFormat:@"layoutHook fired dump=%d count=%lu %@",
-                            dbg, (unsigned long)arr.count, ids]];
+    // 0.7.210: 照 PV —— 系统把每个运行中 App 的【真实 displayItem】送进本钩子
+    // （作为某个 SBAppLayout 的 item）。不手拼、不主动取，就在这里接住缓存。
+    // 后台线程，避免 0.7.205 那种主路径深度反射崩 SpringBoard。
+    if (arr.count > 0) {
+        NSArray *snapshot = [arr copy];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            [wm harvestRealDisplayItemsFromSwitcherLayouts:snapshot];
+        });
     }
     [wm observeSwitcherContentController:controller];
     if (arr) {

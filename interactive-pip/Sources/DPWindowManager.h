@@ -50,6 +50,8 @@ typedef NS_ENUM(NSInteger, DPPresentationMode) {
 - (void)dumpTransitionRequest:(id)request;
 /// 0.7.205: dump 系统真实 SBAppLayout 数组（切换器出现时），含每个 App 的真实 displayItem
 - (void)dumpRealAppLayouts:(NSArray *)layouts;
+/// 0.7.210: 照 PV —— 从切换器真实 layout 里收割每个 App 的真实 displayItem 进缓存表
+- (void)harvestRealDisplayItemsFromSwitcherLayouts:(NSArray *)layouts;
 
 - (void)presentAppPickerWithCompletion:(void (^ _Nullable)(NSString * _Nullable bundleID))completion;
 - (void)openBundleID:(NSString *)bundleID inMode:(DPPresentationMode)mode;

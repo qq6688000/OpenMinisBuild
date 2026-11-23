@@ -1640,6 +1640,42 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     [self logSplitResult:@"===== REAL APP LAYOUTS END ====="];
 }
 
+// 0.7.210: 照 PV —— 系统切换器数据源里，每个运行中 App 的真实 displayItem 就挂在
+// SBAppLayout 的 item 上。本方法在后台线程遍历这些真实 layout，把 bundleID->真实
+// displayItem 缓存进 pvRealItemCache。上滑待命 / 组分屏都直接复用，绝不手拼。
+- (void)harvestRealDisplayItemsFromSwitcherLayouts:(NSArray *)layouts {
+    if (!self.pvRealItemCache) self.pvRealItemCache = [NSMutableDictionary dictionary];
+    for (id layout in layouts) {
+        if (!layout) continue;
+        // SBAppLayout 的 items：常见 key items / layoutItems / displayItems，逐个试
+        NSArray *items = nil;
+        for (NSString *k in @[@"items", @"layoutItems", @"displayItems", @"_items"]) {
+            @try {
+                id v = [layout valueForKey:k];
+                if ([v isKindOfClass:NSArray.class]) { items = v; break; }
+            } @catch (__unused NSException *e) {}
+        }
+        if (!items) {
+            [self logSplitResult:[NSString stringWithFormat:@"harvest layout %@ no items array",
+                                  NSStringFromClass([layout class])]];
+            continue;
+        }
+        for (id item in items) {
+            if (!item) continue;
+            NSString *bid = nil;
+            @try { bid = [item valueForKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) {}
+            if (!bid.length) {
+                @try { bid = [item valueForKey:@"bundleID"]; } @catch (__unused NSException *e) {}
+            }
+            if (!bid.length) continue;
+            // 只缓存 SpringBoard 认的真实 item（有 class 的对象）
+            self.pvRealItemCache[bid] = item;
+            [self logSplitResult:[NSString stringWithFormat:@"harvest CACHED real item %@ -> %@",
+                                  bid, NSStringFromClass([item class])]];
+        }
+    }
+}
+
 #pragma mark - PV-style fullscreen split (0.7.178)
 
 // 0.7.199: executeTransitionRequest: 每次触发都把 request 里的系统自建真实 displayItem
