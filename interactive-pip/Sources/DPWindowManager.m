@@ -2129,6 +2129,28 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 
     // 0.7.215: 先按 PV 的方式走系统 PiP 链路（coordinator → controllerForType: → container）
     [self logSplitResult:@"park: probing PV-native PiP path"];
+    // 0.7.220: 枚举 scene manager 真实类方法，找可用的取 scene 入口
+    for (NSString *cn in @[@"SBMainDisplaySceneManager", @"SBSceneManagerCoordinator", @"SBSceneManager"]) {
+        Class cls = NSClassFromString(cn);
+        if (!cls) { [self logSplitResult:[NSString stringWithFormat:@"SCENE_MGR %@ absent", cn]]; continue; }
+        unsigned int mcount = 0;
+        Method *ms = class_copyMethodList(object_getClass(cls), &mcount);
+        NSMutableArray *names = [NSMutableArray array];
+        for (unsigned int i = 0; i < mcount; i++) {
+            SEL sel = method_getName(ms[i]);
+            NSString *nm = NSStringFromSelector(sel);
+            if (nm.length) [names addObject:nm];
+            if ([nm containsString:@":"]) continue;
+            @try {
+                id obj = ((id (*)(id, SEL))objc_msgSend)(cls, sel);
+                if (obj && obj != (id)cls) {
+                    [self logSplitResult:[NSString stringWithFormat:@"SCENE_MGR hit %@ +%@ -> %@", cn, nm, [obj class]]];
+                }
+            } @catch (__unused NSException *e) {}
+        }
+        if (ms) free(ms);
+        [self logSplitResult:[NSString stringWithFormat:@"SCENE_MGR %@ methods=%@", cn, [names componentsJoinedByString:@","]]];
+    }
     id pipController = [[DPPipNativeBridge shared] resolvePipController];
     [[DPPipNativeBridge shared] dumpPipControllerCapabilities:pipController];
     if (pipController) {

@@ -1,4 +1,6 @@
 #import "DPSceneHost.h"
+
+extern void DPPipLog(NSString *line);
 #import "DPSettings.h"
 #import <notify.h>
 #import <objc/runtime.h>
@@ -637,6 +639,33 @@ static void DPInvalidateHostView(UIView *host, NSString *stage) {
 }
 
 - (id)sbMainDisplaySceneManager {
+    // 0.7.220: 不再猜 sharedInstance。枚举每个类方法，逐个试调无参的，
+    // 谁返回看起来像 scene manager 的对象就用谁。
+    for (NSString *cn in @[@"SBMainDisplaySceneManager",
+                           @"SBSceneManagerCoordinator",
+                           @"SBSceneManager"]) {
+        Class cls = NSClassFromString(cn);
+        if (!cls) continue;
+        unsigned int mcount = 0;
+        Method *methods = class_copyMethodList(object_getClass(cls), &mcount);
+        NSMutableArray *names = [NSMutableArray array];
+        for (unsigned int i = 0; i < mcount; i++) {
+            SEL sel = method_getName(methods[i]);
+            NSString *nm = NSStringFromSelector(sel);
+            if (nm.length) [names addObject:nm];
+            if ([nm containsString:@":"]) continue;   // 只要无参类方法
+            @try {
+                id obj = ((id (*)(id, SEL))objc_msgSend)(cls, sel);
+                if (obj && obj != (id)cls) {
+                    DPPipLog([NSString stringWithFormat:@"SCENE_MGR candidate %@ +%@ -> %@",
+                              cn, nm, [obj class]]);
+                }
+            } @catch (__unused NSException *e) {}
+        }
+        if (methods) free(methods);
+        DPPipLog([NSString stringWithFormat:@"SCENE_MGR %@ class-methods: %@", cn,
+                  [names componentsJoinedByString:@","]]);
+    }
     for (NSString *cn in @[@"SBMainDisplaySceneManager",
                            @"SBSceneManagerCoordinator",
                            @"SBSceneManager"]) {
