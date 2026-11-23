@@ -399,7 +399,14 @@ static id DPAppValue(id object, NSString *key) {
     void (^done)(NSString *) = self.completion;
     self.completion = nil;
     [self dismissAnimated:YES];
-    if (done) done(item.bundleID);
+    // 0.7.185: dismiss 动画进行中不要立刻做重活（切 App / 提交转场），
+    // 会和过渡动画抢主线程导致整机卡住。等面板真正消失再回调。
+    if (done) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.32 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            done(item.bundleID);
+        });
+    }
 }
 
 // 0.7.128: shared filter path for the self-drawn keyboard.

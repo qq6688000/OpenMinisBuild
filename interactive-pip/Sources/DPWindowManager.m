@@ -1101,14 +1101,12 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 /// 0.7.182: 用 SBAppLayout + SBMainWorkspace 让系统自己把两个 App 铺成两半。
 - (BOOL)activateNativeSplitFirst:(NSString *)firstBundleID second:(NSString *)secondBundleID {
     if (!firstBundleID.length || !secondBundleID.length) return NO;
+    // 0.7.185: 绝不在这里重新打开第一个 App —— picker 正在 dismiss 时再拉前台，
+    // 两个过渡互相冲突会把主线程卡死（"随便点就卡住"的真凶）。
     id itemA = [self displayItemForBundleID:firstBundleID];
     id itemB = [self displayItemForBundleID:secondBundleID];
-    // 若第一个 App 在上滑回桌面后已不在前台，它的 displayItem 可能失效 —— 先拉回前台
     if (!itemA) {
-        NSLog(@"[InteractivePiP] nativeSplit: itemA nil, relaunching %@", firstBundleID);
-        [self.launchAllowlist addObject:firstBundleID];
-        [self openApplicationForeground:firstBundleID];
-        itemA = [self displayItemForBundleID:firstBundleID];
+        NSLog(@"[InteractivePiP] nativeSplit: itemA nil for %@ (not relaunching)", firstBundleID);
     }
     NSLog(@"[InteractivePiP] nativeSplit items a=%@ b=%@",
           itemA ? NSStringFromClass([itemA class]) : @"nil",
@@ -1116,22 +1114,29 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
 
     // 第二个 App 未运行时没有 scene，先启动它（后台挂起即可），再取 displayItem
     if (!itemB) {
-        NSLog(@"[InteractivePiP] nativeSplit: launching second %@", secondBundleID);
-        [self.launchAllowlist addObject:secondBundleID];
-        if (![self openApplicationSuspended:secondBundleID]) {
-            [self openApplicationForeground:secondBundleID];
-        }
+        NSLog(@"[InteractivePiP] nativeSplit: launching second %@ (deferred)", secondBundleID);
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+        // 等 picker 完全消失再启动，避免过渡冲突卡死
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             typeof(weakSelf) s = weakSelf;
             if (!s) return;
-            id b2 = [s displayItemForBundleID:secondBundleID];
-            NSLog(@"[InteractivePiP] nativeSplit retry itemB=%@",
-                  b2 ? NSStringFromClass([b2 class]) : @"nil");
-            if (!b2) return;
-            [s commitNativeSplitFirst:firstBundleID itemA:[s displayItemForBundleID:firstBundleID]
-                              second:secondBundleID itemB:b2];
+            [s.launchAllowlist addObject:secondBundleID];
+            if (![s openApplicationSuspended:secondBundleID]) {
+                [s openApplicationForeground:secondBundleID];
+            }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                typeof(weakSelf) s3 = weakSelf;
+                if (!s3) return;
+                id b2 = [s3 displayItemForBundleID:secondBundleID];
+                NSLog(@"[InteractivePiP] nativeSplit retry itemB=%@",
+                      b2 ? NSStringFromClass([b2 class]) : @"nil");
+                if (!b2) return;
+                [s3 commitNativeSplitFirst:firstBundleID
+                                     itemA:[s3 displayItemForBundleID:firstBundleID]
+                                    second:secondBundleID itemB:b2];
+            });
         });
         return YES;
     }
