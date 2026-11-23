@@ -2053,35 +2053,65 @@ static BOOL DPDuoSystemSwitcherVisible(void) {
     [self logSplitResult:[NSString stringWithFormat:@"workspace=%@", NSStringFromClass([workspace class])]];
 
     [self logSplitResult:@"entered execute stage"];
-    SEL exec = NSSelectorFromString(@"executeTransitionRequest:");
-    if (![workspace respondsToSelector:exec]) {
-        [self logSplitResult:@"FAIL: workspace lacks executeTransitionRequest:"];
-    }
-    if ([workspace respondsToSelector:exec]) {
-        @try {
-            BOOL ok = ((BOOL(*)(id,SEL,id))objc_msgSend)(workspace, exec, request);
-            NSLog(@"[InteractivePiP] activate: executeTransitionRequest ok=%d", ok);
-            [self logSplitResult:[NSString stringWithFormat:@"executeTransitionRequest ok=%d", ok]];
-            if (ok) return YES;
-        } @catch (NSException *e) {
-            NSLog(@"[InteractivePiP] activate: execute ex %@", e);
-            [self logSplitResult:[NSString stringWithFormat:@"FAIL: execute ex %@", e.reason]];
-        }
-    }
-    // 兜底：走 switcher content controller 的 performTransition 通道
+
+    // 0.7.193: SBMainWorkspace executeTransitionRequest: 要的是 SBMainWorkspaceTransitionRequest，
+    // 直接塞 SBSwitcherTransitionRequest 会炸 -[applicationContext]。
+    // 正确路径：SBSwitcherTransitionRequest 只能交给 switcher content controller 执行。
+
+    // ① 首选：switcher content controller
     id content = self.switcherContentController;
-    if (content) {
-        SEL perf = NSSelectorFromString(@"switcherContentController:performTransitionWithRequest:gestureInitiated:");
-        if ([content respondsToSelector:perf]) {
-            @try {
-                ((void(*)(id,SEL,id,id,BOOL))objc_msgSend)(content, perf, nil, request, NO);
-                NSLog(@"[InteractivePiP] activate: performed via switcher content controller");
-                return YES;
-            } @catch (NSException *e) {
-                NSLog(@"[InteractivePiP] activate: content ex %@", e);
+    if (!content) {
+        for (NSString *cn in @[@"SBFluidSwitcherViewController", @"SBMainSwitcherControllerCoordinator"]) {
+            Class C = NSClassFromString(cn);
+            if (!C) continue;
+            if ([C respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+                id inst = ((id(*)(id,SEL))objc_msgSend)(C, NSSelectorFromString(@"sharedInstance"));
+                if (inst) { content = inst; break; }
             }
         }
     }
+    [self logSplitResult:[NSString stringWithFormat:@"content=%@", content ? NSStringFromClass([content class]) : @"nil"]];
+    if (content) {
+        SEL perf = NSSelectorFromString(@"switcherContentController:performTransitionWithRequest:gestureInitiated:");
+        NSMethodSignature *ps = [content methodSignatureForSelector:perf];
+        if (ps && ps.numberOfArguments == 5) {
+            @try {
+                ((void(*)(id,SEL,id,id,BOOL))objc_msgSend)(content, perf, nil, request, NO);
+                [self logSplitResult:@"OK: performed via switcherContentController"];
+                NSLog(@"[InteractivePiP] activate: performed via switcher content controller");
+                return YES;
+            } @catch (NSException *e) {
+                [self logSplitResult:[NSString stringWithFormat:@"FAIL: content perf ex %@", e.reason]];
+            }
+        } else {
+            [self logSplitResult:@"FAIL: content lacks performTransition ABI"];
+        }
+    }
+
+    // ② 次选：把 SBSwitcherTransitionRequest 转成 workspace 能吃的请求
+    //    +[SBMainWorkspaceTransitionRequest ancillaryTransitionRequestsForTransitionRequest:] 返回数组
+    Class WTRC = NSClassFromString(@"SBMainWorkspaceTransitionRequest");
+    if (WTRC) {
+        SEL conv = NSSelectorFromString(@"ancillaryTransitionRequestsForTransitionRequest:");
+        if ([WTRC respondsToSelector:conv]) {
+            @try {
+                id arr = ((id(*)(id,SEL,id))objc_msgSend)((id)WTRC, conv, request);
+                [self logSplitResult:[NSString stringWithFormat:@"ancillary -> %@", arr ? NSStringFromClass([arr class]) : @"nil"]];
+                if ([arr isKindOfClass:NSArray.class] && [arr count]) {
+                    for (id r2 in arr) {
+                        BOOL ok2 = ((BOOL(*)(id,SEL,id))objc_msgSend)(workspace, NSSelectorFromString(@"executeTransitionRequest:"), r2);
+                        [self logSplitResult:[NSString stringWithFormat:@"exec ancillary %@ ok=%d", NSStringFromClass([r2 class]), ok2]];
+                        if (ok2) return YES;
+                    }
+                }
+            } @catch (NSException *e) {
+                [self logSplitResult:[NSString stringWithFormat:@"FAIL: ancillary ex %@", e.reason]];
+            }
+        } else {
+            [self logSplitResult:@"FAIL: no ancillaryTransitionRequests method"];
+        }
+    }
+
     NSLog(@"[InteractivePiP] activate: ALL FAILED");
     [self logSplitResult:@"FAIL: ALL paths failed"];
     return NO;
