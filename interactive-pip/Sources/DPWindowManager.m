@@ -2067,6 +2067,35 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 /// 0.7.214: 上滑挂起的真正落地 —— 用 Duo 自有 DPSceneHost 把前台 App 抓成小浮窗挂起来。
 /// 这才是用户要的"上滑挂起 App"：App 没关，变成一张小卡片悬在屏幕上，点开继续用。
 /// 不碰系统 UIWindow、不拼 SBAppLayout、不依赖 iOS16 上全断的 displayItem 路径。
+/// 0.7.218: 抓一张前台画面（PV 的 _parkedSnapshot 语义）
+- (UIImage *)captureForegroundSnapshot {
+    UIWindow *key = nil;
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *ws = (UIWindowScene *)sc;
+        if (ws.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *w in ws.windows) {
+            if (w.isKeyWindow && w.windowLevel <= UIWindowLevelStatusBar) { key = w; break; }
+        }
+        if (key) break;
+    }
+    if (!key) return nil;
+    // 绝不能把 key window reparent（0.7.212 事故），只做离屏渲染
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = 0.5;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:key.bounds.size format:fmt];
+    __block UIImage *img = nil;
+    @try {
+        img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            [key drawViewHierarchyInRect:key.bounds afterScreenUpdates:NO];
+        }];
+    } @catch (NSException *e) {
+        NSLog(@"[InteractivePiP] snapshot exception %@", e.reason);
+        return nil;
+    }
+    return img;
+}
+
 /// 0.7.216: iOS16 底部上滑（SBHomeGesturePanGestureRecognizer）松手时的处理。
 /// 这条链路才是用户真正"从底部上滑"走的手势。
 - (void)handleHomeGesturePanTouchesEnded:(id)recognizer {
@@ -2116,6 +2145,11 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
         if (self.floatingWindows.count >= 4) break;
     }
     [self logSplitResult:[NSString stringWithFormat:@"park: creating floating card for %@", bundleID]];
+    // 0.7.218 照 PV：先抓一张挂起快照，贴到卡片上，保证 App 回桌面/被降级时卡片不黑
+    UIImage *parkedImage = [self captureForegroundSnapshot];
+    [self logSplitResult:[NSString stringWithFormat:@"park: snapshot %@",
+                          parkedImage ? [NSString stringWithFormat:@"%.0fx%.0f",
+                                         parkedImage.size.width, parkedImage.size.height] : @"nil"]];
     @try {
         // 复用成熟的浮窗创建路径：它会建 DPFloatingWindow + DPSceneHost 抓 scene
         [self openFloatingWithBundleID:bundleID];
@@ -2126,22 +2160,24 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     BOOL ok = (self.floatingWindows.count > 0);
     if (ok) {
         DPFloatingWindow *w = self.floatingWindows.firstObject;
-        // 压成"挂起"态：右侧竖条小卡片，不挡视线；多张时往上错开
-        CGFloat screenW = CGRectGetWidth([UIScreen mainScreen].bounds);
-        CGFloat screenH = CGRectGetHeight([UIScreen mainScreen].bounds);
-        CGFloat cardW = screenW * 0.34;
-        CGFloat cardH = screenH * 0.30;
-        NSUInteger idx = self.floatingWindows.count - 1;   // 本次新加的排最前
-        CGFloat offsetY = (CGFloat)idx * (cardH * 0.42);
-        CGFloat topY = 90 + offsetY;
-        // 别掉出屏幕
-        CGFloat maxY = screenH - cardH - 40;
-        CGFloat y = MIN(topY, maxY);
-        CGRect frame = CGRectMake(screenW - cardW - 12, y, cardW, cardH);
+        // 0.7.218 照 PV 的 SlideOver 抽屉形态，不是悬浮小窗：
+        // 抽屉占满整屏高度，贴右侧，宽度约屏幕 30%（iOS SlideOver 标准比例）。
+        // 后续可拖动 tongue 展开/收起。
+        CGRect screenB = [UIScreen mainScreen].bounds;
+        CGFloat screenW = CGRectGetWidth(screenB);
+        CGFloat screenH = CGRectGetHeight(screenB);
+        CGFloat drawerW = round(screenW * 0.30);
+        // PV 抽屉是整屏高三段式：上边缘贴屏幕顶部（安全区下），下贴 Home 条
+        CGFloat topInset = 8;
+        CGRect frame = CGRectMake(screenW - drawerW - 6,
+                                  topInset,
+                                  drawerW,
+                                  screenH - topInset - 8);
         [w setFrame:frame];
         [w commitSceneLayout];
-        [self logSplitResult:[NSString stringWithFormat:@"park OK card idx=%lu frame=%@",
-                              (unsigned long)idx, NSStringFromCGRect(frame)]];
+        if (parkedImage) [w setParkedSnapshot:parkedImage];
+        [self logSplitResult:[NSString stringWithFormat:@"park OK drawer frame=%@ w=%.0f (slideover %.0f%%)",
+                              NSStringFromCGRect(frame), drawerW, 30.0]];
     } else {
         [self logSplitResult:@"park FAILED: no window created"];
     }

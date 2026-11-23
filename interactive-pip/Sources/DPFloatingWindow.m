@@ -1,3 +1,4 @@
+#import <objc/runtime.h>
 #import "DPFloatingWindow.h"
 #import "DPSceneHost.h"
 #import "DPSettings.h"
@@ -736,6 +737,55 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
     [self setNeedsLayout];
     [self layoutIfNeeded];
     [host commitHostedFrame];
+}
+
+// ── 0.7.218 照 PV 的 _parkedSnapshot ──
+// PV 在 PVSlideOverContainer / PVPIPPreview 里用一张 UIView 贴挂起快照，
+// 保证 scene 被系统降级时卡片仍有画面。这里用同语义的实现。
+- (UIView *)parkedSnapshotView {
+    UIView *v = objc_getAssociatedObject(self, @selector(parkedSnapshotView));
+    if (!v) {
+        v = [[UIView alloc] initWithFrame:self.bounds];
+        v.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+        v.userInteractionEnabled = NO;
+        v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        objc_setAssociatedObject(self, @selector(parkedSnapshotView), v, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return v;
+}
+
+- (void)setParkedSnapshot:(UIImage *)image {
+    UIView *snap = [self parkedSnapshotView];
+    if (!image) {
+        [snap removeFromSuperview];
+        return;
+    }
+    UIImageView *iv = (UIImageView *)objc_getAssociatedObject(self, @selector(parkedSnapshotImage));
+    if (![iv isKindOfClass:UIImageView.class]) {
+        iv = [[UIImageView alloc] initWithFrame:snap.bounds];
+        iv.contentMode = UIViewContentModeScaleAspectFill;
+        iv.clipsToBounds = YES;
+        iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [snap addSubview:iv];
+        objc_setAssociatedObject(self, @selector(parkedSnapshotImage), iv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    iv.image = image;
+    if (snap.superview != self) {
+        snap.frame = self.bounds;
+        [self addSubview:snap];
+    }
+    [self bringSubviewToFront:snap];
+    NSLog(@"[InteractivePiP] parkedSnapshot set %.0fx%.0f",
+          image.size.width, image.size.height);
+}
+
+- (UIImage *)parkedSnapshotImage {
+    UIImageView *iv = objc_getAssociatedObject(self, @selector(parkedSnapshotImage));
+    return [iv isKindOfClass:UIImageView.class] ? iv.image : nil;
+}
+
+- (BOOL)hasParkedSnapshot {
+    return [self parkedSnapshotImage] != nil;
 }
 
 - (void)commitSceneLayout {
