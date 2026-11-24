@@ -194,6 +194,8 @@ static const CGFloat kMaxPaneRatio = 0.78;
     swap.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [swap addTarget:self action:@selector(swapTapped) forControlEvents:UIControlEventTouchUpInside];
     [bar addSubview:swap];
+    // 顶部区域整体允许接收点击（否则父视图不吃触摸时按钮点不到）
+    bar.userInteractionEnabled = YES;
     return bar;
 }
 
@@ -258,6 +260,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     triple.numberOfTouchesRequired = 3;
     triple.delegate = (id<UIGestureRecognizerDelegate>)self;
     triple.cancelsTouchesInView = NO;
+    triple.delaysTouchesEnded = NO;
     [vc.view addGestureRecognizer:triple];
 
     // 出口 3：右上角整块热区也可退出（点不到 × 时往右上角戳两下）
@@ -309,6 +312,17 @@ static const CGFloat kMaxPaneRatio = 0.78;
     return YES;
 }
 
+// 关键：homeSwipe 只能在底部条内接收触摸。
+// 之前它挂在整个 vc.view 上，用户点顶部的 × / 交换 时手指的微小位移
+// 会被它当成 pan 抢走，按钮永远收不到 touchUpInside（日志实证：全程零次 closeTapped）。
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    if (g == _homeSwipe) {
+        CGPoint p = [touch locationInView:g.view];
+        return p.y >= g.view.bounds.size.height - 110.0;
+    }
+    return YES;
+}
+
 - (void)startHeartbeat {
     __weak typeof(self) wself = self;
     [_heartbeat invalidate];
@@ -323,6 +337,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 - (void)resizePanes {
     if (!_split) return;
+    if (_chrome && _chrome.superview) [_chrome.superview bringSubviewToFront:_chrome];
     [_split setNeedsLayout];
     [_split layoutIfNeeded];
     // 布局立刻改（本地、便宜），但推给远端 scene 要节流：
