@@ -18,7 +18,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 static const CGFloat kChromeHeight = 0.0;
-static const CGFloat kSeamHeight = 6.0;   // 只留一条细缝给抓手，不再是一条黑带
+static const CGFloat kSeamHeight = 26.0;  // 用户要求改回原来的宽度
 // 用户要求：分屏比例可以拉到 10/90
 static const CGFloat kMinPaneRatio = 0.10;
 static const CGFloat kMaxPaneRatio = 0.90;
@@ -352,6 +352,8 @@ static const CGFloat kMaxPaneRatio = 0.90;
 - (void)flushResize {
     // 松手那一刻一定把最终尺寸推一次，保证画面和接缝对齐
     _pendingResize = NO;
+    [_split setNeedsLayout];
+    [_split layoutIfNeeded];   // 先让容器拿到新 bounds，再让宿主按它重排
     [_topHost setFrameSize:_split.topContainer.bounds.size];
     [_bottomHost setFrameSize:_split.bottomContainer.bounds.size];
 }

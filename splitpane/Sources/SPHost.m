@@ -529,7 +529,11 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (!host || !container || reference.width < 2 || reference.height < 2) return;
     CGSize c = container.bounds.size;
-    if (c.width < 2 || c.height < 2) return;
+    if (c.width < 2 || c.height < 2) {
+        // 容器还没 layout（bounds 为 0）时不要裸 return，否则画面不显示 = 整块黑。
+        // 退回按参考尺寸原样放置，等 layout 完成后再由 setFrameSize 纠正。
+        c = reference;
+    }
     CGFloat sx = c.width / reference.width;
     CGFloat sy = c.height / reference.height;
     // 参考尺寸就是容器尺寸时 s≈1.0（精确铺满）；有微小偏差时用 MAX 补齐，避免露边
@@ -649,11 +653,13 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (!container.backgroundColor || CGColorGetAlpha(container.backgroundColor.CGColor) < 0.01) {
         container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
     }
-    SPFitHostView(host, container, _referenceSize);
+    // 顺序必须：先 addSubview 再定位。
+    // 先设 center 时 host 还没有父视图，center 没有参照系 → 画面飘到容器外 = 整块黑。
     host.autoresizingMask = UIViewAutoresizingNone;
     host.userInteractionEnabled = YES;
-    // 插到快照之上：有活画面就盖住快照，画面没出来就露快照，绝不黑屏
     [container addSubview:host];
+    [container layoutIfNeeded];
+    SPFitHostView(host, container, _referenceSize);
     _hostView = host;
     _attached = YES;
     _live = YES;
