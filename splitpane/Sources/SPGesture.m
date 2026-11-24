@@ -389,6 +389,13 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         SPLog(@"picked %@", bid);
         if (needPark) { [self.card dismissAnimated:nil]; self.card = nil; }
         [SPParkCard dismissAll];   // 双保险：任何残留卡片都在这儿收掉
+
+        // 长按图标进来时，第一个 App 可能根本没运行（日志实证：top attach diag=no-scene），
+        // 必须先把它拉起来，否则上半屏永远是空的。
+        [SPHost openAppAsync:parked completion:^(BOOL okOpen) {
+            SPLog(@"icon entry: ensure top %@ opened=%d", parked, (int)okOpen);
+        }];
+
         BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:self.scene topSnapshot:self.parkedSnapshot];
         SPLog(@"start top=%@ bottom=%@ -> %d", parked, bid, (int)ok);
         if (!ok) [SPHost openAppAsync:bid completion:nil];

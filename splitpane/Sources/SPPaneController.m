@@ -258,7 +258,8 @@ static const CGFloat kMaxPaneRatio = 0.78;
         if (!self || !self->_window) return;
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
-        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:5 interval:1.5];
+        // 上半屏往往需要等 App 冷启动，给足 12 次 × 1.5s = 18s 的窗口
+        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:12 interval:1.5];
         if (snap) [topHost installSnapshot:snap];
         SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
 
