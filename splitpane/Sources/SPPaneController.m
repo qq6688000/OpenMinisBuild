@@ -4,6 +4,7 @@
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPRepair.h"
+#import "SPParkCard.h"
 #import <objc/runtime.h>
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -184,6 +185,8 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 - (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene topSnapshot:(UIImage *)snap {
     if (_active || !top.length || !bottom.length) return NO;
+    // 分屏一旦建立，挂起卡片就没有存在的意义了；它的独立窗口必须立刻销毁
+    [SPParkCard dismissAll];
     if (!scene) scene = self.foregroundWindowScene;
     if (!scene) return NO;
 
@@ -363,6 +366,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
 - (void)teardown {
     // 先把两个 scene 的尺寸恢复成全屏，再拆窗口。
     // 顺序不能反：拆掉窗口后我们就不再持有 scene 的接管权，恢复会失效。
+    // 卡片窗口层级很高，不清理会一直挡在桌面上（也会挡点击）
+    [SPParkCard dismissAll];
+
     SPDumpScenes("before-teardown");
     @try {
         [_topHost restoreOriginalSceneSettings];

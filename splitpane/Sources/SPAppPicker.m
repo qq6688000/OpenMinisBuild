@@ -126,7 +126,7 @@ static SPAppPicker *gPicker = nil;
 
 - (void)buildInScene:(UIWindowScene *)scene {
     UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-    w.windowLevel = UIWindowLevelStatusBar + 130;
+    w.windowLevel = UIWindowLevelNormal + 3;
     w.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;

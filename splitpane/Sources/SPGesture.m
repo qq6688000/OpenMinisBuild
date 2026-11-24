@@ -65,6 +65,8 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     for (UIWindow *w in scene.windows) {
         if (w.isHidden || w.alpha < 0.01) continue;
         if (w.windowLevel > UIWindowLevelStatusBar) continue;
+        // 排除我们家自己的 overlay（level 1~4），否则会把卡片/分屏窗口当成 SpringBoard 主窗口
+        if (w.windowLevel > UIWindowLevelNormal && w.windowLevel < 100) continue;
         NSString *cn = NSStringFromClass(w.class);
         if ([cn containsString:@"RootScene"]) root = w;
         else if ([cn containsString:@"HomeScreen"]) home = w;
@@ -72,7 +74,9 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     if (root) return root;
     if (home) return home;
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (!w.isHidden && w.alpha > 0.01 && w.windowLevel <= UIWindowLevelStatusBar) return w;
+        if (w.isHidden || w.alpha <= 0.01) continue;
+        if (w.windowLevel > UIWindowLevelNormal && w.windowLevel < 100) continue;
+        if (w.windowLevel <= UIWindowLevelStatusBar) return w;
     }
     return nil;
 }
@@ -307,6 +311,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if (w.isHidden || w.alpha < 0.01) continue;
         if (w.windowLevel > UIWindowLevelStatusBar) continue;
+        if (w.windowLevel > UIWindowLevelNormal && w.windowLevel < 100) continue;
         key = w;
     }
     if (!key) return nil;
@@ -317,6 +322,11 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)parkForegroundApp:(NSString *)bundleID {
+    // 关键：先把之前所有卡片清掉。日志里 card presented 连续出现 5 次就是这个 bug ——
+    // 每次 park 都新造一个 window，旧的没人收，最后在桌面上叠成一块黑方块。
+    [SPParkCard dismissAll];
+    self.card = nil;
+
     _busy = YES;
     _parkedBundleID = bundleID;
     UIImage *shot = [self snapshotScreen];
@@ -364,6 +374,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         __strong typeof(wself) self = wself;
         SPLog(@"picked %@", bid);
         if (needPark) { [self.card dismissAnimated:nil]; self.card = nil; }
+        [SPParkCard dismissAll];   // 双保险：任何残留卡片都在这儿收掉
         BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:self.scene topSnapshot:self.parkedSnapshot];
         SPLog(@"start top=%@ bottom=%@ -> %d", parked, bid, (int)ok);
         if (!ok) [SPHost openAppAsync:bid completion:nil];

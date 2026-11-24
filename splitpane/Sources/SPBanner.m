@@ -15,7 +15,7 @@ void SPShowLoadBanner(NSString *text) {
         if (!scene) return;
 
         UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-        w.windowLevel = UIWindowLevelStatusBar + 400;
+        w.windowLevel = UIWindowLevelNormal + 4;
         w.backgroundColor = UIColor.clearColor;
         UIViewController *vc = [UIViewController new];
         vc.view.backgroundColor = UIColor.clearColor;
