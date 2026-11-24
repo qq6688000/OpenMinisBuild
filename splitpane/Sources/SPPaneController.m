@@ -172,7 +172,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 #pragma mark 启动
 
-- (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene {
+- (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene topSnapshot:(UIImage *)snap {
     if (_active || !top.length || !bottom.length) return NO;
     if (!scene) scene = self.foregroundWindowScene;
     if (!scene) return NO;
@@ -215,12 +215,13 @@ static const CGFloat kMaxPaneRatio = 0.78;
         if (!self || !self->_window) return;
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
-        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:8 interval:0.5];
+        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:16 interval:0.5];
+        if (snap) [topHost installSnapshot:snap];
         SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
-        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:8 interval:0.5];
+        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:20 interval:0.5];
         SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
 
         [self resizePanes];
@@ -263,7 +264,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     UIWindowScene *scene = _window.windowScene;
     [self stopWithCompletion:^{
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self startWithTop:b bottom:t windowScene:scene];
+            [self startWithTop:b bottom:t windowScene:scene topSnapshot:nil];
         });
     }];
 }

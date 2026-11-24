@@ -11,7 +11,7 @@
 @property (nonatomic, copy, readonly) NSString *bottomBundleID;
 
 // 用 top / bottom 两个 bundleID 起分屏；returns NO 时调用方保持原状
-- (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene;
+- (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene topSnapshot:(UIImage *)snap;
 
 // 换掉上面那块（PV 里再次上滑的行为）
 - (void)replaceTopWithBundleID:(NSString *)bundleID;

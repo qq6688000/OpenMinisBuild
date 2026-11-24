@@ -271,6 +271,28 @@ static BOOL SPSetI(id o, NSString *name, NSInteger v) {
 }
 
 // 把面板尺寸写进 scene settings。不推这一下，画面仍按全屏渲染，host 是空的。
+// 工厂出来的 SBDeviceApplicationSceneView 默认不渲染：必须关掉占位内容、
+// 关掉「宿主缩放上下文」、并把 displayMode 设成 4（活画面）。
+// 少任何一步，视图就是一块黑（0.3.1 的黑屏就是这么来的）。
+static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
+    if (!v) return;
+    @try {
+        SEL ph = NSSelectorFromString(@"setPlaceholderContentEnabled:");
+        BOOL hasPh = [v respondsToSelector:ph];
+        if (hasPh) ((void (*)(id, SEL, BOOL))objc_msgSend)(v, ph, NO);
+        SEL rz = NSSelectorFromString(@"setResizesHostedContext:");
+        BOOL hasRz = [v respondsToSelector:rz];
+        if (hasRz) ((void (*)(id, SEL, BOOL))objc_msgSend)(v, rz, NO);
+        SEL dm = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
+        BOOL hasDm = [v respondsToSelector:dm];
+        if (hasDm) ((void (*)(id, SEL, NSInteger, id, id))objc_msgSend)(v, dm, 4, nil, nil);
+        v.userInteractionEnabled = YES;
+        if (diag) [diag appendFormat:@" prep=ph%d rz%d dm%d", hasPh, hasRz, hasDm];
+    } @catch (NSException *e) {
+        if (diag) [diag appendString:[NSString stringWithFormat:@" prep!(%@)", e.reason]];
+    }
+}
+
 static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
     if (diag) *diag = nil;
     if (!scene) { if (diag) *diag = @"no-scene"; return NO; }
@@ -442,9 +464,12 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
     }
 
     // 4) 推 scene settings：不推的话画面还是全屏，host 是空的
+    NSMutableString *prepDiag = [NSMutableString string];
+    SPPrepareSceneHost(host, prepDiag);
+
     NSString *sub = nil;
     BOOL sent = SPSubmitSceneSettings(scene, ref, orient, &sub);
-    _lastDiag = [NSString stringWithFormat:@"%@/%@", _lastDiag, sub ?: @"-"];
+    _lastDiag = [NSString stringWithFormat:@"%@%@/%@", _lastDiag, prepDiag, sub ?: @"-"];
 
     host.frame = container.bounds;
     host.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;

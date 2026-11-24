@@ -18,6 +18,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
 @interface SPGesture () <SPParkCardDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) SPParkCard *card;
+@property (nonatomic, strong) UIImage *parkedSnapshot;
 @property (nonatomic, copy) NSString *parkedBundleID;
 @property (nonatomic, assign) BOOL busy;
 @property (nonatomic, weak) UIWindowScene *scene;
@@ -79,7 +80,13 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 - (void)installStatusTapInScene:(UIWindowScene *)scene {
     if (_statusTap) return;
     UIWindow *host = [self springBoardWindowInScene:scene];
-    if (!host) { SPLog(@"statusTap: no host window"); return; }
+    if (!host) {
+        NSMutableArray *names = [NSMutableArray array];
+        for (UIWindow *w in scene.windows) [names addObject:NSStringFromClass(w.class)];
+        SPLog(@"statusTap: no host window (scene has %lu: %@)", (unsigned long)scene.windows.count,
+              [names componentsJoinedByString:@","]);
+        return;
+    }
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statusDoubleTapped:)];
     tap.numberOfTapsRequired = 2;
     tap.delegate = self;
@@ -311,6 +318,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     _busy = YES;
     _parkedBundleID = bundleID;
     UIImage *shot = [self snapshotScreen];
+    self.parkedSnapshot = shot;
     SPLog(@"park %@ snapshot=%@", bundleID, shot ? @"ok" : @"nil");
 
     SPParkCard *card = [[SPParkCard alloc] initWithSnapshot:shot
@@ -354,7 +362,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         __strong typeof(wself) self = wself;
         SPLog(@"picked %@", bid);
         if (needPark) { [self.card dismissAnimated:nil]; self.card = nil; }
-        BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:self.scene];
+        BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:self.scene topSnapshot:self.parkedSnapshot];
         SPLog(@"start top=%@ bottom=%@ -> %d", parked, bid, (int)ok);
         if (!ok) [SPHost openApp:bid suspended:NO completion:nil];
         self.busy = NO;
