@@ -52,6 +52,7 @@ static IMP gOrigTouchesMoved = NULL;
 void SPWriteEnvironmentProbe(void);
 void SPProbeSwitcherAPI(void);
 void SPProbeIconMenu(void);
+void SPInstallIconMenuHook(void);
 
 static void SPRepairCallback(CFNotificationCenterRef center, void *observer,
                              CFNotificationName name, const void *object, CFDictionaryRef info) {
@@ -195,7 +196,7 @@ static void SPBootstrapWhenReady(int tries) {
     @catch (NSException *e) { SPLog(@"gesture install ex %@", e.reason); }
 
     if ([SPSettings bannerEnabled])
-        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.18 已加载" : @"SplitPane 0.4.18 已加载 · 用状态栏双击"); }
+        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.19 已加载" : @"SplitPane 0.4.19 已加载 · 用状态栏双击"); }
         @catch (NSException *e) { SPLog(@"banner ex %@", e.reason); }
 
     SPLog(@"bootstrap: done hooks=%d banner=%d", hooked, [SPSettings bannerEnabled]);
@@ -205,7 +206,7 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
-        SPLog(@"=== SplitPane 0.4.18 loaded (bundle=%@ pid=%d log=%@) ===",
+        SPLog(@"=== SplitPane 0.4.19 loaded (bundle=%@ pid=%d log=%@) ===",
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
         if (![bid isEqualToString:@"com.apple.springboard"]) { SPLog(@"not springboard, idle"); return; }
 

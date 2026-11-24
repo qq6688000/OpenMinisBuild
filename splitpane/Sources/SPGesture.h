@@ -7,6 +7,7 @@
 - (void)installInWindowScene:(UIWindowScene *)scene;
 - (void)handleHomePanBegan:(CGPoint)loc;
 - (void)cancelTracking;
+- (void)startSplitFromIconForBundleID:(NSString *)bundleID;
 - (void)handleHomePanMoved:(CGPoint)loc;
 - (BOOL)consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity;
 @end

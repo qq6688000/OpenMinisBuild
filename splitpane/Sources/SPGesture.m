@@ -421,6 +421,18 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     SPLog(@"returnToHome done");
 }
 
+// 从主屏图标长按菜单进入：这个 App 作为上半屏，弹面板选下半屏
+- (void)startSplitFromIconForBundleID:(NSString *)bundleID {
+    if (!bundleID.length) { SPLog(@"icon entry: empty bundleID"); return; }
+    SPLog(@"icon entry: %@", bundleID);
+    [SPParkCard dismissAll];
+    self.card = nil;
+    self.parkedBundleID = bundleID;
+    self.parkedSnapshot = [self snapshotScreen];
+    _busy = NO;
+    [self presentPickerForSplitWithParked:bundleID needPark:NO];
+}
+
 - (void)presentPickerForSwap {
     _busy = YES;
     __weak typeof(self) wself = self;
