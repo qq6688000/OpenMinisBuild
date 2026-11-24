@@ -66,7 +66,7 @@ void SPLog(NSString *fmt, ...) {
         @synchronized (buf) {
             [buf appendFormat:@"%@ %@\n", [df stringFromDate:[NSDate date]], msg];
             double now = CFAbsoluteTimeGetCurrent();
-            if (now - lastAt < 0.4) return;
+            if (now - lastAt < 1.0) return;
             lastAt = now;
             NSString *path = SPLogPath();
             if (!path) { [buf setString:@""]; return; }

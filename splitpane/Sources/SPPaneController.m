@@ -28,6 +28,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @property (nonatomic, strong) UIView *grabber;
 @property (nonatomic, assign) CGFloat splitRatio;
 @property (nonatomic, copy) void (^onSeamMoved)(void);
+@property (nonatomic, copy) void (^onSeamEnded)(void);
 @end
 
 @implementation SPSplitView
@@ -84,6 +85,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
     self.splitRatio = MIN(MAX(r, kMinPaneRatio), kMaxPaneRatio);
     [self setNeedsLayout];
     if (self.onSeamMoved) self.onSeamMoved();
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        if (self.onSeamEnded) self.onSeamEnded();
+    }
     if (g.state == UIGestureRecognizerStateEnded && [SPSettings haptics]) {
         UIImpactFeedbackGenerator *h = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleRigid];
         [h impactOccurred];
@@ -113,7 +117,10 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @property (nonatomic, assign, readwrite) BOOL active;
 @property (nonatomic, strong) NSTimer *heartbeat;
 @property (nonatomic, strong) UIImage *topSnapshot;
+@property (nonatomic, assign) BOOL resizeCoalescing;
+@property (nonatomic, assign) BOOL pendingResize;
 @property (nonatomic, strong) UIImage *bottomSnapshot;
+- (void)flushResize;
 - (void)startHeartbeat;
 @end
 
@@ -199,6 +206,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     __weak typeof(self) wself = self;
     split.onSeamMoved = ^{ [wself resizePanes]; };
+    split.onSeamEnded = ^{ [wself flushResize]; };
     [vc.view addSubview:split];
 
     // 保险出口：三指下滑 = 立即退出（不依赖被遮挡的 home 手势，也不依赖 × 按钮）
@@ -226,13 +234,13 @@ static const CGFloat kMaxPaneRatio = 0.78;
         if (!self || !self->_window) return;
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
-        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:16 interval:0.5];
+        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:6 interval:1.2];
         if (snap) [topHost installSnapshot:snap];
         SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
-        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:20 interval:0.5];
+        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:6 interval:1.2];
         SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
 
         [self resizePanes];
@@ -249,8 +257,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
         __strong typeof(wself) self = wself;
         if (!self || !self->_active) { [t invalidate]; return; }
         @try {
-            [self->_topHost refreshLiveness];
-            [self->_bottomHost refreshLiveness];
+            if (!self->_topHost) [t invalidate];
         } @catch (__unused NSException *e) {}
     }];
 }
@@ -259,6 +266,26 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!_split) return;
     [_split setNeedsLayout];
     [_split layoutIfNeeded];
+    // 布局立刻改（本地、便宜），但推给远端 scene 要节流：
+    // updateSettings 是往 FrontBoard 发的跨进程事务，拖动时每秒 60 次会把整机拖死。
+    _pendingResize = YES;
+    if (_resizeCoalescing) return;
+    _resizeCoalescing = YES;
+    __weak typeof(self) wself = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(wself) self = wself;
+        if (!self) return;
+        self->_resizeCoalescing = NO;
+        if (!self->_pendingResize) return;
+        self->_pendingResize = NO;
+        [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
+        [self->_bottomHost setFrameSize:self->_split.bottomContainer.bounds.size];
+    });
+}
+
+- (void)flushResize {
+    // 松手那一刻一定把最终尺寸推一次，保证画面和接缝对齐
+    _pendingResize = NO;
     [_topHost setFrameSize:_split.topContainer.bounds.size];
     [_bottomHost setFrameSize:_split.bottomContainer.bounds.size];
 }

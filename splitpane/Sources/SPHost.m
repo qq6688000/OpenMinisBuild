@@ -267,6 +267,15 @@ static NSMutableSet *gHomeTried = nil;
 // 所以按「最可能成功」的顺序全试一遍，并逐条写日志 —— 不写日志就永远不知道卡在哪。
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL))completion {
     if (!bundleID.length) return NO;
+
+    // 已经在运行（有 FBScene）就不用开，直接当成功 —— 省一次跨进程启动，也避免
+    // open 失败后我们白等 7 秒（0.4.0 日志里 open -> 0 + 22 次扫描）。
+    if ([self fbSceneForBundleID:bundleID]) {
+        SPLog(@"open %@ skipped (already has scene)", bundleID);
+        if (completion) completion(YES);
+        return YES;
+    }
+
     id opts = nil;
     Class optCls = NSClassFromString(@"FBSOpenApplicationOptions");
     if (optCls) {
@@ -589,6 +598,8 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
     __weak typeof(self) wself = self;
     __weak UIView *wc = container;
     __weak UIWindowScene *ws = windowScene;
+    // 容器已经不在屏幕上（用户退出了分屏）就停手，别在后台一直扫
+    if (!container.window) { SPLog(@"attach abandon %@ (container gone)", self.bundleID); return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
         if (!self || self->_attached) return;
