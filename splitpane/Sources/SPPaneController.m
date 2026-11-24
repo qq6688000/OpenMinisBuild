@@ -198,6 +198,8 @@ static const CGFloat kMaxPaneRatio = 0.78;
     UIView *chrome = [self buildChromeWithWidth:w.bounds.size.width];
     chrome.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [vc.view addSubview:chrome];
+    // chrome 必须在最上层：split 一旦因为坐标系错位盖到顶部，× 就点不到了（已发生）
+    chrome.layer.zPosition = 1000;
 
     // 底部留 34pt 给系统的 home 手势，否则上滑回桌面会被我们整块吞掉
     CGFloat bottomInset = 34.0;
@@ -208,13 +210,29 @@ static const CGFloat kMaxPaneRatio = 0.78;
     split.onSeamMoved = ^{ [wself resizePanes]; };
     split.onSeamEnded = ^{ [wself flushResize]; };
     [vc.view addSubview:split];
+    [vc.view bringSubviewToFront:chrome];
 
-    // 保险出口：三指下滑 = 立即退出（不依赖被遮挡的 home 手势，也不依赖 × 按钮）
+    // 出口 1：三指下滑
     UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
     escape.numberOfTouchesRequired = 3;
     escape.direction = UISwipeGestureRecognizerDirectionDown;
     escape.delegate = (id<UIGestureRecognizerDelegate>)self;
     [vc.view addGestureRecognizer:escape];
+
+    // 出口 2：三指双击（不依赖任何可点区域，× 被盖住时靠它）
+    UITapGestureRecognizer *triple = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
+    triple.numberOfTapsRequired = 2;
+    triple.numberOfTouchesRequired = 3;
+    triple.delegate = (id<UIGestureRecognizerDelegate>)self;
+    triple.cancelsTouchesInView = NO;
+    [vc.view addGestureRecognizer:triple];
+
+    // 出口 3：右上角整块热区也可退出（点不到 × 时往右上角戳两下）
+    UITapGestureRecognizer *corner = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
+    corner.numberOfTapsRequired = 2;
+    corner.delegate = (id<UIGestureRecognizerDelegate>)self;
+    corner.cancelsTouchesInView = NO;
+    [self.chrome addGestureRecognizer:corner];
 
     _window = w;
     _chrome = chrome;
@@ -241,6 +259,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
+        if (snap) [bottomHost installSnapshot:snap];   // 没画面时垫住，绝不露黑
         [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:8 interval:1.5];
         SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
 
@@ -293,12 +312,13 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 #pragma mark 操作
 
-- (void)escapeSwipe:(UISwipeGestureRecognizer *)g {
+- (void)escapeSwipe:(UIGestureRecognizer *)g {
     SPLog(@"escape swipe -> stop");
     [self stopWithCompletion:nil];
 }
 
 - (void)closeTapped {
+    SPLog(@"closeTapped");
     [self stopWithCompletion:nil];
 }
 
@@ -359,6 +379,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
     _active = NO;
+    _window.hidden = YES;      // 先立刻藏起来，别的什么都等拆完再说
     [self teardown];
     // 退出必须瞬时完成：拆窗即回到桌面（我们的窗口本来就低于键盘层，
     // 拆掉之后系统自己的界面就露出来了）。

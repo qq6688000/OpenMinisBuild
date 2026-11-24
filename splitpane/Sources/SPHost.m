@@ -538,6 +538,7 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
     host.frame = container.bounds;
     host.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     host.userInteractionEnabled = YES;
+    // 插到快照之上：有活画面就盖住快照，画面没出来就露快照，绝不黑屏
     [container addSubview:host];
     _hostView = host;
     _attached = YES;
