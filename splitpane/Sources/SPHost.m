@@ -263,39 +263,40 @@ static NSMutableSet *gHomeTried = nil;
     return NO;
 }
 
-// ⚠️ 不要碰 SBMainWorkspace 的 open* 系列。
-// 日志实证（0.4.1）：调它会在主线程同步阻塞整整 10 秒才返回失败，
-// 体感就是「点一下卡十秒」「分屏下上滑 home 也卡十秒」。
-// 只用 LSApplicationWorkspace：毫秒级返回，失败就是失败，绝不阻塞 UI。
-+ (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL))completion {
+// ⚠️⚠️ 两件事都别做：
+//   1) 别调 SBMainWorkspace 的 open*（实测同步阻塞 10 秒）
+//   2) 也别在调用线程里直接调 LSApplicationWorkspace.openApplicationWithBundleID:
+//      日志实证它同样阻塞 10007ms（0.4.2：`-> 0 (10007ms)`）
+// 唯一安全的做法：扔到后台队列，立刻返回。UI 不等人。
++ (BOOL)openAppAsync:(NSString *)bundleID completion:(void (^)(BOOL))completion {
     if (!bundleID.length) return NO;
-
-    // 已经有 scene 就不用开，直接算成功
     if ([self fbSceneForBundleID:bundleID]) {
         SPLog(@"open %@ skipped (already has scene)", bundleID);
         if (completion) completion(YES);
         return YES;
     }
-
-    Class lsw = NSClassFromString(@"LSApplicationWorkspace");
-    id workspace = lsw ? SPMsg0(lsw, @"defaultWorkspace") : nil;
-    for (NSString *sn in @[@"openApplicationWithBundleID:", @"openApplicationWithBundleIdentifier:"]) {
-        SEL sel = NSSelectorFromString(sn);
-        if (![workspace respondsToSelector:sel]) continue;
-        @try {
-            CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
-            BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, sel, bundleID);
-            SPLog(@"open %@ via LS.%@ -> %d (%.0fms)", bundleID, sn, (int)ok,
-                  (CFAbsoluteTimeGetCurrent() - t0) * 1000);
-            if (completion) completion(ok);
-            return ok;
-        } @catch (NSException *e) {
-            SPLog(@"LS open ex %@", e.reason);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        Class lsw = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = lsw ? SPMsg0(lsw, @"defaultWorkspace") : nil;
+        BOOL ok = NO;
+        for (NSString *sn in @[@"openApplicationWithBundleID:", @"openApplicationWithBundleIdentifier:"]) {
+            SEL sel = NSSelectorFromString(sn);
+            if (![workspace respondsToSelector:sel]) continue;
+            @try {
+                CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
+                ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, sel, bundleID);
+                SPLog(@"open %@ async via LS.%@ -> %d (%.0fms off-main)", bundleID, sn, (int)ok,
+                      (CFAbsoluteTimeGetCurrent() - t0) * 1000);
+                break;
+            } @catch (NSException *e) { SPLog(@"LS open ex %@", e.reason); }
         }
-    }
-    SPLog(@"open %@: no fast path (app not running)", bundleID);
-    if (completion) completion(NO);
-    return NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(ok); });
+    });
+    return YES;
+}
+
++ (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL))completion {
+    return [self openAppAsync:bundleID completion:completion];
 }
 
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL))completion {

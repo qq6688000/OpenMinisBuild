@@ -27,6 +27,7 @@
 + (id)applicationProxyForBundleID:(NSString *)bundleID;
 + (id)fbSceneForBundleID:(NSString *)bundleID;
 + (id)sceneHandleForScene:(id)scene;
++ (BOOL)openAppAsync:(NSString *)bundleID completion:(void (^)(BOOL ok))completion;
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL ok))completion;
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL ok))completion;
 + (BOOL)homePress;

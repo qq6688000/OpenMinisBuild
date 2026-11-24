@@ -364,7 +364,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         if (needPark) { [self.card dismissAnimated:nil]; self.card = nil; }
         BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:self.scene topSnapshot:self.parkedSnapshot];
         SPLog(@"start top=%@ bottom=%@ -> %d", parked, bid, (int)ok);
-        if (!ok) [SPHost openApp:bid suspended:NO completion:nil];
+        if (!ok) [SPHost openAppAsync:bid completion:nil];
         self.busy = NO;
     } onCancel:^{
         __strong typeof(wself) self = wself;

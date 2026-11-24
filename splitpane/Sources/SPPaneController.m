@@ -222,25 +222,26 @@ static const CGFloat kMaxPaneRatio = 0.78;
     _topBundleID = [top copy];
     _bottomBundleID = [bottom copy];
 
-    // 顺序很关键：先把下半屏那个 App 拉到前台，
-    // 上面的 App 就自然退到后台（不用按 home —— 这台机器 SBUIController 没有那个方法）。
-    [SPHost openApp:bottom suspended:NO completion:^(BOOL ok) {
+    // 关键：这里绝不等待 open 完成。
+    // LSApplicationWorkspace.openApplicationWithBundleID: 实测阻塞 10 秒（日志实证），
+    // 所以扔后台、立刻把两块面板搭起来，哪边有 scene 就先挂哪边，
+    // 没 scene 的那边留着占位 + 自动重试，App 起来了自然接上。
+    [SPHost openAppAsync:bottom completion:^(BOOL ok) {
         SPLog(@"open bottom %@ -> %d", bottom, (int)ok);
     }];
 
-    // 等它退到后台再挂 scene；后台 scene 不会跟前台抢渲染
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
         if (!self || !self->_window) return;
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
-        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:6 interval:1.2];
+        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:5 interval:1.5];
         if (snap) [topHost installSnapshot:snap];
         SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
-        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:6 interval:1.2];
+        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:8 interval:1.5];
         SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
 
         [self resizePanes];
