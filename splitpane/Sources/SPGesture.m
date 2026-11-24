@@ -45,9 +45,14 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
     UIWindowScene *ws = scene ?: _scene;
     if (!ws) { SPLog(@"install: no window scene yet"); return; }
-    [self installStatusTapInScene:ws];
-    if (!self.hooksAvailable) [self installFallbackPanInScene:ws];
-    SPLog(@"install: scene ok hooks=%d pan=%d", self.hooksAvailable, self.fallbackPan != nil);
+    @try {
+        if ([SPSettings statusTapEnabled]) [self installStatusTapInScene:ws];
+        if ([SPSettings fallbackPanEnabled] && !self.hooksAvailable) [self installFallbackPanInScene:ws];
+    } @catch (NSException *e) {
+        SPLog(@"install ex %@", e.reason);
+    }
+    SPLog(@"install: scene ok hooks=%d statusTap=%d fallbackPan=%d",
+          self.hooksAvailable, _statusTap != nil, self.fallbackPan != nil);
 }
 
 - (UIView *)springBoardWindowInScene:(UIWindowScene *)scene {
@@ -119,6 +124,10 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
 - (void)statusDoubleTapped:(UITapGestureRecognizer *)g {
     if (![SPSettings enabled]) return;
+    @try { [self _statusDoubleTapped]; } @catch (NSException *e) { SPLog(@"statusTap ex %@", e.reason); }
+}
+
+- (void)_statusDoubleTapped {
     NSString *front = [self frontmostBundleID];
     SPLog(@"status double tap, front=%@ active=%d", front, (int)SPPaneController.shared.active);
     if (SPPaneController.shared.active) { [self presentPickerForSwap]; return; }
@@ -129,6 +138,10 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 #pragma mark - 备份 pan
 
 - (void)fallbackPanned:(UIPanGestureRecognizer *)g {
+    @try { [self _fallbackPanned:g]; } @catch (NSException *e) { SPLog(@"fallbackPan ex %@", e.reason); }
+}
+
+- (void)_fallbackPanned:(UIPanGestureRecognizer *)g {
     CGPoint p = [g locationInView:g.view];
     if (g.state == UIGestureRecognizerStateBegan) {
         _dragStartY = p.y;
@@ -182,6 +195,11 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (BOOL)consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity {
+    @try { return [self _consumeHomePan:pan translation:translation velocity:velocity]; }
+    @catch (NSException *e) { SPLog(@"consume ex %@", e.reason); return NO; }
+}
+
+- (BOOL)_consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity {
     if (![SPSettings enabled]) return NO;
     if (_busy) return NO;
 

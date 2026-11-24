@@ -1,53 +1,50 @@
 #import "SPLog.h"
 #import <dlfcn.h>
 
-// 日志路径：多候选，挑第一个真的能写进去的。
-// RootHide 下 /var/mobile/Library 经常不可写，rootless 在 /var/jb 下，
-// 所以三个都试，最后还有 /tmp 兜底 —— 只要 dylib 被加载，就一定有日志。
+// ⚠️ 这里绝不能用 dlsym 调 RootHide 的 jbroot。
+// roothide.h 里它有两个重载：
+//     const char* jbroot(const char*);
+//     NSString*   jbroot(NSString*) __attribute__((overloadable));
+// dlsym(RTLD_DEFAULT,"jbroot") 拿到的是 C 版，按 NSString* 调用 = 把对象指针
+// 当 C 字符串喂给 strlen → SIGSEGV → SpringBoard 进安全模式（0.2.1 就是这么炸的）。
+// 现在只试固定路径，不碰任何 jailbreak 私有符号。
 
 static NSString *gPath = nil;
 static dispatch_once_t gOnce;
 
 static NSArray<NSString *> *SPCandidates(void) {
-    NSMutableArray *a = [NSMutableArray array];
-    // RootHide 的 jbroot：符号在 loader 里，拿到了就拼真路径
-    void *sym = dlsym(RTLD_DEFAULT, "jbroot");
-    if (sym) {
-        NSString *(*jbroot)(NSString *) = (NSString *(*)(NSString *))sym;
-        @try {
-            NSString *p = jbroot(@"/var/mobile/Library/Logs");
-            if (p.length) [a addObject:[p stringByAppendingPathComponent:@"SplitPane.log"]];
-        } @catch (__unused NSException *e) {}
-    }
-    [a addObject:@"/var/mobile/Library/Logs/SplitPane.log"];
-    [a addObject:@"/var/jb/var/mobile/Library/Logs/SplitPane.log"];
-    [a addObject:@"/tmp/SplitPane.log"];
-    [a addObject:@"/var/tmp/SplitPane.log"];
-    return a;
+    return @[
+        @"/var/mobile/Library/Logs/SplitPane.log",
+        @"/var/jb/var/mobile/Library/Logs/SplitPane.log",
+        @"/tmp/SplitPane.log",
+        @"/var/tmp/SplitPane.log",
+    ];
 }
 
 static void SPResolvePath(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *cand in SPCandidates()) {
         NSString *dir = [cand stringByDeletingLastPathComponent];
-        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
-        if (![fm isWritableFileAtPath:dir] && ![fm fileExistsAtPath:dir]) continue;
-        if ([fm createFileAtPath:cand contents:[NSData data] attributes:nil] ||
-            [fm isWritableFileAtPath:cand]) {
-            gPath = cand;
-            return;
-        }
+        @try {
+            [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+            if ([fm createFileAtPath:cand contents:[NSData data] attributes:nil] ||
+                [fm isWritableFileAtPath:cand]) {
+                gPath = cand;
+                return;
+            }
+        } @catch (__unused NSException *e) {}
     }
-    gPath = @"/tmp/SplitPane.log";
+    gPath = nil;   // 一个都写不进去：只走 NSLog，绝不因此崩
 }
 
 NSString *SPLogPath(void) {
     dispatch_once(&gOnce, ^{ SPResolvePath(); });
-    return gPath ?: @"/tmp/SplitPane.log";
+    return gPath;
 }
 
 void SPLogClear(void) {
-    [[NSFileManager defaultManager] removeItemAtPath:SPLogPath() error:NULL];
+    NSString *p = SPLogPath();
+    if (p) [[NSFileManager defaultManager] removeItemAtPath:p error:NULL];
 }
 
 void SPLog(NSString *fmt, ...) {
@@ -56,31 +53,34 @@ void SPLog(NSString *fmt, ...) {
     va_end(ap);
     NSLog(@"[SplitPane] %@", msg);
 
-    static NSDateFormatter *df;
-    static NSMutableString *buf;
-    static double lastAt;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        df = [NSDateFormatter new];
-        df.dateFormat = @"HH:mm:ss.SSS";
-        buf = [NSMutableString new];
-    });
-    @synchronized (buf) {
-        [buf appendFormat:@"%@ %@\n", [df stringFromDate:[NSDate date]], msg];
-        double now = CFAbsoluteTimeGetCurrent();
-        if (now - lastAt < 0.4) return;
-        lastAt = now;
-        // 追加写，绝不能把上一次的内容冲掉
-        NSString *path = SPLogPath();
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (!fh) { [buf writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL]; }
-        else {
-            @try {
+    @try {
+        static NSDateFormatter *df;
+        static NSMutableString *buf;
+        static double lastAt;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            df = [NSDateFormatter new];
+            df.dateFormat = @"HH:mm:ss.SSS";
+            buf = [NSMutableString new];
+        });
+        @synchronized (buf) {
+            [buf appendFormat:@"%@ %@\n", [df stringFromDate:[NSDate date]], msg];
+            double now = CFAbsoluteTimeGetCurrent();
+            if (now - lastAt < 0.4) return;
+            lastAt = now;
+            NSString *path = SPLogPath();
+            if (!path) { [buf setString:@""]; return; }
+            NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+            if (!fh) {
+                [buf writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            } else {
                 [fh seekToEndOfFile];
                 [fh writeData:[buf dataUsingEncoding:NSUTF8StringEncoding]];
                 [fh closeFile];
-            } @catch (__unused NSException *e) {}
+            }
+            [buf setString:@""];
         }
-        [buf setString:@""];
+    } @catch (__unused NSException *e) {
+        // 写日志本身失败绝不能让 SpringBoard 崩
     }
 }

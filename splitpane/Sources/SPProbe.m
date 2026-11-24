@@ -51,29 +51,39 @@ void SPWriteEnvironmentProbe(void) {
           SPSelProbe(handle, @"createSceneViewWithReferenceSize:withContentOrientation:andContainerOrientation:configuration:"),
           SPSelProbe(sbscene, @"initWithScene:"));
 
-    id mgr = [SPHost mainDisplaySceneManager];
-    SPLog(@"env mainDisplaySceneManager=%@ (%@)", mgr ? NSStringFromClass([mgr class]) : @"nil",
-          mgr ? @"ok" : @"FAIL");
+    // 以下每一项单独 @try：任何一项炸都不影响其它项，也不影响 SpringBoard
+    @try {
+        id mgr = [SPHost mainDisplaySceneManager];
+        SPLog(@"env mainDisplaySceneManager=%@ (%@)", mgr ? NSStringFromClass([mgr class]) : @"nil",
+              mgr ? @"ok" : @"FAIL");
+        if (mgr) {
+            NSArray *scenes = SPMsg0(mgr, @"allScenes");
+            SPLog(@"env allScenes count=%lu",
+                  (unsigned long)([scenes isKindOfClass:[NSArray class]] ? scenes.count : 0));
+        }
+    } @catch (NSException *e) { SPLog(@"env sceneManager ex %@", e.reason); }
 
-    if (mgr) {
-        NSArray *scenes = SPMsg0(mgr, @"allScenes");
-        SPLog(@"env allScenes count=%lu", (unsigned long)([scenes isKindOfClass:[NSArray class]] ? scenes.count : 0));
-    }
+    @try {
+        Class ac = NSClassFromString(@"SBApplicationController");
+        id ctrl = ac ? SPMsg0(ac, @"sharedInstance") : nil;
+        NSArray *apps = SPMsg0(ctrl, @"allApplications");
+        SPLog(@"env SBApplicationController=%@ allApplications=%lu", ctrl ? @"ok" : @"nil",
+              (unsigned long)([apps isKindOfClass:[NSArray class]] ? apps.count : 0));
+    } @catch (NSException *e) { SPLog(@"env appController ex %@", e.reason); }
 
-    Class ac = NSClassFromString(@"SBApplicationController");
-    id ctrl = ac ? SPMsg0(ac, @"sharedInstance") : nil;
-    NSArray *apps = SPMsg0(ctrl, @"allApplications");
-    SPLog(@"env SBApplicationController=%@ allApplications=%lu", ctrl ? @"ok" : @"nil",
-          (unsigned long)([apps isKindOfClass:[NSArray class]] ? apps.count : 0));
+    @try {
+        NSMutableArray *wins = [NSMutableArray array];
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            [wins addObject:[NSString stringWithFormat:@"%.0f:%@", w.windowLevel,
+                             NSStringFromClass(w.class)]];
+        }
+        SPLog(@"env windows: %@", [wins componentsJoinedByString:@", "]);
+    } @catch (NSException *e) { SPLog(@"env windows ex %@", e.reason); }
 
-    NSMutableArray *wins = [NSMutableArray array];
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        [wins addObject:[NSString stringWithFormat:@"%.0f:%@", w.windowLevel,
-                         NSStringFromClass(w.class)]];
-    }
-    SPLog(@"env windows: %@", [wins componentsJoinedByString:@", "]);
-
-    Class uic = NSClassFromString(@"SBUIController");
-    id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
-    SPLog(@"env homePress=%@", (ui && [ui respondsToSelector:NSSelectorFromString(@"handleHomeButtonSinglePressUp")]) ? @"Y" : @"n");
+    @try {
+        Class uic = NSClassFromString(@"SBUIController");
+        id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
+        SPLog(@"env homePress=%@",
+              (ui && [ui respondsToSelector:NSSelectorFromString(@"handleHomeButtonSinglePressUp")]) ? @"Y" : @"n");
+    } @catch (NSException *e) { SPLog(@"env homePress ex %@", e.reason); }
 }

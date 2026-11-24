@@ -42,6 +42,10 @@ static double SPPrefDouble(NSString *key, double fallback) {
 + (BOOL)haptics { return SPBoolValue(@"haptics", YES); }
 + (BOOL)keepSnapshots { return SPBoolValue(@"keepSnapshots", YES); }
 + (double)seamThickness { return SPPrefDouble(@"seamThickness", 34.0); }
++ (BOOL)bannerEnabled { return SPBoolValue(@"showBanner", YES); }
++ (BOOL)hooksEnabled { return SPBoolValue(@"hookHomeGesture", NO); }
++ (BOOL)statusTapEnabled { return SPBoolValue(@"statusTapEntry", YES); }
++ (BOOL)fallbackPanEnabled { return SPBoolValue(@"fallbackPanEntry", NO); }
 + (double)parkThreshold {
     // 设置面板的滑杆写的是 20..80 的整数（百分比），这里统一归一到 0.20..0.80
     double v = SPPrefDouble(@"parkThreshold", 45.0);
