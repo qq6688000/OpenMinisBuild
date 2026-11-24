@@ -402,18 +402,14 @@ static const CGFloat kMaxPaneRatio = 0.78;
     NSString *main = _topBundleID ?: _bottomBundleID;
     _active = NO;
     [self teardown];          // 内部先恢复 scene 尺寸、再释放窗口并 killAll
-    // 退出必须瞬时完成：拆窗即回到桌面（我们的窗口本来就低于键盘层，
-    // 拆掉之后系统自己的界面就露出来了）。
-    // 不要把 App 重新 open 一遍 —— 那是跨进程同步调用，日志实证会卡 10 秒。
     SPLog(@"stop: window torn down, main=%@", main);
-    // 让 App 自己重新走一遍全屏布局（scene 尺寸已恢复，但内部排版要它自己重算）
-    if (main.length) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [SPHost reactivateApp:main];
-        });
-    }
-    if (completion) completion();
 
+    // ⚠️ 退出后绝不重新激活 App。
+    // 之前这里调 reactivateApp:，会把 App 推回前台：它的 scene 刚被改回全屏、
+    // 内部还没重排完，用户看到的就是「一整块黑屏」，而且它盖住桌面 → 退不回去。
+    // 正确做法：直接回桌面。
+    [SPHost homePress];
+    if (completion) completion();
 }
 
 @end

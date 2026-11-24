@@ -647,7 +647,8 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     _snapshotView.frame = (CGRect){CGPointZero, r};
     NSInteger orient = (r.width > r.height) ? 4 : 1;
     NSString *sub = nil;
-    SPSubmitSceneSettings(_scene, r, orient, &sub);
+    // 调尺寸时绝不改前台状态：把 App 反复推前台会导致画面闪黑
+    SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
 }
 
 - (BOOL)refreshLiveness {
