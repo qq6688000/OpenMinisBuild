@@ -53,6 +53,8 @@ static void SPHookedTouchesCancelled(id self, SEL _cmd, NSSet *touches, UIEvent 
         ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesCancelled)(self, _cmd, touches, event);
 }
 
+void SPWriteEnvironmentProbe(void);
+
 static BOOL SPInstallGestureHooks(void) {
     Class cls = NSClassFromString(@"SBHomeGesturePanGestureRecognizer");
     if (!cls) { SPLog(@"hook: class missing"); return NO; }
@@ -68,7 +70,7 @@ static BOOL SPInstallGestureHooks(void) {
 __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
-        SPLog(@"=== SplitPane 0.2.0 loaded (bundle=%@ pid=%d) log=%@ ===",
+        SPLog(@"=== SplitPane 0.2.1 loaded (bundle=%@ pid=%d) log=%@ ===",
               bid ?: @"?", getpid(), SPLogPath());
         if (![bid isEqualToString:@"com.apple.springboard"]) {
             SPLog(@"not springboard, idle");
@@ -79,6 +81,7 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [SPSettings startObserving];
+            SPWriteEnvironmentProbe();
             BOOL hooked = SPInstallGestureHooks();
             [SPGesture shared].hooksAvailable = hooked;
             NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
@@ -89,8 +92,8 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
             }];
             [[SPGesture shared] installInWindowScene:nil];
             SPShowLoadBanner(hooked
-                ? [NSString stringWithFormat:@"SplitPane 0.2.0 已加载 · %@", [SPLogPath() lastPathComponent]]
-                : @"SplitPane 0.2.0 已加载 · 手势钩子失败，仅备用入口");
+                ? [NSString stringWithFormat:@"SplitPane 0.2.1 已加载 · %@", [SPLogPath() lastPathComponent]]
+                : @"SplitPane 0.2.1 已加载 · 钩子失败，用状态栏双击");
         });
     }
 }
