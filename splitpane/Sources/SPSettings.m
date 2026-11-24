@@ -44,7 +44,12 @@ static double SPPrefDouble(NSString *key, double fallback) {
 + (double)seamThickness { return SPPrefDouble(@"seamThickness", 34.0); }
 + (BOOL)bannerEnabled { return SPBoolValue(@"showBanner", YES); }
 + (BOOL)hooksEnabled { return SPBoolValue(@"hookHomeGesture", NO); }
-+ (BOOL)statusTapEnabled { return SPBoolValue(@"statusTapEntry", YES); }
++ (BOOL)statusTapEnabled {
+    // 唯一不依赖任何私有 API 的入口，默认必须有；用户显式关掉才停
+    id v = SPPref(@"statusTapEntry");
+    if (!v) return YES;
+    return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : YES;
+}
 + (BOOL)fallbackPanEnabled { return SPBoolValue(@"fallbackPanEntry", NO); }
 + (double)parkThreshold {
     // 设置面板的滑杆写的是 20..80 的整数（百分比），这里统一归一到 0.20..0.80

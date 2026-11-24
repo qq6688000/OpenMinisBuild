@@ -187,48 +187,54 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 #pragma mark - 前台 App
 
 - (NSString *)frontmostBundleID {
-    // allScenes 在这台机器上是 0（日志实证），所以 SFScene 那条路走不通。
-    // 主路：SBApplicationController.allApplications（193 个）+ 前景/运行态判定。
+    // 本机实证：allApplications 里 isForeground/isFrontmost 都不命中（193 个 App 全是 n），
+    // allScenes 是 0。真正的前台 getter 挂在 SpringBoard 自己身上（Duo 注释 + 实测）。
+    // 顺序：SpringBoard 的 frontmost getter → SBApplicationController 同名 getter → 打分兜底。
+    NSMutableArray *owners = [NSMutableArray arrayWithObject:[UIApplication sharedApplication]];
     Class ac = NSClassFromString(@"SBApplicationController");
     id ctrl = ac ? SPMsg0(ac, @"sharedInstance") : nil;
-    NSArray *apps = SPMsg0(ctrl, @"allApplications");
-    if (![apps isKindOfClass:[NSArray class]]) apps = SPMsg0(ctrl, @"applications");
+    if (ctrl) [owners addObject:ctrl];
 
-    NSString *best = nil;
-    NSInteger bestScore = -1;
+    NSArray *getters = @[@"_accessibilityFrontMostApplication", @"_frontMostApplication",
+                         @"frontmostApplication", @"focusedApplication"];
+    for (id owner in owners) {
+        for (NSString *name in getters) {
+            @try {
+                SEL getter = NSSelectorFromString(name);
+                if (![owner respondsToSelector:getter]) continue;
+                NSMethodSignature *sig = [owner methodSignatureForSelector:getter];
+                if (sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') continue;
+                id app = ((id (*)(id, SEL))objc_msgSend)(owner, getter);
+                if (!app) continue;
+                id bidObj = SPMsg0(app, @"bundleIdentifier");
+                if ([bidObj isKindOfClass:[NSString class]] && [(NSString *)bidObj length]) {
+                    SPLog(@"frontmost via %@.%@ = %@", NSStringFromClass([owner class]), name, bidObj);
+                    return (NSString *)bidObj;
+                }
+            } @catch (NSException *e) { SPLog(@"frontmost %@ ex %@", name, e.reason); }
+        }
+    }
+
+    // 兜底：按「最后活跃」打分
+    Class ac2 = NSClassFromString(@"SBApplicationController");
+    id c2 = ac2 ? SPMsg0(ac2, @"sharedInstance") : nil;
+    NSArray *apps = SPMsg0(c2, @"allApplications");
+    NSString *best = nil; NSInteger bestScore = 0;
     for (id app in apps) {
         @try {
-            id bidObj = SPMsg0(app, @"bundleIdentifier");
-            if (![bidObj isKindOfClass:[NSString class]]) continue;
-            NSString *bid = (NSString *)bidObj;
-            if (!bid.length) continue;
-            NSInteger score = -1;
-            if (SPBool0(app, @"isForeground")) score = 100;
-            else if (SPBool0(app, @"isFrontmost")) score = 90;
-            else if (SPBool0(app, @"isFrontmostApplication")) score = 90;
-            else if (SPBool0(app, @"isRunning")) score = 10;
-            // 有 scene 且是主显示
-            id handles = SPMsg0(app, @"sceneHandles");
-            if ([handles isKindOfClass:[NSArray class]] && [handles count]) score = MAX(score, (NSInteger)20);
-            if (score > bestScore) { bestScore = score; best = bid; }
+            id b = SPMsg0(app, @"bundleIdentifier");
+            if (![b isKindOfClass:[NSString class]] || ![(NSString *)b length]) continue;
+            NSInteger score = 0;
+            if (SPBool0(app, @"isForeground")) score = 50;
+            if (SPBool0(app, @"isFrontmost")) score += 30;
+            id hs = SPMsg0(app, @"sceneHandles");
+            if ([hs isKindOfClass:[NSArray class]]) score += (NSInteger)[hs count] * 5;
+            if (SPBool0(app, @"isRunningBackground")) score -= 10;
+            if (score > bestScore) { bestScore = score; best = b; }
         } @catch (__unused NSException *e) {}
     }
-    if (bestScore < 0) {
-        // 再退一层：SpringBoard 自己的前台判定
-        id mgr = [SPHost mainDisplaySceneManager];
-        NSArray *scenes = SPMsg0(mgr, @"allScenes");
-        for (id s in scenes) {
-            if (![s isKindOfClass:[NSObject class]]) continue;
-            if (!SPBool0(s, @"isActive")) continue;
-            id h = SPMsg0(s, @"handle");
-            id a = SPMsg0(h, @"application");
-            id b = SPMsg0(a, @"bundleIdentifier");
-            if ([b isKindOfClass:[NSString class]]) return b;
-        }
-        SPLog(@"frontmost: none (apps=%lu)", (unsigned long)([apps isKindOfClass:[NSArray class]] ? apps.count : 0));
-        return nil;
-    }
-    SPLog(@"frontmost=%@ score=%ld", best, (long)bestScore);
+    if (best) SPLog(@"frontmost fallback=%@ score=%ld", best, (long)bestScore);
+    else SPLog(@"frontmost: none (apps=%lu)", (unsigned long)([apps isKindOfClass:[NSArray class]] ? apps.count : 0));
     return best;
 }
 
