@@ -370,20 +370,32 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
     SPDumpScenes("before-teardown");
 
-    // ⚠️ 顺序是「先摘视图、再恢复 settings」，跟之前相反。
-    // 之前先推全屏 settings 再 detach：那一瞬 scene 被要求按全屏渲染，
-    // 而唯一的呈现者（我们的 hostView）还在显示半屏内容，两边打架 → 黑屏。
-    // 先 detach 让 scene 失去我们的呈现者，再把它交回系统全屏，中间不会出现空的渲染态。
-    [_topHost detach];
-    [_bottomHost detach];
+    // 顺序（每步都有日志实证）：
+    //   1) 先把「要保留的那个 App」交回系统前台，让系统建自己的全屏呈现
+    //   2) 再摘我们的宿主视图 —— 此时系统已经接管，摘掉不会出现空渲染
+    //   3) 最后恢复剩余 scene 的尺寸
+    // 之前一上来就 detach：scene 失去唯一呈现者且系统还没接管 → 黑屏。
+    NSString *keep = _topBundleID ?: _bottomBundleID;
 
     @try {
+        // 先把尺寸恢复成全屏，再交回前台：顺序反了系统会按半屏建呈现
         [_topHost restoreOriginalSceneSettings];
         [_bottomHost restoreOriginalSceneSettings];
+        if (keep.length) [SPHost reactivateApp:keep];
         // 兜底：把「被压小」的 scene 全扫一遍恢复（漏掉某个 host 也不会留下残废 App）
         [SPRepair restoreAllScenes];
         SPLog(@"repair report: %@", [SPRepair lastReport]);
     } @catch (NSException *e) { SPLog(@"restore ex %@", e.reason); }
+
+    // 关键：宿主视图延迟摘除，等系统把全屏呈现建起来（0.25s 后），
+    // 这样中间不会出现「scene 没有任何呈现者」的黑帧。
+    SPHost *keepTop = _topHost, *keepBottom = _bottomHost;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @try {
+            [keepTop detach];
+            [keepBottom detach];
+        } @catch (__unused NSException *e) {}
+    });
 
     [_heartbeat invalidate];
     _heartbeat = nil;
