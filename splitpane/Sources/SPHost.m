@@ -36,6 +36,7 @@
 @property (nonatomic, strong) UIView *hostView;
 @property (nonatomic, strong) UIImageView *snapshotView;
 @property (nonatomic, strong) id scene;
+@property (nonatomic, assign) CGSize referenceSize;
 @property (nonatomic, strong) id handle;
 @property (nonatomic, strong) SPHostRequester *requester;
 @property (nonatomic, strong) id controller;
@@ -520,13 +521,34 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     return nil;
 }
 
+
+// 把按 referenceSize 渲染的 host 等比塞进 container：MIN(sx,sy) 缩放 + 居中。
+// 只缩不放，避免画面被拉变形；两侧留黑是等比缩放的必然结果，但内容比例正确。
+static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
+    if (!host || !container || reference.width < 2 || reference.height < 2) return;
+    CGSize c = container.bounds.size;
+    if (c.width < 2 || c.height < 2) return;
+    CGFloat sx = c.width / reference.width;
+    CGFloat sy = c.height / reference.height;
+    CGFloat s = MIN(sx, sy);
+    host.transform = CGAffineTransformIdentity;
+    host.frame = CGRectMake(0, 0, reference.width, reference.height);
+    host.transform = CGAffineTransformMakeScale(s, s);
+    host.center = CGPointMake(c.width / 2.0, c.height / 2.0);
+}
+
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene {
     if (!container) return NO;
     _containerView = container;
     if (_attached && _hostView && _hostView.superview == container) return YES;
 
-    CGSize ref = container.bounds.size;
-    if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
+    // 参考尺寸必须固定为「全屏」，绝不能拿容器（半屏）尺寸去推 scene。
+    // 拿半屏尺寸推 = App 按 422x413 重排版，WebView / 列表类 App 会缩在角落 + 黑边。
+    // 正确做法：scene 保持全屏排版，我们再等比缩放贴进容器（见 SPFitHostView）。
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGSize ref = screen;
+    if (ref.width < 2 || ref.height < 2) ref = container.bounds.size;
+    _referenceSize = ref;
     _lastSize = ref;
     NSInteger orient = (ref.width > ref.height) ? 4 : 1;
 
@@ -614,8 +636,13 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     BOOL sent = SPSubmitSceneSettings(scene, ref, orient, &sub);
     _lastDiag = [NSString stringWithFormat:@"%@%@/%@", _lastDiag, prepDiag, sub ?: @"-"];
 
-    host.frame = container.bounds;
-    host.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    // 等比缩放：scene 按 ref 全屏渲染，容器只有半屏，取 MIN(sx,sy) 并居中
+    // 容器底色给个深灰：等比缩放后两侧留白是「设计如此」，不是渲染失败的黑屏
+    if (!container.backgroundColor || CGColorGetAlpha(container.backgroundColor.CGColor) < 0.01) {
+        container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    }
+    SPFitHostView(host, container, _referenceSize);
+    host.autoresizingMask = UIViewAutoresizingNone;
     host.userInteractionEnabled = YES;
     // 插到快照之上：有活画面就盖住快照，画面没出来就露快照，绝不黑屏
     [container addSubview:host];
