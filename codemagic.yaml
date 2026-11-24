@@ -1,215 +1,39 @@
-# Codemagic workflow: build OpenMinis unsigned device IPA.
-# Mirrors .github/workflows/ipa.yml (the GitHub Actions build), but runs on
-# Codemagic's mac_mini_m2 which is not subject to the public macOS runner queue.
 workflows:
-  trae-ipa:
+  splitpane-macos:
+    name: SplitPane arm64e deb
     instance_type: mac_mini_m2
-    max_build_duration: 120
+    max_build_duration: 30
     environment:
-      xcode: latest
-      cocoapods: default
       vars:
-        GOEXPERIMENT: jsonv2
-        GOTOOLCHAIN: go1.25.5
+        SPLITPANE_DIR: splitpane
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: seagull-pair-build
+          include: true
     scripts:
-      - name: Xcode version
-        script: xcodebuild -version
-
-      - name: Install build tools
+      - name: Install dpkg
         script: |
-          brew install ninja llvm libarchive pkg-config go meson lld ldid || true
-          python3 -m pip install --user --break-system-packages meson 2>/dev/null || true
-
-      - name: Fix VDSO linker (Homebrew llvm clang)
-        script: |
-          LLD=$(ls /opt/homebrew/opt/llvm/bin/ld.lld /opt/homebrew/opt/lld/bin/ld.lld /opt/homebrew/bin/ld.lld /opt/homebrew/opt/llvm/bin/lld /opt/homebrew/opt/lld/bin/lld /opt/homebrew/bin/lld 2>/dev/null | head -1)
-          echo "ld.lld found at: ${LLD:-NONE}"
-          /opt/homebrew/opt/llvm/bin/clang --version | head -1 || true
-          if [ -z "$LLD" ]; then echo "!! no lld binary"; exit 1; fi
-          sed -i.bak "s|-fuse-ld=lld|-fuse-ld=${LLD}|g" deps/ish/vdso/arm64/meson.build
-          grep -n "fuse-ld" deps/ish/vdso/arm64/meson.build
-
-      - name: Metal toolchain (best effort)
-        script: xcodebuild -downloadComponent MetalToolchain || echo "Metal toolchain unavailable; continuing"
-
-      - name: Build native deps (iSH, FFmpeg, LAME, rclone, Alpine rootfs)
-        script: |
-          export GOEXPERIMENT=jsonv2
-          export GOTOOLCHAIN=go1.25.5
-          go version
-          ./deps/build_lame.sh
-          ./deps/build_ffmpeg.sh
-          ./deps/build_ish.sh
-          ./deps/prepare_alpine_rootfs.sh
-          ./deps/build_rclone_ios.sh
-
-      - name: Resolve SwiftPM deps (retry on 504)
-        script: |
-          set -euo pipefail
-          echo "==> resolve with retry"
-          for attempt in 1 2 3 4 5 6; do
-            echo "==> resolve attempt $attempt"
-            if xcodebuild -project src/ios/Minis.xcodeproj -scheme Minis \
-              -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
-              -derivedDataPath build/DerivedData -skipPackagePluginValidation \
-              -resolvePackageDependencies 2>&1 | tee /tmp/resolve_$attempt.log; then
-              echo "==> resolved OK on attempt $attempt"
-              break
-            fi
-            if grep -q "504\|badResponseStatusCode" /tmp/resolve_$attempt.log; then
-              echo "==> hit 504; sleeping 10s and retrying"
-              sleep 10
-              continue
-            fi
-            echo "==> non-504 failure; giving up"
-            exit 1
-          done
-
-      - name: Compile (device, unsigned)
-        script: |
-          xcodebuild -project src/ios/Minis.xcodeproj -scheme Minis \
-            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
-            -derivedDataPath build/DerivedData -skipPackagePluginValidation \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
-            build
-
-      # Provision the on-device toolchain from the pinned release.
-      # Assets are 4MB chunks (single-shot uploads of the 28-39MB files timed
-      # out); they are concatenated here and verified against a known SHA-256.
-      # A mismatch fails the build: a silently corrupted compiler is worse than
-      # no compiler.
-      - name: Stage on-device toolchain resources
-        script: |
-          set -euo pipefail
-          OUT=src/ios/ToolchainResources; mkdir -p "$OUT"
-          BASE="https://github.com/qq6688000/OpenMinisBuild/releases/download/native-toolchain-v1"
-          fetch() { # prefix, suffix list, expected sha, output
-            prefix=$1; list=$2; want=$3; out=$4
-            rm -f "$out"
-            for suffix in $list; do
-              # Verify each chunk landed whole: a truncated download silently
-              # corrupts the concatenation (seen while testing this pipeline).
-              ok=0
-              for attempt in 1 2 3 4 5; do
-                rm -f "/tmp/c.$suffix"
-                curl -fL --retry 3 -m 300 -o "/tmp/c.$suffix" "$BASE/$prefix$suffix" || true
-                sz=$(stat -f%z "/tmp/c.$suffix" 2>/dev/null || echo 0)
-                if [ "$sz" -gt 0 ] && { [ "$sz" -eq 4000000 ] || [ "$suffix" = "$last" ]; }; then
-                  ok=1; break
-                fi
-                echo "   retry $suffix (got $sz bytes)"; sleep 3
-              done
-              [ "$ok" -eq 1 ] || { echo "!! chunk $prefix$suffix failed to download" >&2; exit 1; }
-              cat "/tmp/c.$suffix" >> "$out"
-            done
-            got=$(shasum -a 256 "$out" | cut -d' ' -f1)
-            echo "   $out sha256=$got"
-            if [ "$got" != "$want" ]; then
-              echo "!! checksum mismatch for $out: want $want" >&2; exit 1
-            fi
-          }
-          last=aah
-          fetch sdk- "aaa aab aac aad aae aaf aag aah" \
-            ff94153313bb60e740b22edb548abe2e193dc84c78fc76f938f5222235f46aeb "$OUT/MinSDK.tgz"
-          last=aak
-          fetch tk-  "aaa aab aac aad aae aaf aag aah aai aaj aak" \
-            8eda57419100a136ddba544410eb7dd7329e03e5abbcbbc060bcfdd1c0bdd835 "$OUT/MinToolchain.tgz"
-          ls -lh "$OUT"
-
-      - name: Verify provision extraction (real archives and Foundation)
-        script: |
-          set -euo pipefail
-          python3 tests/provision_extract.py src/ios/ToolchainResources/MinToolchain.tgz src/ios/ToolchainResources/MinSDK.tgz
-          clang -fobjc-arc -framework Foundation -larchive -Isrc/ios/NativeOffloads tests/provision_foundation.m src/ios/NativeOffloads/NativeBuildProvision.m -o /tmp/provision-foundation
-          /tmp/provision-foundation src/ios/ToolchainResources/MinToolchain.tgz Toolchain
-          /tmp/provision-foundation src/ios/ToolchainResources/MinSDK.tgz iPhoneOS16.5.sdk
-
-      - name: Package IPA
-        script: |
-          set -euo pipefail
-          APP=$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
-          [ -n "$APP" ] || { echo "no .app produced"; exit 1; }
-          echo "app: $APP"
-          rm -rf Payload Minis-unsigned.ipa
-          mkdir Payload
-          cp -R "$APP" Payload/
-          # Sign EVERY Mach-O in the bundle, not just the app binary.
-          # Only signing Minis.app/Minis left the three .appex binaries unsigned;
-          # iOS then refuses to load the extension and the app crashes as soon as
-          # a file/share entry point is touched. The original IPA has all three
-          # signed, so that is the shape we must reproduce.
-          ENT="Configs/Minis.native.entitlements"
-          if ! command -v ldid >/dev/null 2>&1; then
-            echo "!! ldid missing; IPA would ship unsigned extensions" >&2
-            exit 1
+          set -e
+          if ! command -v dpkg-deb >/dev/null 2>&1; then
+            brew install dpkg || true
           fi
-          echo "==> signing app + extensions with $ENT"
-          MAIN_ENT=/tmp/Minis-main-native.entitlements
-          cp "$ENT" "$MAIN_ENT"
-          /usr/libexec/PlistBuddy -c 'Delete :com.apple.private.security.container-required' "$MAIN_ENT" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Add :com.apple.private.security.container-required string com.openminis.app' "$MAIN_ENT"
-          ldid -S"$MAIN_ENT" "Payload/Minis.app/Minis"
-          for APPEX in Payload/Minis.app/PlugIns/*.appex; do
-            [ -d "$APPEX" ] || continue
-            BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist")
-            echo "    $APPEX/$BIN"
-            ldid -S"$ENT" "$APPEX/$BIN"
+          dpkg-deb --version | head -1
+      - name: Build (real Apple ld -fixup_chains)
+        script: |
+          set -e
+          cd "$SPLITPANE_DIR"
+          python3 build-apple.py 2>&1 | tee apple-build.log
+      - name: Verify artifact
+        script: |
+          set -e
+          cd "$SPLITPANE_DIR"
+          ls -la dist-apple/
+          for f in dist-apple/*.deb; do
+            dpkg-deb --field "$f" Package Version Architecture
+            sha256sum "$f"
           done
-          echo "==> verify every Mach-O is signed"
-          fail=0
-          for M in Payload/Minis.app/Minis Payload/Minis.app/PlugIns/*.appex/*; do
-            [ -f "$M" ] || continue
-            file "$M" | grep -q 'Mach-O' || continue
-            if ldid -e "$M" >/dev/null 2>&1; then echo "    ok $(basename "$M")"; else
-              echo "    UNSIGNED $(basename "$M")" >&2; fail=1; fi
-          done
-          [ "$fail" -eq 0 ] || { echo "!! unsigned binaries in bundle" >&2; exit 1; }
-          # Bundle the on-device toolchain into the app.
-          #
-          # NEVER ship the toolchain as a runtime-unpacked tgz under the data
-          # container (tmp or Library/Caches): on iOS 16.4.1 the sandbox returns
-          # EPERM for access(X_OK) and posix_spawn against any cloned Mach-O that
-          # lives outside the app bundle's code-signature page, no matter what
-          # entitlements are set. Probe v9 ran clang/ld/ldid fine ONLY because
-          # they shipped inside the signed .app/Toolchain.
-          #
-          # Bundle the toolchain as an ARCHIVE, never as a real Toolchain/ dir.
-          #
-          # Device evidence (ed7acd8, iOS 16.4.1): the IPA we shipped carried
-          # clang/ld/ldid byte-identical to MinToolchain.tgz with 4 signature
-          # blobs. After TrollStore installed it, provision reported the same
-          # files at +38,771 bytes each with 6 blobs - TrollStore's recursive
-          # ldid had re-signed every Mach-O under Minis.app/, appending blobs and
-          # invalidating the adhoc signature. AMFI then refuses posix_spawn with
-          # EPERM even though the file is inside the bundle and mode 100755.
-          # (The main binary survives this because it is loaded by the kernel,
-          # not by posix_spawn; that is also why the extensions still launch.)
-          #
-          # A .tgz is not a Mach-O, so TrollStore walks past it and the payload
-          # keeps its original 4-blob signature. provision unpacks it at runtime.
-          echo "==> stage toolchain archives into bundle"
-          mkdir -p Payload/Minis.app/ToolchainResources
-          cp src/ios/ToolchainResources/MinToolchain.tgz Payload/Minis.app/ToolchainResources/
-          cp src/ios/ToolchainResources/MinSDK.tgz Payload/Minis.app/ToolchainResources/
-          ls -lh Payload/Minis.app/ToolchainResources
-          [ -f Payload/Minis.app/ToolchainResources/MinToolchain.tgz ] || { echo "!! toolchain archive missing"; exit 1; }
-          [ -f Payload/Minis.app/ToolchainResources/MinSDK.tgz ] || { echo "!! SDK archive missing"; exit 1; }
-          # No Toolchain/ directory may ship: its Mach-O would be re-signed.
-          [ ! -d Payload/Minis.app/Toolchain ] || { echo "!! stray Toolchain/ dir in bundle would be re-signed" >&2; exit 1; }
-          # Confirm the archive payload is still the pristine 4-blob build.
-          echo "==> verify archived toolchain signatures (expect 4 blobs)"
-          rm -rf /tmp/tkcheck && mkdir -p /tmp/tkcheck
-          tar xzf Payload/Minis.app/ToolchainResources/MinToolchain.tgz -C /tmp/tkcheck
-          for T in clang ld ldid; do
-            M=/tmp/tkcheck/Toolchain/bin/$T
-            [ -f "$M" ] || { echo "!! missing $T in archive" >&2; exit 1; }
-            ldid -e "$M" >/dev/null 2>&1 || { echo "!! unreadable signature: $T" >&2; exit 1; }
-            echo "    ok $T $(stat -f%z "$M") bytes"
-          done
-          rm -rf /tmp/tkcheck
-          zip -qry Minis-unsigned.ipa Payload
-          ls -lh Minis-unsigned.ipa
     artifacts:
-      - Minis-unsigned.ipa
-      - build/DerivedData/**/*.log
+      - splitpane/dist-apple/*.deb
+      - splitpane/apple-build.log
