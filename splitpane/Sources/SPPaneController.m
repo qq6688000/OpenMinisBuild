@@ -363,6 +363,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 - (void)teardown {
     // 先把两个 scene 的尺寸恢复成全屏，再拆窗口。
     // 顺序不能反：拆掉窗口后我们就不再持有 scene 的接管权，恢复会失效。
+    SPDumpScenes("before-teardown");
     @try {
         [_topHost restoreOriginalSceneSettings];
         [_bottomHost restoreOriginalSceneSettings];
@@ -387,6 +388,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     w.rootViewController = nil;
     w.windowScene = nil;
     [w removeFromSuperview];
+    SPDumpScenes("after-teardown");
 }
 
 - (void)stopWithCompletion:(void (^)(void))completion {

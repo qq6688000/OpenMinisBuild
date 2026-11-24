@@ -573,6 +573,23 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     _snapshotActive = NO;
     SPLog(@"attach OK %@ diag=%@ sent=%d view=%@ bounds=%@", _bundleID, _lastDiag, sent,
           NSStringFromClass([host class]), NSStringFromCGRect(host.bounds));
+
+    // 画面自检：1.2s 后如果宿主里依然没有渲染内容，就露出快照（宁可显示旧画面也不给灰屏）
+    __weak typeof(self) wself = self;
+    __weak UIView *whost = host;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(wself) self = wself;
+        if (!self || !whost || whost.superview == nil) return;
+        BOOL hasContent = whost.subviews.count > 0 || whost.layer.sublayers.count > 0;
+        SPLog(@"content check %@: subviews=%lu layers=%lu -> %@", self->_bundleID,
+              (unsigned long)whost.subviews.count, (unsigned long)whost.layer.sublayers.count,
+              hasContent ? @"live" : @"fallback-to-snapshot");
+        if (!hasContent && self->_snapshotView) {
+            whost.hidden = YES;
+            self->_snapshotView.hidden = NO;
+            self->_snapshotActive = YES;
+        }
+    });
     return YES;
 }
 
@@ -688,6 +705,26 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 }
 
 - (void)detach {
+    // ⚠️ 顺序很重要：先主动放弃 scene 的呈现权，再把视图摘下来。
+    // 只 removeFromSuperview 的话，scene 仍认为我们在渲染它 →
+    // 拆窗后它没有别的 present，画面不再刷新 → 再次打开就是灰屏/黑屏。
+    @try {
+        if (_hostView) {
+            SEL enc = NSSelectorFromString(@"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
+            if ([_hostView respondsToSelector:enc]) {
+                CGSize s0 = [UIScreen mainScreen].bounds.size;
+                ((void (*)(id, SEL, CGSize, NSInteger, NSInteger))objc_msgSend)(_hostView, enc, s0, 1, 1);
+            }
+            // 有些版本提供 invalidate / 释放接口，存在就调
+            for (NSString *selName in @[@"invalidate", @"setSceneHandle:", @"detachScene"]) {
+                SEL sel = NSSelectorFromString(selName);
+                if (![_hostView respondsToSelector:sel]) continue;
+                @try { ((void (*)(id, SEL))objc_msgSend)(_hostView, sel); }
+                @catch (__unused NSException *e) {}
+            }
+        }
+    } @catch (NSException *e) { SPLog(@"detach prep ex %@", e.reason); }
+
     [_hostView removeFromSuperview];
     [_snapshotView removeFromSuperview];
     _hostView = nil;

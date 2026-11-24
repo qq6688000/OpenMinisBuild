@@ -6,3 +6,6 @@
 + (void)restoreAllScenes;
 + (NSString *)lastReport;
 @end
+
+// 诊断函数
+void SPDumpScenes(const char *tag);

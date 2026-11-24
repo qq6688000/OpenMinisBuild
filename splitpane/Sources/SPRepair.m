@@ -76,3 +76,38 @@ static NSString *gReport = nil;
 }
 
 @end
+
+// 诊断：把每个 scene 的真实状态打出来（尺寸/是否有效/是否有呈现者）
+// 用来确认「拆窗后 App 灰屏」到底卡在哪一环，而不是靠猜。
+void SPDumpScenes(const char *tag) {
+    @try {
+        Class mgrCls = NSClassFromString(@"FBSceneManager");
+        id mgr = mgrCls ? SPMsg0(mgrCls, @"sharedInstance") : nil;
+        SEL enumSel = NSSelectorFromString(@"enumerateScenesWithBlock:");
+        if (!mgr || ![mgr respondsToSelector:enumSel]) { SPLog(@"dump %s: no mgr", tag); return; }
+        NSMutableArray *rows = [NSMutableArray array];
+        void (^block)(id) = ^(id scene) {
+            @try {
+                NSString *cls = NSStringFromClass([scene class]);
+                id proc = SPMsg0(scene, @"clientProcess");
+                NSString *bid = SPMsg0(proc, @"bundleIdentifier");
+                if (![bid isKindOfClass:[NSString class]]) bid = @"?";
+                id settings = SPMsg0(scene, @"settings");
+                CGRect f = CGRectZero;
+                SEL fGet = NSSelectorFromString(@"frame");
+                if (settings && [settings respondsToSelector:fGet])
+                    f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
+                BOOL valid = SPBool0(scene, @"isValid");
+                BOOL active = SPBool0(scene, @"isActive");
+                id handle = SPMsg0(scene, @"handle");
+                id view = SPMsg0(handle, @"sceneView");
+                BOOL hasView = (view != nil) && SPBool0(view, @"window") != 0;
+                [rows addObject:[NSString stringWithFormat:@"%@ %@ %.0fx%.0f v%d a%d view%@",
+                                 bid, cls, f.size.width, f.size.height,
+                                 (int)valid, (int)active, hasView ? @"Y" : @"n"]];
+            } @catch (__unused NSException *e) {}
+        };
+        ((void (*)(id, SEL, id))objc_msgSend)(mgr, enumSel, block);
+        SPLog(@"dump %s: %@", tag, [rows componentsJoinedByString:@" | "]);
+    } @catch (NSException *e) { SPLog(@"dump %s ex %@", tag, e.reason); }
+}
