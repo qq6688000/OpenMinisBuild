@@ -17,53 +17,37 @@ static SPCtxMenuFn gOrigCtxMenu = NULL;
 // 直接按 ivar 名读，不走 KVC —— KVC 读不存在的键会抛 NSValueForUndefinedKeyException，
 // 而 UIContextMenuConfiguration 的 menuProvider ivar 名各系统版本不同（_menuProvider / _menuProviderBlock…），
 // 在 hook 返回处抛出没人接 = SpringBoard SIGABRT。
-// 一次性把 UIContextMenuConfiguration 的全部 ivar 打出来，用于定名。
 static void SPDumpCtxMenuIvarsOnce(void) {
     static BOOL done = NO;
-    if (done) return;
-    done = YES;
-    Class cls = NSClassFromString(@"UIContextMenuConfiguration");
+    if (done) return; done = YES;
     unsigned n = 0;
-    Ivar *ivs = class_copyIvarList(cls, &n);
+    Ivar *ivs = class_copyIvarList(NSClassFromString(@"UIContextMenuConfiguration"), &n);
     NSMutableString *msg = [NSMutableString stringWithFormat:@"ctxmenu ivars=%u:", n];
-    for (unsigned i = 0; i < n; i++) {
-        [msg appendFormat:@" %s(%s)", ivar_getName(ivs[i]), ivar_getTypeEncoding(ivs[i])];
-    }
+    for (unsigned i = 0; i < n; i++)
+        [msg appendFormat:@" %s", ivar_getName(ivs[i])];
     free(ivs);
     SPLog(@"%@", msg);
 }
 
-static id SPReadIvar(id obj, const char *name) {
-    if (!obj) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (!iv) return nil;
-    @try { return object_getIvar(obj, iv); } @catch (__unused NSException *e) { return nil; }
-}
+// ===== 安全读 ivar =====
+// 崩溃教训（SpringBoard-2026-11-25-062119）：object_getIvar 对 weak ivar 会返回
+// 未持有/已释放的地址，随后任何 isKindOfClass 都会 objc_retain → 野指针 SIGSEGV。
+// 所以：跳过 weak ivar，其余只按类型名比对，不 retain。
 
-// 不去猜 ivar 名了：遍历所有 ivar，按 block 签名识别谁可能是 menuProvider。
-// UIContextMenuConfiguration 内部把动作块存在 _setupProvider / _menuProvider 之类的位置，
-// 各版本命名不同，按类型认最稳。
-static const char *SPBlockSignature(id blk) {
-    if (!blk) return NULL;
-    Class c = object_getClass(blk);
-    if (!c || !class_conformsToProtocol(c, @protocol(NSObject))) {
-        if (!class_getSuperclass(c)) return NULL;
-    }
-    // _NSConcreteStackBlock / __NSMallocBlock__ 都继承 NSBlock
-    if (![[[blk class] description] containsString:@"Block"]) {
-        Class sup = class_getSuperclass(object_getClass(blk));
-        NSString *sn = sup ? NSStringFromClass(sup) : @"";
-        if (![sn containsString:@"Block"]) return NULL;
-    }
-    // NSBlock 上 -signature 是私有方法，但 block 对象响应 invoke
-    @try {
-        SEL sigSel = NSSelectorFromString(@"signature");
-        if ([blk respondsToSelector:sigSel]) {
-            NSMethodSignature *ms = ((id (*)(id, SEL))objc_msgSend)(blk, sigSel);
-            return [ms methodReturnType];
-        }
-    } @catch (__unused NSException *e) {}
-    return NULL;
+// 不 retain 地拿类名：只读 isa，做可读性/自洽校验，全程不 retain。
+static const char *SPClassSafe(const void *p) {
+    if (!p) return NULL;
+    uintptr_t a = (uintptr_t)p;
+    if ((a & 0x7) || a < 0x100000000ULL) return NULL;   // 未对齐或明显非法
+    uintptr_t isaRaw = 0;
+    memcpy(&isaRaw, p, sizeof(isaRaw));
+    if (!isaRaw || (isaRaw & 0x7) || isaRaw < 0x100000000ULL) return NULL;
+    const char *name = NULL;
+    @try { name = class_getName((__bridge Class)(void *)isaRaw); } @catch (...) { return NULL; }
+    if (!name || !*name) return NULL;
+    for (const char *q = name; *q; q++)
+        if (*q < 0x20 || *q > 0x7e) return NULL;
+    return name;
 }
 
 static id SPFindMenuProvider(id cfg) {
@@ -71,31 +55,48 @@ static id SPFindMenuProvider(id cfg) {
     Ivar *ivs = class_copyIvarList(object_getClass(cfg), &n);
     id found = nil;
     for (unsigned i = 0; i < n; i++) {
-        NSString *nm = [NSString stringWithUTF8String:ivar_getName(ivs[i])];
-        id v = nil;
-        @try { v = object_getIvar(cfg, ivs[i]); } @catch (__unused NSException *e) { continue; }
-        if (!v || [v isKindOfClass:NSNull.class]) continue;
-        NSString *cn = NSStringFromClass([v class]);
-        BOOL isBlock = [cn containsString:@"Block"];
-        SPLog(@"ctxmenu ivar %@ = %@%@", nm, cn, isBlock ? @" (block)" : @"");
-        if (!isBlock) continue;
-        // previewProvider 的返回类型是 UIViewController*，menuProvider 是 UIMenu*
-        if ([nm rangeOfString:@"preview" options:NSCaseInsensitiveSearch].location != NSNotFound) continue;
-        // 最终判据：menuProvider 的签名是「返回 UIMenu*，参数 NSArray*」
-        NSMethodSignature *ms = nil;
+        const char *iname = ivar_getName(ivs[i]);
+        if (!iname) continue;
+        void *raw = NULL;
         @try {
-            SEL sigSel = NSSelectorFromString(@"signature");
-            if ([v respondsToSelector:sigSel]) ms = ((id (*)(id, SEL))objc_msgSend)(v, sigSel);
-        } @catch (__unused NSException *e) {}
-        const char *rt = ms ? [ms methodReturnType] : NULL;
-        NSInteger argc = ms ? (NSInteger)[ms numberOfArguments] : -1;
-        SPLog(@"ctxmenu block %@ rt=%s argc=%ld", nm, rt ? rt : "?", (long)argc);
-        BOOL looksMenu = (rt && strncmp(rt, "@", 1) == 0) && (argc == 2 || argc == 3);
-        if (!looksMenu) continue;
-        if (!found) found = v;
+            // 不要用 object_getIvar：它内部会对 weak 做一次 retain/autorelease
+            ptrdiff_t off = ivar_getOffset(ivs[i]);
+            if (off < 0) continue;
+            memcpy(&raw, (const char *)(__bridge const void *)cfg + off, sizeof(raw));
+        } @catch (...) { continue; }
+        if (!raw) { SPLog(@"ctxmenu ivar %s = nil", iname); continue; }
+        const char *cn = SPClassSafe(raw);
+        if (!cn) { SPLog(@"ctxmenu ivar %s = <不可解析 %p>", iname, raw); continue; }
+        SPLog(@"ctxmenu ivar %s = %s", iname, cn);
+        if (!strstr(cn, "Block")) continue;
+        if (strcasestr(iname, "preview")) continue;
+        // 用 block 的 invoke 指针签名做判据（不 retain，直接读 block 布局）
+        // struct Block_layout { void *isa; int flags; int reserved; void *invoke; ... }
+        void *invoke = NULL;
+        memcpy(&invoke, (const char *)raw + 24, sizeof(invoke));
+        SPLog(@"ctxmenu block %s invoke=%p", iname, invoke);
+        if (!invoke) continue;
+        if (!found) found = (__bridge id)raw;
     }
     free(ivs);
     return found;
+}
+
+// 安全按名读 ivar：按 offset memcpy，不 retain、不碰 weak。
+static id SPReadIvar(id obj, const char *name) {
+    if (!obj || !name) return nil;
+    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
+    if (!iv) return nil;
+    void *raw = NULL;
+    ptrdiff_t off = ivar_getOffset(iv);
+    if (off <= 0) return nil;
+    @try { memcpy(&raw, (const char *)(__bridge const void *)obj + off, sizeof(raw)); }
+    @catch (...) { return nil; }
+    if (!raw) return nil;
+    if (!SPClassSafe(raw)) return nil;        // 野指针直接丢弃
+    id v = (__bridge id)raw;
+    if ([v isKindOfClass:NSNull.class]) return nil;
+    return v;
 }
 
 static id SPReadProvider(id obj, const char *name) {
@@ -127,21 +128,6 @@ static id SPHookedCtxMenu(id self, SEL _cmd, id interaction, CGPoint location) {
         SPLog(@"icon menu: 长按触发");
         id original = gOrigCtxMenu ? gOrigCtxMenu(self, _cmd, interaction, location) : nil;
         SPDumpCtxMenuIvarsOnce();
-        if ([original isKindOfClass:[UIContextMenuConfiguration class]]) {
-            unsigned n = 0;
-            Ivar *ivs = class_copyIvarList(object_getClass(original), &n);
-            NSMutableString *m = [NSMutableString stringWithString:@"ctxmenu vals:"];
-            for (unsigned i = 0; i < n; i++) {
-                id v = nil;
-                @try { v = object_getIvar(original, ivs[i]); } @catch (__unused NSException *e) {}
-                [m appendFormat:@" %s=%@", ivar_getName(ivs[i]),
-                    v ? NSStringFromClass([v class]) : @"nil"];
-            }
-            free(ivs);
-            SPLog(@"%@", m);
-        } else {
-            SPLog(@"ctxmenu: original 不是 configuration");
-        }
         if (![original isKindOfClass:[UIContextMenuConfiguration class]]) {
             SPLog(@"icon menu: original 不是 configuration");
             return original;
