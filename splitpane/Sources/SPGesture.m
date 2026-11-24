@@ -322,10 +322,11 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
 
-    if (SPPaneController.shared.active) { [self presentPickerForSwap]; return YES; }
-    if (self.card) { [self.card dismissAnimated:nil]; self.card = nil; }
-    [self parkForegroundApp:front];
-    return YES;
+    // 0.5.3：入口统一走「长按图标 → 上下分屏」。
+    // 上滑不再自己弹 picker（日志实证：弹了就 1 秒被 cancel，纯属打扰），
+    // 只在需要换 App 时交由长按入口处理；这里一律放行系统手势。
+    SPLog(@"pan: 上滑已禁用自动弹面板（入口改成长按图标）");
+    return NO;
 }
 
 #pragma mark - 挂起
