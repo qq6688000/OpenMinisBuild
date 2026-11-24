@@ -37,6 +37,7 @@
 @property (nonatomic, strong) UIImageView *snapshotView;
 @property (nonatomic, strong) id scene;
 @property (nonatomic, assign) CGSize referenceSize;
+- (void)detach;   // 前向声明：attach 内部要先拆旧宿主
 @property (nonatomic, strong) id handle;
 @property (nonatomic, strong) SPHostRequester *requester;
 @property (nonatomic, strong) id controller;
@@ -545,6 +546,11 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     _containerView = container;
     if (_attached && _hostView && _hostView.superview == container) return YES;
 
+    // 每次重新 attach 前把旧宿主彻底摘掉。
+    // 不拆就叠多个 SBDeviceApplicationSceneView 渲染同一个 FBScene：既卡顿，
+    // 又会在容器被替换时留下挂在死容器上的宿主（日志里的 "container gone"）。
+    [self detach];
+
     // 按容器真实尺寸推 scene：App 会按「半屏正方形」重新排版，内容自然铺满，不裁剪不失真。
     // （用户选定方案。之前固定全屏 + MIN 缩放会留下大片留白，MAX 缩放会裁掉左右。）
     CGSize ref = container.bounds.size;
@@ -623,6 +629,7 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
         _lastDiag = _lastDiag ?: @"no-factory";
         SPLog(@"attach FAIL %@ diag=%@ handle=%@", _bundleID, _lastDiag,
               handle ? NSStringFromClass([handle class]) : @"nil");
+        [self detach];   // 失败也要清干净，否则下次重试会叠一个新的宿主
         return NO;
     }
 
