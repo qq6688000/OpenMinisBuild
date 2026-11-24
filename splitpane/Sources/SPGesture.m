@@ -6,6 +6,7 @@
 #import "SPAppPicker.h"
 #import "SPPaneController.h"
 #import "SPLog.h"
+#import "SPWindowRegistry.h"
 
 // 入口层。三条通道，按可靠性排序：
 //   1) hook 系统 home 手势的 touchesEnded（Duo 实证这条路能接住）
@@ -28,6 +29,8 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 @property (nonatomic, strong) UIPanGestureRecognizer *fallbackPan;
 @property (nonatomic, strong) UITapGestureRecognizer *statusTap;
 @property (nonatomic, weak) UIView *panHost;
+- (void)presentPickerForSplitWithParked:(NSString *)parked needPark:(BOOL)needPark;
+- (void)returnToHomeDismissingApp:(NSString *)bundleID;
 @end
 
 @implementation SPGesture
@@ -285,9 +288,10 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     // 自己记的位移优先：官方 translation 在 touchesEnded 常常是 0（日志实测 up=-0）
     if (_tracking) up = MAX(up, _dragStartY - _dragPeakY);
     _tracking = NO;
-    // 日志实证：用户稳定能到 300pt 左右但常常差几 pt 够不到
-    // 原来 h*0.45*0.75≈315 太苛刻，改成 max(120, h*0.22)≈200
-    CGFloat need = MAX(120.0, h * 0.22);
+    // 触发高度：必须真的往上滑到一定距离才弹面板（用户要求「必须到那个高度」）。
+    // 取屏高的 45%（430×932 上约 420pt，即手指要越过屏幕中线），
+    // 轻扫、误触、点按都不会触发。
+    CGFloat need = MAX(360.0, h * 0.45);
     BOOL fromBottom = (_dragStartY >= h - kBottomStrip);
     SPLog(@"pan up=%.0f need=%.0f startY=%.0f fromBottom=%d active=%d",
           up, need, _dragStartY, fromBottom, (int)SPPaneController.shared.active);
@@ -322,8 +326,8 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)parkForegroundApp:(NSString *)bundleID {
-    // 关键：先把之前所有卡片清掉。日志里 card presented 连续出现 5 次就是这个 bug ——
-    // 每次 park 都新造一个 window，旧的没人收，最后在桌面上叠成一块黑方块。
+    // 不再停一张小卡片：上滑到位就直接冻结画面 + 弹「选 App」面板。
+    // （用户要求：图 1 那种浮在桌面的小卡片彻底不要，桌面底部也不能留残留窗口）
     [SPParkCard dismissAll];
     self.card = nil;
 
@@ -331,21 +335,10 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     _parkedBundleID = bundleID;
     UIImage *shot = [self snapshotScreen];
     self.parkedSnapshot = shot;
-    SPLog(@"park %@ snapshot=%@", bundleID, shot ? @"ok" : @"nil");
+    SPLog(@"park %@ snapshot=%@ -> open picker directly", bundleID, shot ? @"ok" : @"nil");
 
-    SPParkCard *card = [[SPParkCard alloc] initWithSnapshot:shot
-                                                    bundleID:bundleID
-                                                        name:[self displayNameForBundleID:bundleID]];
-    card.delegate = self;
-    self.card = card;
-    CGSize s = [UIScreen mainScreen].bounds.size;
-    CGRect from = CGRectMake(s.width * 0.5 - 40, s.height - 120, 80, 126);
-    __weak typeof(self) wself = self;
-    [card presentInWindowScene:_scene fromRect:from completion:^{
-        __strong typeof(wself) self = wself;
-        self.busy = NO;
-        SPLog(@"card presented");
-    }];
+    // 先把前台 App 让开，再弹面板；面板是独立窗口，不依赖任何卡片
+    [self presentPickerForSplitWithParked:bundleID needPark:NO];
 }
 
 - (void)sendHomePress {
@@ -381,9 +374,31 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         self.busy = NO;
     } onCancel:^{
         __strong typeof(wself) self = wself;
-        SPLog(@"picker cancel");
+        SPLog(@"picker cancel -> back to home, dismiss %@", parked);
+        // 用户要求：点 × = 回桌面，并且把挂起的 App 也退掉
+        [self returnToHomeDismissingApp:parked];
         self.busy = NO;
     }];
+}
+
+// 取消挂起：先把 App 推回后台（不是 SIGKILL，避免 SpringBoard 重启），
+// 再确保我们自己的窗口全部收掉，最后回桌面。
+- (void)returnToHomeDismissingApp:(NSString *)bundleID {
+    [SPParkCard dismissAll];
+    self.card = nil;
+    self.parkedBundleID = nil;
+
+    // 1) 让 App 退到后台：把它自己「收起」，SpringBoard 就会回到桌面
+    if (bundleID.length) {
+        @try {
+            [SPHost suspendAppToBackground:bundleID];
+        } @catch (NSException *e) { SPLog(@"suspend ex %@", e.reason); }
+    }
+    // 2) 兜底：所有自建窗口
+    [SPWindowRegistry killAll];
+    // 3) 最后按一次 home（这台机器 homePress 不可用时它会自己跳过）
+    [SPHost homePress];
+    SPLog(@"returnToHome done");
 }
 
 - (void)presentPickerForSwap {

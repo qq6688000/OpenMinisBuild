@@ -317,6 +317,34 @@ static NSMutableSet *gHomeTried = nil;
     } @catch (NSException *e) { SPLog(@"reactivate ex %@", e.reason); }
 }
 
+// 把 App 退到后台：让它自己的 scene「收起」，SpringBoard 自然回桌面。
+// 不杀进程 —— SIGKILL 会让 SpringBoard 认为 App 崩溃，可能触发重启。
++ (BOOL)suspendAppToBackground:(NSString *)bundleID {
+    if (!bundleID.length) return NO;
+    // 优先：SBMainWorkspace 的 home 请求
+    Class wsCls = NSClassFromString(@"SBMainWorkspace");
+    id ws = wsCls ? SPMsg0(wsCls, @"sharedInstance") : nil;
+    for (NSString *sn in @[@"requestForTransitionToHomeScreen", @"_handleHomeButtonSinglePress"]) {
+        SEL sel = NSSelectorFromString(sn);
+        if (ws && [ws respondsToSelector:sel]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(ws, sel); SPLog(@"suspend via %@", sn); return YES; }
+            @catch (__unused NSException *e) {}
+        }
+    }
+    // 次选：SBUIController 的菜单键
+    Class uic = NSClassFromString(@"SBUIController");
+    id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
+    for (NSString *sn in @[@"handleHomeButtonSinglePressUp", @"clickedMenuButton"]) {
+        SEL sel = NSSelectorFromString(sn);
+        if (ui && [ui respondsToSelector:sel]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(ui, sel); SPLog(@"suspend via SBUIController.%@", sn); return YES; }
+            @catch (__unused NSException *e) {}
+        }
+    }
+    SPLog(@"suspend: no API available");
+    return NO;
+}
+
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL))completion {
     id app = [self applicationProxyForBundleID:bundleID];
     if (!app) return NO;

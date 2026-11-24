@@ -30,6 +30,9 @@
 + (id)fbSceneForBundleID:(NSString *)bundleID;
 + (id)sceneHandleForScene:(id)scene;
 + (BOOL)openAppAsync:(NSString *)bundleID completion:(void (^)(BOOL ok))completion;
+// 把 App 退到后台（不杀进程）
++ (BOOL)suspendAppToBackground:(NSString *)bundleID;
++ (BOOL)homePress;
 // 只做激活（毫秒级，不启动进程），用来让 App 自己重排成全屏
 + (void)reactivateApp:(NSString *)bundleID;
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL ok))completion;

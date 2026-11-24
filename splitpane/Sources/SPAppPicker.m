@@ -182,6 +182,20 @@ static SPAppPicker *gPicker = nil;
         hint.alpha = 1;
     }];
     _hintLabel = hint;
+
+    // 明确的关闭按钮：不选就直接退出（用户要求）
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    [close setTitle:@"✕" forState:UIControlStateNormal];
+    close.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightMedium];
+    [close setTitleColor:[UIColor colorWithWhite:1 alpha:0.92] forState:UIControlStateNormal];
+    close.backgroundColor = [UIColor colorWithWhite:1 alpha:0.16];
+    close.layer.cornerRadius = 19;
+    close.frame = CGRectMake(vc.view.bounds.size.width - 58,
+                             vc.view.safeAreaInsets.top + 14, 38, 38);
+    close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [close addTarget:self action:@selector(cancel:) forControlEvents:UIControlEventTouchUpInside];
+    [vc.view addSubview:close];
+    _hintLabel = hint;
 }
 
 - (void)cancel:(id)sender {
