@@ -357,21 +357,14 @@ static const CGFloat kMaxPaneRatio = 0.78;
 - (void)stopWithCompletion:(void (^)(void))completion {
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
+    _active = NO;
     [self teardown];
-    // 交回全屏。先 open 主 App；open 不成就 activate；都不成就发 home 回桌面。
-    // 这台机器 SBUIController 没有 home 方法，所以三项都写日志，失败也看得见。
-    if (main.length) {
-        BOOL ok = [SPHost openApp:main suspended:NO completion:nil];
-        if (!ok) {
-            ok = [SPHost activateApp:main windowScene:nil completion:nil];
-            SPLog(@"stop: activate fallback -> %d", (int)ok);
-        }
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        BOOL h = [SPHost homePress];
-        SPLog(@"stop: homePress -> %d (%@)", (int)h, [SPHost homePressDiag]);
-    });
+    // 退出必须瞬时完成：拆窗即回到桌面（我们的窗口本来就低于键盘层，
+    // 拆掉之后系统自己的界面就露出来了）。
+    // 不要把 App 重新 open 一遍 —— 那是跨进程同步调用，日志实证会卡 10 秒。
+    SPLog(@"stop: window torn down, main=%@", main);
     if (completion) completion();
+
 }
 
 @end

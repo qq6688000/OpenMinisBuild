@@ -263,82 +263,38 @@ static NSMutableSet *gHomeTried = nil;
     return NO;
 }
 
-// 打开 App。这台机器上 SBMainWorkspace 的 openApplication 签名不一定对得上，
-// 所以按「最可能成功」的顺序全试一遍，并逐条写日志 —— 不写日志就永远不知道卡在哪。
+// ⚠️ 不要碰 SBMainWorkspace 的 open* 系列。
+// 日志实证（0.4.1）：调它会在主线程同步阻塞整整 10 秒才返回失败，
+// 体感就是「点一下卡十秒」「分屏下上滑 home 也卡十秒」。
+// 只用 LSApplicationWorkspace：毫秒级返回，失败就是失败，绝不阻塞 UI。
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL))completion {
     if (!bundleID.length) return NO;
 
-    // 已经在运行（有 FBScene）就不用开，直接当成功 —— 省一次跨进程启动，也避免
-    // open 失败后我们白等 7 秒（0.4.0 日志里 open -> 0 + 22 次扫描）。
+    // 已经有 scene 就不用开，直接算成功
     if ([self fbSceneForBundleID:bundleID]) {
         SPLog(@"open %@ skipped (already has scene)", bundleID);
         if (completion) completion(YES);
         return YES;
     }
 
-    id opts = nil;
-    Class optCls = NSClassFromString(@"FBSOpenApplicationOptions");
-    if (optCls) {
-        NSMutableDictionary *d = [NSMutableDictionary dictionary];
-        if (suspended) d[@"__Suspended"] = @(YES);
-        opts = SPMsg1(optCls, @"optionsWithDictionary:", d);
-        if (!opts) opts = SPMsg0(optCls, @"optionsWithDictionary:");
-    }
-
-    // 候选 1：SBMainWorkspace（单例名有两种）
-    NSMutableArray *wsList = [NSMutableArray array];
-    for (NSString *cn in @[@"SBMainWorkspace", @"SBWorkspace"]) {
-        Class c = NSClassFromString(cn);
-        if (!c) continue;
-        id ws = SPMsg0(c, @"sharedInstance");
-        if (!ws) ws = SPMsg0(c, @"mainWorkspace");
-        if (ws) [wsList addObject:ws];
-    }
-    NSArray *openSels = @[@"openApplicationWithBundleID:options:withResult:",
-                          @"openApplicationWithBundleIdentifier:options:withResult:",
-                          @"openApplicationWithBundleID:options:withResult:client:",
-                          @"activateApplication:withResult:"];
-    for (id ws in wsList) {
-        for (NSString *sn in openSels) {
-            SEL sel = NSSelectorFromString(sn);
-            if (![ws respondsToSelector:sel]) continue;
-            @try {
-                if ([sn containsString:@"client:"]) continue;
-                if ([sn hasPrefix:@"activate"]) {
-                    id app = [self applicationProxyForBundleID:bundleID];
-                    if (!app) continue;
-                    ((void (*)(id, SEL, id, id))objc_msgSend)(ws, sel, app, ^(BOOL ok) {
-                        SPLog(@"open %@ via activate -> %d", bundleID, (int)ok);
-                        if (completion) completion(ok);
-                    });
-                    return YES;
-                }
-                ((void (*)(id, SEL, id, id, id))objc_msgSend)(ws, sel, bundleID, opts, ^(BOOL ok) {
-                    SPLog(@"open %@ via %@ -> %d", bundleID, sn, (int)ok);
-                    if (completion) completion(ok);
-                });
-                SPLog(@"open %@ dispatched via %@", bundleID, sn);
-                return YES;
-            } @catch (NSException *e) {
-                SPLog(@"open %@ %@ ex %@", bundleID, sn, e.reason);
-            }
-        }
-    }
-
-    // 候选 2：LSApplicationWorkspace（UIKit 层，最稳）
     Class lsw = NSClassFromString(@"LSApplicationWorkspace");
     id workspace = lsw ? SPMsg0(lsw, @"defaultWorkspace") : nil;
     for (NSString *sn in @[@"openApplicationWithBundleID:", @"openApplicationWithBundleIdentifier:"]) {
         SEL sel = NSSelectorFromString(sn);
         if (![workspace respondsToSelector:sel]) continue;
         @try {
+            CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
             BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, sel, bundleID);
-            SPLog(@"open %@ via LSApplicationWorkspace.%@ -> %d", bundleID, sn, (int)ok);
+            SPLog(@"open %@ via LS.%@ -> %d (%.0fms)", bundleID, sn, (int)ok,
+                  (CFAbsoluteTimeGetCurrent() - t0) * 1000);
             if (completion) completion(ok);
             return ok;
-        } @catch (NSException *e) { SPLog(@"LS open ex %@", e.reason); }
+        } @catch (NSException *e) {
+            SPLog(@"LS open ex %@", e.reason);
+        }
     }
-    SPLog(@"open %@: no usable API", bundleID);
+    SPLog(@"open %@: no fast path (app not running)", bundleID);
+    if (completion) completion(NO);
     return NO;
 }
 

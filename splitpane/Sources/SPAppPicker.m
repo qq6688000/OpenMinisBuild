@@ -12,6 +12,12 @@ typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } S
 
 #pragma mark - 图标获取
 
+static NSCache *SPIconCache(void) {
+    static NSCache *c; static dispatch_once_t once;
+    dispatch_once(&once, ^{ c = [NSCache new]; c.countLimit = 200; });
+    return c;
+}
+
 static UIImage *SPIconForBundleID(NSString *bundleID, CGSize size) {
     // ① 系统图标缓存（SpringBoard 里最靠谱，返回的是已经渲染好的图标）
     Class cacheCls = NSClassFromString(@"SBIconImageInfoCache");
@@ -35,25 +41,8 @@ static UIImage *SPIconForBundleID(NSString *bundleID, CGSize size) {
             }
         }
     }
-    // ② Fallback：主屏图标视图（SBIconView）渲染一帧
-    Class iconViewCls = NSClassFromString(@"SBIconView");
-    if (icon && iconViewCls) {
-        SEL initSel = NSSelectorFromString(@"initWithConfigurationOptions:");
-        UIView *iconView = nil;
-        @try {
-            if ([iconViewCls instancesRespondToSelector:initSel])
-                iconView = ((id (*)(id, SEL, unsigned long long))objc_msgSend)([iconViewCls alloc], initSel, 0);
-            if (iconView) {
-                [iconView setValue:icon forKey:@"icon"];
-                iconView.frame = CGRectMake(0, 0, size.width, size.width);
-                [iconView layoutIfNeeded];
-                UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:iconView.bounds.size];
-                return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-                    [iconView.layer renderInContext:ctx.CGContext];
-                }];
-            }
-        } @catch (__unused NSException *e) {}
-    }
+    // ② 取不到就返回 nil，cell 会显示深灰占位。绝不在这里同步渲染 SBIconView ——
+    //    这台机器上那条路必然失败，却会把主线程拖住。
     return nil;
 }
 
@@ -244,7 +233,21 @@ static SPAppPicker *gPicker = nil;
         lb.numberOfLines = 2;
         [cell.contentView addSubview:lb];
     }
-    iv.image = SPIconForBundleID(bid, CGSizeMake(64, 64));
+    // 图标异步加载：cell 里绝不做同步渲染（12 个格子同步跑会卡住主线程）
+    UIImage *cached = [SPIconCache() objectForKey:bid];
+    iv.image = cached;
+    iv.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1];
+    if (!cached) {
+        __weak UIImageView *wiv = iv;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            UIImage *img = SPIconForBundleID(bid, CGSizeMake(64, 64));
+            if (!img) return;
+            [SPIconCache() setObject:img forKey:bid];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (wiv) wiv.image = img;
+            });
+        });
+    }
     lb.text = SPDisplayNameForBundleID(bid);
     return cell;
 }
