@@ -184,6 +184,57 @@ static id SPHookedShortcutItems(id self, SEL _cmd) {
 }
 
 
+
+#pragma mark - shouldActivate 系列（真实入口）
+
+// 系统在弹菜单后、用户点某个项时问这三个方法之一：要不要激活 index 那一项。
+// 我们要做的事：如果 index 指向的是我们插入的项（它在第 0 位），
+//   → return NO（不让系统自己去启动 App）
+//   → 自己走分屏
+// 其它 index 原样返回原实现，绝不干扰。
+
+static BOOL (*gOrig_ShouldActivate_Ctrl)(id, SEL, id, id, NSUInteger, id) = NULL;
+static BOOL SPShouldActivate_Ctrl(id self, SEL _cmd, id iconManager, id item, NSUInteger idx, id iconView) {
+    @try {
+        NSString *bid = SPBundleIDForIconView(iconView);
+        if (SPIsOurType(SPTypeOf(item))) {
+            SPLog(@"icon menu: Ctrl 命中 type bid=%@", bid);
+            SPHandleShortcut(item, bid, iconView);
+            return NO;
+        }
+    } @catch (NSException *e) { SPLog(@"icon menu: Ctrl shouldActivate ex %@", e.reason); }
+    if (gOrig_ShouldActivate_Ctrl) return gOrig_ShouldActivate_Ctrl(self, _cmd, iconManager, item, idx, iconView);
+    return YES;
+}
+
+static BOOL (*gOrig_ShouldActivate_Mgr)(id, SEL, id, id, NSUInteger) = NULL;
+static BOOL SPShouldActivate_Mgr(id self, SEL _cmd, id iconView, id item, NSUInteger idx) {
+    @try {
+        NSString *bid = SPBundleIDForIconView(iconView);
+        if (SPIsOurType(SPTypeOf(item))) {
+            SPLog(@"icon menu: Mgr shouldActivate idx=%lu bid=%@ -> 接管", (unsigned long)idx, bid);
+            SPHandleShortcut(item, bid, iconView);
+            return NO;
+        }
+    } @catch (NSException *e) { SPLog(@"icon menu: Mgr shouldActivate ex %@", e.reason); }
+    if (gOrig_ShouldActivate_Mgr) return gOrig_ShouldActivate_Mgr(self, _cmd, iconView, item, idx);
+    return YES;
+}
+
+static BOOL (*gOrig_ShouldActivate_View)(id, SEL, id, NSUInteger) = NULL;
+static BOOL SPShouldActivate_View(id self, SEL _cmd, id item, NSUInteger idx) {
+    @try {
+        NSString *bid = SPBundleIDForIconView(self);
+        if (SPIsOurType(SPTypeOf(item))) {
+            SPLog(@"icon menu: View shouldActivate idx=%lu bid=%@ -> 接管", (unsigned long)idx, bid);
+            SPHandleShortcut(item, bid, self);
+            return NO;
+        }
+    } @catch (NSException *e) { SPLog(@"icon menu: View shouldActivate ex %@", e.reason); }
+    if (gOrig_ShouldActivate_View) return gOrig_ShouldActivate_View(self, _cmd, item, idx);
+    return YES;
+}
+
 #pragma mark - 5 个 activate 入口
 
 // 各入口签名不同，用宏统一生成；每个都要自己的 orig 指针。
@@ -257,45 +308,28 @@ void SPInstallIconMenuHook(void) {
         SPLog(@"icon menu: ⚠️ SBIconView 没有 applicationShortcutItems");
     }
 
-    // 2) 点击拦截 —— 不猜名字，按特征扫描：方法名同时含 shortcut/activate，
-    //    且不是「取数据」的（不是 applicationShortcutItems），且参数里有 bundleIdentifier。
+    // 2) 点击拦截 —— 名字来自 0.5.4 的实测 dump（SPIcEntry 里 log "SBIconView methods(55)"）。
+    //    这几个都是「系统问要不要激活第 index 项」，返回 BOOL；我们 return NO 自己接管。
+    //      SBIconController - iconManager:shouldActivateApplicationShortcutItem:atIndex:forIconView:
+    //      SBHIconManager   - iconView:shouldActivateApplicationShortcutItem:atIndex:
+    //      SBIconView       - shouldActivateApplicationShortcutItem:atIndex:
     int n = 0;
-    NSArray *classes = @[@"SBIconView", @"SBIconController", @"SBHIconManager",
-                         @"SBIconListModel", @"SBHomeScreenViewController"];
-    for (NSString *cn in classes) {
-        Class cls = NSClassFromString(cn);
-        if (!cls) { SPLog(@"icon menu: %@ 不存在", cn); continue; }
-        unsigned int mcount = 0;
-        Method *ms = class_copyMethodList(cls, &mcount);
-        for (unsigned int i = 0; i < mcount; i++) {
-            const char *raw = sel_getName(method_getName(ms[i]));
-            if (!raw) continue;
-            NSString *sel = @(raw);
-            BOOL hasKey = [sel rangeOfString:@"hortcut"].location != NSNotFound ||
-                          [sel rangeOfString:@"ctivate"].location != NSNotFound;
-            if (!hasKey) continue;
-            if ([sel rangeOfString:@"applicationShortcutItems"].location != NSNotFound) continue;
-            if (sel.length > 120) continue;
-            // 参数里必须带 bundleIdentifier，否则不是「点了某一项」
-            if ([sel rangeOfString:@"BundleIdentifier"].location == NSNotFound &&
-                [sel rangeOfString:@"bundleIdentifier"].location == NSNotFound) {
-                SPLog(@"icon menu: 跳过（无 bundleID 参数）%@", sel);
-                continue;
-            }
-            SEL s2 = NSSelectorFromString(sel);
-            IMP fake = nil;
-            // 按签名选拦截函数
-            NSInteger colons = 0; for (NSUInteger k = 0; k < sel.length; k++) if ([sel characterAtIndex:k] == ':') colons++;
-            if (colons == 4) fake = (IMP)SPOnActivateShortcut_Ctrl4;
-            else if (colons == 3) fake = (IMP)SPOnActivateShortcut_Mgr3;
-            else { SPLog(@"icon menu: 跳过（参数数=%ld）%@", (long)colons, sel); continue; }
-            if (class_getInstanceMethod(cls, s2)) {
-                hook(cls, s2, fake, NULL);
-                SPLog(@"icon menu: ✓ hooked %@ %@", cn, sel);
-                n++;
-            }
-        }
-        free(ms);
-    }
-    SPLog(@"icon menu: activate 入口 hooked %d", n);
+    n += SPTryHook(@"SBIconController",
+                   @"iconManager:shouldActivateApplicationShortcutItem:atIndex:forIconView:",
+                   (IMP)SPShouldActivate_Ctrl, (IMP *)&gOrig_ShouldActivate_Ctrl);
+    n += SPTryHook(@"SBHIconManager",
+                   @"iconView:shouldActivateApplicationShortcutItem:atIndex:",
+                   (IMP)SPShouldActivate_Mgr, (IMP *)&gOrig_ShouldActivate_Mgr);
+    n += SPTryHook(@"SBIconView",
+                   @"shouldActivateApplicationShortcutItem:atIndex:",
+                   (IMP)SPShouldActivate_View, (IMP *)&gOrig_ShouldActivate_View);
+
+    // 兜底：老的 activate 系列（不同系统版本可能存在）
+    n += SPTryHook(@"SBIconView",
+                   @"activateShortcut:withBundleIdentifier:forIconView:",
+                   (IMP)SPOnActivateShortcut_IconView, NULL);
+    n += SPTryHook(@"SBIconController",
+                   @"activateShortcut:withBundleIdentifier:forIconView:",
+                   (IMP)SPOnActivateShortcut_Ctrl4, NULL);
+    SPLog(@"icon menu: 入口 hooked %d", n);
 }

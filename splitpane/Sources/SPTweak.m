@@ -1,3 +1,19 @@
+// 版本号从 dylib 所在包的 control 里读不到，这里直接把编译期版本写进常量，
+// 由 build 脚本替换 __SP_VERSION__。找不到就退回 @"dev"。
+static NSString *SPBundleVersion(void) {
+    static NSString *v = nil;
+    if (v) return v;
+#ifdef SP_VERSION
+    v = @SP_VERSION;
+    return v;
+#endif
+    // 兜底：读 Info.plist
+    NSDictionary *info = [[NSBundle bundleWithPath:@"/Library/MobileSubstrate/DynamicLibraries/SplitPane.plist"] infoDictionary];
+    (void)info;
+    v = @"dev";
+    return v;
+}
+
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
@@ -201,7 +217,11 @@ static void SPBootstrapWhenReady(int tries) {
     @catch (NSException *e) { SPLog(@"gesture install ex %@", e.reason); }
 
     if ([SPSettings bannerEnabled])
-        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.21 已加载" : @"SplitPane 0.4.21 已加载 · 用状态栏双击"); }
+        @try {
+            NSString *v = SPBundleVersion();
+            SPShowLoadBanner([NSString stringWithFormat:@"SplitPane %@ 已加载%@", v,
+                              hooked ? @"" : @" · 用状态栏双击"]);
+        }
         @catch (NSException *e) { SPLog(@"banner ex %@", e.reason); }
 
     SPLog(@"bootstrap: done hooks=%d banner=%d", hooked, [SPSettings bannerEnabled]);
@@ -211,7 +231,8 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
-        SPLog(@"=== SplitPane 0.4.21 loaded (bundle=%@ pid=%d log=%@) ===",
+        SPLog(@"=== SplitPane %@ loaded (bundle=%@ pid=%d log=%@) ===",
+              SPBundleVersion(),
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
         if (![bid isEqualToString:@"com.apple.springboard"]) { SPLog(@"not springboard, idle"); return; }
 

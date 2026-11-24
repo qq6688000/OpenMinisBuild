@@ -123,6 +123,12 @@ def main():
             '-Wno-deprecated-declarations','-Wno-unused-variable','-Wno-nullability-completeness',
             '-Wno-objc-multiple-method-names','-Wno-unguarded-availability-new',
             '-fvisibility=hidden']
+    # 版本号从 control 读，注入编译宏，保证浮条/日志里的版本和 deb 一致
+    try:
+        _v=re.search(r'^Version:\s*(\S+)', (ROOT/'control').read_text(), re.M).group(1)
+    except Exception:
+        _v='dev'
+    common.append(f'-DSP_VERSION="{_v}"')
     for i in inc: common.extend(['-I',str(i)])
 
     with tempfile.TemporaryDirectory(prefix='splitpane-apple-') as td:
