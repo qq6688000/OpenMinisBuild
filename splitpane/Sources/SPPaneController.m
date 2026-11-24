@@ -17,8 +17,8 @@
 //  · 退出 = 把主 App 交回系统全屏（openApp:suspended:NO），再拆窗。
 // ════════════════════════════════════════════════════════════════════════════
 
-static const CGFloat kChromeHeight = 28.0;
-static const CGFloat kSeamHeight = 26.0;
+static const CGFloat kChromeHeight = 0.0;
+static const CGFloat kSeamHeight = 6.0;   // 只留一条细缝给抓手，不再是一条黑带
 static const CGFloat kMinPaneRatio = 0.22;
 static const CGFloat kMaxPaneRatio = 0.78;
 
@@ -145,7 +145,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     [close setTitle:@"×" forState:UIControlStateNormal];
     close.titleLabel.font = [UIFont systemFontOfSize:24 weight:UIFontWeightLight];
     [close setTitleColor:[UIColor colorWithWhite:1 alpha:0.9] forState:UIControlStateNormal];
-    close.frame = CGRectMake(6, kChromeHeight + 6, d, d);
+    close.frame = CGRectMake(8, 54, d, d);   // 避开状态栏
     close.layer.cornerRadius = d / 2.0;
     close.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
     close.autoresizingMask = UIViewAutoresizingFlexibleRightMargin;
@@ -157,7 +157,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     [swap setTitle:@"交换" forState:UIControlStateNormal];
     swap.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     [swap setTitleColor:[UIColor colorWithWhite:1 alpha:0.9] forState:UIControlStateNormal];
-    swap.frame = CGRectMake(width - 60 - 6, kChromeHeight + 6, 60, d);
+    swap.frame = CGRectMake(width - 60 - 8, 54, 60, d);
     swap.layer.cornerRadius = d / 2.0;
     swap.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
     swap.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
@@ -170,23 +170,30 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 - (UIView *)buildChromeWithWidth:(CGFloat)width {
     UIView *bar = [UIView new];
-    bar.backgroundColor = [UIColor blackColor];
-    bar.frame = CGRectMake(0, 0, width, kChromeHeight);
+    // 顶栏不再占高度也不再涂黑：内容从屏幕最顶端开始，标题/抓手作为透明浮层压在上面
+    bar.backgroundColor = [UIColor clearColor];
+    bar.frame = CGRectMake(0, 0, width, 28.0);
+    bar.userInteractionEnabled = NO;
 
     UILabel *title = [UILabel new];
     title.text = @"上下分屏";
     title.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     title.textColor = [UIColor colorWithWhite:1 alpha:0.65];
-    title.frame = CGRectMake(0, 0, 120, kChromeHeight);
+    title.frame = CGRectMake(0, 0, 120, 24);
     title.textAlignment = NSTextAlignmentCenter;
-    title.center = CGPointMake(width / 2.0, kChromeHeight / 2.0);
+    title.center = CGPointMake(width / 2.0, 14.0);
+    title.layer.shadowColor = [UIColor blackColor].CGColor;
+    title.layer.shadowOpacity = 0.8;
+    title.layer.shadowRadius = 3;
+    title.layer.shadowOffset = CGSizeMake(0, 1);
+    title.textColor = [UIColor whiteColor];
     title.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
     [bar addSubview:title];
 
     UIImageView *handle = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 56, 5)];
     handle.backgroundColor = [UIColor colorWithWhite:1 alpha:0.28];
     handle.layer.cornerRadius = 2.5;
-    handle.center = CGPointMake(width / 2.0, kChromeHeight - 12);
+    handle.center = CGPointMake(width / 2.0, 28.0);
     handle.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
     [bar addSubview:handle];
 
@@ -218,7 +225,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     chrome.layer.zPosition = 1000;
 
     // 底部只留 18pt（home 指示条高度），其余全给画面 —— 用户要求上下铺满
-    CGFloat bottomInset = 18.0;
+    CGFloat bottomInset = 0.0;
     // 铺满全屏：宽度/高度都取窗口真实 bounds，且关掉安全区域内边距（否则左右会被 insets 缩进）
     vc.view.frame = w.bounds;
     if (@available(iOS 11.0, *)) {
