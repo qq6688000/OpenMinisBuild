@@ -4,6 +4,7 @@
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPGesture.h"
+#import <string.h>
 
 // 长按主屏图标 → 菜单里多一项「上下分屏」。
 // 依据探针实测（0.4.18 日志）：
@@ -12,6 +13,22 @@
 
 typedef id (*SPCtxMenuFn)(id, SEL, id, CGPoint);
 static SPCtxMenuFn gOrigCtxMenu = NULL;
+
+// 直接按 ivar 名读，不走 KVC —— KVC 读不存在的键会抛 NSValueForUndefinedKeyException，
+// 而 UIContextMenuConfiguration 的 menuProvider ivar 名各系统版本不同（_menuProvider / _menuProviderBlock…），
+// 在 hook 返回处抛出没人接 = SpringBoard SIGABRT。
+static id SPReadIvar(id obj, const char *name) {
+    if (!obj) return nil;
+    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
+    if (!iv) return nil;
+    @try { return object_getIvar(obj, iv); } @catch (__unused NSException *e) { return nil; }
+}
+
+static id SPReadProvider(id obj, const char *name) {
+    id v = SPReadIvar(obj, name);
+    if (!v || [v isKindOfClass:NSNull.class]) return nil;
+    return v;
+}
 
 static NSString *SPBundleIDForIconView(id iconView) {
     @try {
@@ -31,56 +48,61 @@ static NSString *SPBundleIDForIconView(id iconView) {
 }
 
 static id SPHookedCtxMenu(id self, SEL _cmd, id interaction, CGPoint location) {
-    // 这一行出现 = 长按确实走到了我们的 hook
-    SPLog(@"icon menu: 长按触发");
-    id original = gOrigCtxMenu ? gOrigCtxMenu(self, _cmd, interaction, location) : nil;
-    if (![original isKindOfClass:[UIContextMenuConfiguration class]]) {
-        SPLog(@"icon menu: original 不是 configuration (%@)", NSStringFromClass([original class]));
-        return original;
-    }
+    @try {
+        // 这一行出现 = 长按确实走到了我们的 hook
+        SPLog(@"icon menu: 长按触发");
+        id original = gOrigCtxMenu ? gOrigCtxMenu(self, _cmd, interaction, location) : nil;
+        if (![original isKindOfClass:[UIContextMenuConfiguration class]]) {
+            SPLog(@"icon menu: original 不是 configuration");
+            return original;
+        }
 
-    NSString *bid = SPBundleIDForIconView(self);
-    SPLog(@"icon menu: bundleID=%@", bid ?: @"nil");
-    if (!bid.length) return original;
+        NSString *bid = SPBundleIDForIconView(self);
+        SPLog(@"icon menu: bundleID=%@", bid ?: @"nil");
+        if (!bid.length) return original;
 
-    UIContextMenuConfiguration *cfg = (UIContextMenuConfiguration *)original;
-    id oldProvider = [cfg valueForKey:@"menuProvider"];
-    id oldPreview = [cfg valueForKey:@"previewProvider"];
-    id identifier = [cfg identifier];
+        UIContextMenuConfiguration *cfg = (UIContextMenuConfiguration *)original;
+        id oldProvider = SPReadProvider(cfg, "_menuProvider");
+        if (!oldProvider) oldProvider = SPReadProvider(cfg, "_configurationProvider");
+        id oldPreview = SPReadProvider(cfg, "_previewProvider");
+        id identifier = SPReadProvider(cfg, "_identifier");
+        if (!oldProvider) {
+            // 拿不到原始 provider 就不能构造新 configuration（会丢掉系统菜单）
+            SPLog(@"icon menu: 取不到 menuProvider，放弃注入");
+            return original;
+        }
+        SPLog(@"icon menu: provider ok bid=%@ preview=%@", bid, oldPreview ? @"Y" : @"n");
 
-    // 拿到原始菜单再往前面插一项
-    UIMenu *(^newProvider)(NSArray<UIMenuElement *> *) = ^UIMenu *(NSArray<UIMenuElement *> *suggested) {
-        UIMenu *base = nil;
-        @try {
-            // UIContextMenuConfiguration 的 menuProvider 就是 UIMenu*(^)(NSArray*) block，
-            // 直接调用是标准做法（系统自己也是这么调的）。
-            if (oldProvider) {
+        UIMenu *(^newProvider)(NSArray<UIMenuElement *> *) = ^UIMenu *(NSArray<UIMenuElement *> *suggested) {
+            UIMenu *base = nil;
+            @try {
                 UIMenu *(^p)(NSArray<UIMenuElement *> *) = (id)oldProvider;
                 base = p(suggested);
-            }
-        } @catch (NSException *e) { SPLog(@"menu provider ex %@", e.reason); }
+            } @catch (NSException *e) { SPLog(@"menu provider ex %@", e.reason); }
 
-        __block NSString *target = bid;
-        UIAction *split = [UIAction actionWithTitle:@"上下分屏"
-                                             image:[UIImage systemImageNamed:@"rectangle.split.1x2"]
-                                        identifier:@"com.seagull.splitpane.entry"
-                                           handler:^(__kindof UIAction *a) {
-            SPLog(@"icon menu -> split %@", target);
-            [[SPGesture shared] startSplitFromIconForBundleID:target];
-        }];
+            NSString *target = [bid copy];
+            UIAction *split = [UIAction actionWithTitle:@"上下分屏"
+                                                 image:[UIImage systemImageNamed:@"rectangle.split.1x2"]
+                                            identifier:@"com.seagull.splitpane.entry"
+                                               handler:^(__kindof UIAction *a) {
+                SPLog(@"icon menu -> split %@", target);
+                [[SPGesture shared] startSplitFromIconForBundleID:target];
+            }];
 
-        NSMutableArray *children = [NSMutableArray arrayWithObject:split];
-        if ([base isKindOfClass:[UIMenu class]]) {
-            [children addObjectsFromArray:base.children];
-        }
-        return [UIMenu menuWithTitle:@"" children:children];
-    };
+            NSMutableArray *children = [NSMutableArray arrayWithObject:split];
+            if ([base isKindOfClass:[UIMenu class]]) [children addObjectsFromArray:base.children];
+            return [UIMenu menuWithTitle:@"" children:children];
+        };
 
-    UIContextMenuConfiguration *modified =
-        [UIContextMenuConfiguration configurationWithIdentifier:identifier
-                                               previewProvider:([oldPreview isKindOfClass:NSNull.class] ? nil : oldPreview)
-                                                actionProvider:newProvider];
-    return modified ?: original;
+        UIContextMenuConfiguration *modified =
+            [UIContextMenuConfiguration configurationWithIdentifier:identifier
+                                                   previewProvider:oldPreview
+                                                    actionProvider:newProvider];
+        return modified ?: original;
+    } @catch (NSException *e) {
+        SPLog(@"icon menu: hook 异常 %@", e.reason);
+        return gOrigCtxMenu ? gOrigCtxMenu(self, _cmd, interaction, location) : nil;
+    }
 }
 
 // 不能直接引 MSHookMessageEx 符号（链接期会 undefined），必须 dlsym 取。
