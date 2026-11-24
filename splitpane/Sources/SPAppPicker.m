@@ -1,6 +1,7 @@
 #import "SPAppPicker.h"
 #import "SPCompat.h"
 #import "SPHost.h"
+#import "SPWindowRegistry.h"
 #import <objc/runtime.h>
 
 typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } SBIconImageInfo;
@@ -125,8 +126,7 @@ static SPAppPicker *gPicker = nil;
 }
 
 - (void)buildInScene:(UIWindowScene *)scene {
-    UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-    w.windowLevel = UIWindowLevelNormal + 3;
+    UIWindow *w = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelNormal + 3 keyable:NO];
     w.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;
@@ -197,8 +197,7 @@ static SPAppPicker *gPicker = nil;
         self.blur.alpha = 0;
         self.grid.alpha = 0;
     } completion:^(BOOL finished) {
-        w.hidden = YES;
-        w.rootViewController = nil;
+        [SPWindowRegistry releaseWindow:w];
     }];
     if (bundleID && self.pickBlock) self.pickBlock(bundleID);
     else if (self.cancelBlock) self.cancelBlock();

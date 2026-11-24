@@ -1,5 +1,6 @@
 #import "SPLog.h"
 #import <UIKit/UIKit.h>
+#import "SPWindowRegistry.h"
 
 // 可见探针。dylib 被注入且 constructor 跑到了，屏幕顶部就会滑下一条小浮条。
 // 看不见 = 没注入，跟手势逻辑无关。
@@ -14,8 +15,7 @@ void SPShowLoadBanner(NSString *text) {
         if (!scene) scene = [UIApplication sharedApplication].windows.firstObject.windowScene;
         if (!scene) return;
 
-        UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-        w.windowLevel = UIWindowLevelNormal + 4;
+        UIWindow *w = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelNormal + 4 keyable:NO];
         w.backgroundColor = UIColor.clearColor;
         UIViewController *vc = [UIViewController new];
         vc.view.backgroundColor = UIColor.clearColor;
@@ -42,8 +42,7 @@ void SPShowLoadBanner(NSString *text) {
             [UIView animateWithDuration:0.3 delay:2.4 options:0 animations:^{
                 label.alpha = 0;
             } completion:^(BOOL finished2) {
-                w.hidden = YES;
-                w.rootViewController = nil;
+                [SPWindowRegistry releaseWindow:w];
             }];
         }];
     });

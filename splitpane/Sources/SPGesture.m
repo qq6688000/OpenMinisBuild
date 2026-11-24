@@ -6,6 +6,7 @@
 #import "SPAppPicker.h"
 #import "SPPaneController.h"
 #import "SPLog.h"
+#import "SPWindowRegistry.h"
 
 // 入口层。三条通道，按可靠性排序：
 //   1) hook 系统 home 手势的 touchesEnded（Duo 实证这条路能接住）
@@ -170,6 +171,18 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)_statusDoubleTapped {
+    // 任何时候双击状态栏 = 先强制收掉我们所有窗口（自救），再决定要不要进分屏。
+    // 这条路径不依赖 × 按钮、不依赖手势区，是最后一道出口。
+    if (SPPaneController.shared.active) {
+        SPLog(@"statusTap: force stop");
+        [SPPaneController.shared stopWithCompletion:nil];
+        return;
+    }
+    if ([SPWindowRegistry count] > 0) {
+        SPLog(@"statusTap: kill stray windows (%lu)", (unsigned long)[SPWindowRegistry count]);
+        [SPWindowRegistry killAll];
+        return;
+    }
     NSString *front = [self frontmostBundleID];
     SPLog(@"status double tap, front=%@ active=%d", front, (int)SPPaneController.shared.active);
     if (SPPaneController.shared.active) { [self presentPickerForSwap]; return; }

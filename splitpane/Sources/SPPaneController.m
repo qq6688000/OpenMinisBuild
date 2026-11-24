@@ -5,6 +5,7 @@
 #import "SPLog.h"
 #import "SPRepair.h"
 #import "SPParkCard.h"
+#import "SPWindowRegistry.h"
 #import <objc/runtime.h>
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -190,8 +191,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!scene) scene = self.foregroundWindowScene;
     if (!scene) return NO;
 
-    SPOverlayWindow *w = [[SPOverlayWindow alloc] initWithWindowScene:scene];
-    w.windowLevel = UIWindowLevelNormal + 1;   // 必须低于键盘，否则键盘被盖住
+    SPOverlayWindow *w = (SPOverlayWindow *)[SPWindowRegistry makeWindowWithScene:scene
+                                                                            level:UIWindowLevelNormal + 1   // 必须低于键盘
+                                                                          keyable:YES];
     w.backgroundColor = [UIColor blackColor];
     w.frame = scene.coordinateSpace.bounds;
     UIViewController *vc = [UIViewController new];
@@ -390,10 +392,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
     _window = nil;
     _active = NO;
     // 必须彻底撤掉：只 hidden 不释放会留一个隐形窗口，影响桌面点击/系统手势
-    w.hidden = YES;
-    w.rootViewController = nil;
-    w.windowScene = nil;
-    [w removeFromSuperview];
+    [SPWindowRegistry releaseWindow:w];
+    // 无论前面哪一步漏了什么，这里把所有自建窗口一并收掉
+    [SPWindowRegistry killAll];
     SPDumpScenes("after-teardown");
 }
 

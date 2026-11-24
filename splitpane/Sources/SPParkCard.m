@@ -1,5 +1,6 @@
 #import "SPParkCard.h"
 #import "SPLog.h"
+#import "SPWindowRegistry.h"
 
 // 挂起卡片：用户的当前 App 被「拎起来」停在屏幕下方，点一下拉进分屏。
 // PV 在这张卡上托管的是活 scene；本机后台 scene 会被回收，所以只放冻结快照。
@@ -36,10 +37,7 @@ static NSHashTable *SPCards(void) {
     [self removeFromSuperview];
     UIWindow *w = _overlayWindow;
     _overlayWindow = nil;
-    w.hidden = YES;
-    w.rootViewController = nil;
-    w.windowScene = nil;
-    [w removeFromSuperview];
+    [SPWindowRegistry releaseWindow:w];
     SPLog(@"park card removed (%@)", self.bundleID ?: @"?");
 }
 
@@ -100,10 +98,10 @@ static NSHashTable *SPCards(void) {
 - (void)presentInWindowScene:(UIWindowScene *)scene fromRect:(CGRect)fromRect completion:(void (^)(void))completion {
     if (!scene && self.window.windowScene) scene = self.window.windowScene;
     if (!scene) return;
-    UIWindow *overlay = [[UIWindow alloc] initWithWindowScene:scene];
-    // 别抬太高：卡片只是装饰，压过系统 UI 会挡住桌面点击
-    overlay.windowLevel = UIWindowLevelNormal + 2;
-    overlay.backgroundColor = UIColor.clearColor;
+    // 必须走登记表：否则 killAll 收不到它，就会在桌面上留一块黑窗挡点击
+    UIWindow *overlay = [SPWindowRegistry makeWindowWithScene:scene
+                                                       level:UIWindowLevelNormal + 2
+                                                     keyable:NO];
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;
     overlay.rootViewController = vc;
