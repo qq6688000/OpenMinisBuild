@@ -1,3 +1,14 @@
+
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <dlfcn.h>
+#import "SPCompat.h"
+#import "SPLog.h"
+#import "SPGesture.h"
+#import "SPSettings.h"
+#import "SPRepair.h"
+#import "SPPaneController.h"
+
 // 版本号从 dylib 所在包的 control 里读不到，这里直接把编译期版本写进常量，
 // 由 build 脚本替换 __SP_VERSION__。找不到就退回 @"dev"。
 static NSString *SPBundleVersion(void) {
@@ -14,15 +25,6 @@ static NSString *SPBundleVersion(void) {
     return v;
 }
 
-#import <UIKit/UIKit.h>
-#import <objc/runtime.h>
-#import <dlfcn.h>
-#import "SPCompat.h"
-#import "SPLog.h"
-#import "SPGesture.h"
-#import "SPSettings.h"
-#import "SPRepair.h"
-#import "SPPaneController.h"
 
 // ════════════════════════════════════════════════════════════════════════════
 // 注入层。三条铁律（0.2.1 进安全模式就是踩了第一条）：
