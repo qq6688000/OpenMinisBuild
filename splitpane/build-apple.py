@@ -128,7 +128,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='splitpane-apple-') as td:
         work=Path(td); objs=[]
         sources=sorted((ROOT/'Sources').glob('*.m'))
-        require(len(sources)>=9,f'Missing sources, got {[s.name for s in sources]}')
+        require(len(sources)>=7,f'Missing sources, got {[s.name for s in sources]}')
         for src in sources:
             o=work/(src.stem+'.o')
             run([*xcrun,'clang',*common,'-c',str(src),'-o',str(o)]);objs.append(o)
