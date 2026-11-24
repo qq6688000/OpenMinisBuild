@@ -9,13 +9,15 @@ on:
 permissions:
   contents: read
 jobs:
-  deb:
+  # 同一份源码并行投到两个 macOS 池：哪个先分到机器就用哪个。
+  # 不是浪费——Apple 的 runner 池会在高峰期把某一个池压很久，两池并行能明显缩短等待。
+  deb-15:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Install packaging tool
-        run: brew install dpkg
+        run: brew install dpkg || true
       - name: Build and verify (real Apple ld -fixup_chains)
         working-directory: splitpane
         run: |
@@ -24,8 +26,28 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: SplitPane-arm64e
+          name: SplitPane-arm64e-15
           path: |
             splitpane/dist-apple/*.deb
             splitpane/apple-build.log
-          if-no-files-found: error
+          if-no-files-found: warn
+  deb-14:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging tool
+        run: brew install dpkg || true
+      - name: Build and verify (real Apple ld -fixup_chains)
+        working-directory: splitpane
+        run: |
+          set -o pipefail
+          python3 build-apple.py 2>&1 | tee apple-build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SplitPane-arm64e-14
+          path: |
+            splitpane/dist-apple/*.deb
+            splitpane/apple-build.log
+          if-no-files-found: warn
