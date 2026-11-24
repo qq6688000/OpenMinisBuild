@@ -709,7 +709,14 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (r.width < 2 || r.height < 2) return;
     if (CGSizeEqualToSize(r, _lastSize)) return;
     _lastSize = r;
-    _hostView.frame = (CGRect){CGPointZero, r};
+    _referenceSize = r;
+    // 不能用 _hostView.frame = r 硬拉：那会把画面拉伸变形。
+    // 统一走 SPFitHostView 等比处理（先按新尺寸排版，再 cover 铺进容器）。
+    if (_hostView && _containerView) {
+        SPFitHostView(_hostView, _containerView, r);
+    } else {
+        _hostView.frame = (CGRect){CGPointZero, r};
+    }
     _snapshotView.frame = (CGRect){CGPointZero, r};
     NSInteger orient = (r.width > r.height) ? 4 : 1;
     NSString *sub = nil;
