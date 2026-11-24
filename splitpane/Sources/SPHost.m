@@ -94,31 +94,80 @@ static BOOL SPObjectMatchesBundleID(id obj, NSString *bundleID) {
     if (!bundleID.length) return nil;
     Class mgrCls = NSClassFromString(@"FBSceneManager");
     id mgr = mgrCls ? SPMsg0(mgrCls, @"sharedInstance") : nil;
-    if (mgr) {
-        SEL enumSel = NSSelectorFromString(@"enumerateScenesWithBlock:");
-        if ([mgr respondsToSelector:enumSel]) {
-            __block id found = nil;
-            void (^block)(id, BOOL *) = ^(id scene, BOOL *stop) {
-                if (SPObjectMatchesBundleID(scene, bundleID)) { found = scene; if (stop) *stop = YES; }
-            };
+    if (!mgr) { SPLog(@"fbScene %@: no FBSceneManager", bundleID); return nil; }
+
+    SEL enumSel = NSSelectorFromString(@"enumerateScenesWithBlock:");
+    if ([mgr respondsToSelector:enumSel]) {
+        // ⚠️ 这个 block 是单参数 ^(id scene)。写成 ^(id, BOOL*) 会参数不匹配抛异常，
+        // 被 @catch 吞掉后看起来「一个 scene 都没有」—— 0.3.2 的 no-scene 就是这么来的。
+        __block id match = nil;
+        __block NSUInteger scanned = 0;
+        void (^block)(id) = ^(id candidate) {
             @try {
-                ((void (*)(id, SEL, id))objc_msgSend)(mgr, enumSel, block);
-            } @catch (NSException *e) { SPLog(@"fbScene enum ex %@", e.reason); }
-            if (found) return found;
-        }
-        // 降级：workspace 的 scene 字典
+                scanned++;
+                id proc = SPMsg0(candidate, @"clientProcess");
+                NSString *bundle = SPMsg0(proc, @"bundleIdentifier");
+                if (![bundle isKindOfClass:[NSString class]]) {
+                    id info = SPMsg0(proc, @"applicationInfo");
+                    bundle = SPMsg0(info, @"bundleIdentifier");
+                }
+                BOOL same = [bundle isKindOfClass:[NSString class]] &&
+                            [(NSString *)bundle isEqualToString:bundleID];
+                if (!same) {
+                    NSString *ident = SPMsg0(candidate, @"identifier");
+                    if ([ident isKindOfClass:[NSString class]]) {
+                        same = [(NSString *)ident isEqualToString:bundleID] ||
+                               [(NSString *)ident hasPrefix:[@"sceneID:" stringByAppendingString:bundleID]];
+                    }
+                }
+                if (same && !match) match = candidate;
+            } @catch (__unused NSException *e) {}
+        };
         @try {
-            id workspace = SPMsg0(mgr, @"_workspace");
-            for (NSString *key in @[@"_allScenesByID", @"_scenesByIdentifier", @"_scenesByID"]) {
-                NSDictionary *map = SPMsg0(workspace, key);
-                if (![map isKindOfClass:[NSDictionary class]]) continue;
-                for (id ident in map) {
-                    if ([ident isKindOfClass:[NSString class]] && [(NSString *)ident containsString:bundleID])
-                        return map[ident];
+            ((void (*)(id, SEL, id))objc_msgSend)(mgr, enumSel, block);
+            SPLog(@"fbScene scan %@: scanned=%lu match=%@", bundleID, (unsigned long)scanned,
+                  match ? NSStringFromClass([match class]) : @"nil");
+        } @catch (NSException *e) {
+            SPLog(@"fbScene enum ex %@", e.reason);
+        }
+        if (match) return match;
+    } else {
+        SPLog(@"fbScene: no enumerateScenesWithBlock: on %@", NSStringFromClass([mgr class]));
+    }
+
+    // 降级 A：从 App 自己的窗口树反查（刚激活的 App 常常在这里先有）
+    @try {
+        id app = [self applicationProxyForBundleID:bundleID];
+        id scenes = SPMsg0(app, @"scenes");
+        if ([scenes isKindOfClass:[NSSet class]]) scenes = [(NSSet *)scenes allObjects];
+        if ([scenes isKindOfClass:[NSArray class]] && [(NSArray *)scenes count]) {
+            SPLog(@"fbScene via app.scenes count=%lu", (unsigned long)[(NSArray *)scenes count]);
+            return [(NSArray *)scenes firstObject];
+        }
+        id hs = SPMsg0(app, @"sceneHandles");
+        if ([hs isKindOfClass:[NSArray class]] && [(NSArray *)hs count]) {
+            for (id h in hs) {
+                id sc = SPMsg0(h, @"scene");
+                if (!sc) sc = SPMsg0(h, @"sceneIfExists");
+                if (sc) { SPLog(@"fbScene via %@", NSStringFromClass([h class])); return sc; }
+            }
+        }
+    } @catch (__unused NSException *e) {}
+
+    // 降级 B：workspace 的 scene 字典
+    @try {
+        id workspace = SPMsg0(mgr, @"_workspace");
+        for (NSString *key in @[@"_allScenesByID", @"_scenesByIdentifier", @"_scenesByID"]) {
+            NSDictionary *map = SPMsg0(workspace, key);
+            if (![map isKindOfClass:[NSDictionary class]]) continue;
+            for (id ident in map) {
+                if ([ident isKindOfClass:[NSString class]] && [(NSString *)ident containsString:bundleID]) {
+                    SPLog(@"fbScene via %@", key);
+                    return map[ident];
                 }
             }
-        } @catch (__unused NSException *e) {}
-    }
+        }
+    } @catch (__unused NSException *e) {}
     return nil;
 }
 
