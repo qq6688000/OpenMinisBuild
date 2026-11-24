@@ -22,12 +22,16 @@
 - (void)setFrameSize:(CGSize)size;
 - (BOOL)refreshLiveness;
 - (void)detach;
+// 把 scene 的 settings 恢复成接管之前的样子（退出分屏时必做，否则 App 保持半屏尺寸→黑屏）
+- (void)restoreOriginalSceneSettings;
 
 + (id)mainDisplaySceneManager;
 + (id)applicationProxyForBundleID:(NSString *)bundleID;
 + (id)fbSceneForBundleID:(NSString *)bundleID;
 + (id)sceneHandleForScene:(id)scene;
 + (BOOL)openAppAsync:(NSString *)bundleID completion:(void (^)(BOOL ok))completion;
+// 只做激活（毫秒级，不启动进程），用来让 App 自己重排成全屏
++ (void)reactivateApp:(NSString *)bundleID;
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL ok))completion;
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL ok))completion;
 + (BOOL)homePress;

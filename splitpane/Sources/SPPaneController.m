@@ -360,6 +360,13 @@ static const CGFloat kMaxPaneRatio = 0.78;
 #pragma mark 收工
 
 - (void)teardown {
+    // 先把两个 scene 的尺寸恢复成全屏，再拆窗口。
+    // 顺序不能反：拆掉窗口后我们就不再持有 scene 的接管权，恢复会失效。
+    @try {
+        [_topHost restoreOriginalSceneSettings];
+        [_bottomHost restoreOriginalSceneSettings];
+    } @catch (NSException *e) { SPLog(@"restore ex %@", e.reason); }
+
     [_heartbeat invalidate];
     _heartbeat = nil;
     [_topHost detach];
@@ -379,12 +386,18 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
     _active = NO;
-    _window.hidden = YES;      // 先立刻藏起来，别的什么都等拆完再说
-    [self teardown];
+    [self teardown];          // 内部先恢复 scene 尺寸，再隐藏窗口
+    _window.hidden = YES;
     // 退出必须瞬时完成：拆窗即回到桌面（我们的窗口本来就低于键盘层，
     // 拆掉之后系统自己的界面就露出来了）。
     // 不要把 App 重新 open 一遍 —— 那是跨进程同步调用，日志实证会卡 10 秒。
     SPLog(@"stop: window torn down, main=%@", main);
+    // 让 App 自己重新走一遍全屏布局（scene 尺寸已恢复，但内部排版要它自己重算）
+    if (main.length) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [SPHost reactivateApp:main];
+        });
+    }
     if (completion) completion();
 
 }

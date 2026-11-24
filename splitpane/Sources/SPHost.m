@@ -42,6 +42,8 @@
 @property (nonatomic, assign, readwrite) BOOL live;
 @property (nonatomic, assign) BOOL attached;
 @property (nonatomic, assign) CGSize lastSize;
+@property (nonatomic, strong) NSDictionary *originalSettings;   // frame/orientation 原值
+@property (nonatomic, assign) BOOL touchedSettings;
 @end
 
 @implementation SPHost
@@ -299,6 +301,22 @@ static NSMutableSet *gHomeTried = nil;
     return [self openAppAsync:bundleID completion:completion];
 }
 
++ (void)reactivateApp:(NSString *)bundleID {
+    if (!bundleID.length) return;
+    // activateApplication: 只切前台身份，不启动进程，不会卡
+    Class wsCls = NSClassFromString(@"SBWorkspace");
+    id ws = wsCls ? SPMsg0(wsCls, @"mainWorkspace") : nil;
+    if (!ws) wsCls = NSClassFromString(@"SBMainWorkspace"), ws = wsCls ? SPMsg0(wsCls, @"sharedInstance") : nil;
+    id app = [self applicationProxyForBundleID:bundleID];
+    SEL sel = NSSelectorFromString(@"activateApplication:withResult:");
+    if (!ws || !app || ![ws respondsToSelector:sel]) return;
+    @try {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(ws, sel, app, ^(BOOL ok) {
+            SPLog(@"reactivate %@ -> %d", bundleID, (int)ok);
+        });
+    } @catch (NSException *e) { SPLog(@"reactivate ex %@", e.reason); }
+}
+
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL))completion {
     id app = [self applicationProxyForBundleID:bundleID];
     if (!app) return NO;
@@ -528,6 +546,9 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
     }
 
     // 4) 推 scene settings：不推的话画面还是全屏，host 是空的
+    // 在改任何东西之前，先把原始 frame / orientation 记下来
+    [self captureOriginalSettings];
+
     NSMutableString *prepDiag = [NSMutableString string];
     SPPrepareSceneHost(host, prepDiag);
 
@@ -592,6 +613,47 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
     }
     _live = alive;
     return alive;
+}
+
+- (void)captureOriginalSettings {
+    if (_touchedSettings) return;
+    @try {
+        id settings = SPGet(_scene, @"settings");
+        if (!settings) return;
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        SEL fGet = NSSelectorFromString(@"frame");
+        if ([settings respondsToSelector:fGet]) {
+            CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
+            d[@"frame"] = [NSValue valueWithCGRect:f];
+        }
+        SEL ioGet = NSSelectorFromString(@"interfaceOrientation");
+        if ([settings respondsToSelector:ioGet])
+            d[@"orientation"] = @(((NSInteger (*)(id, SEL))objc_msgSend)(settings, ioGet));
+        _originalSettings = d;
+        _touchedSettings = YES;
+        SPLog(@"scene %@ original frame=%@", _bundleID,
+              d[@"frame"] ? NSStringFromCGRect([d[@"frame"] CGRectValue]) : @"?");
+    } @catch (NSException *e) { SPLog(@"capture settings ex %@", e.reason); }
+}
+
+- (void)restoreOriginalSceneSettings {
+    if (!_touchedSettings || !_scene || !_originalSettings) return;
+    NSValue *frameVal = _originalSettings[@"frame"];
+    NSNumber *oriVal = _originalSettings[@"orientation"];
+    if (!frameVal) return;
+    // 退出时恢复成全屏尺寸：App 回到系统正常布局，否则它一直按半屏渲染 → 黑/灰
+    // 1) 先原样写回接管前的 frame（最保守）
+    CGRect orig = [frameVal CGRectValue];
+    CGRect screen = [UIScreen mainScreen].bounds;
+    CGSize target = orig.size;
+    // 原值是半屏尺寸（我们接管后才记录的）就改用屏幕尺寸
+    if (target.width < 2 || target.height < screen.size.height * 0.9) target = screen.size;
+    NSString *sub = nil;
+    SPSubmitSceneSettings(_scene, target, oriVal ? oriVal.integerValue : 1, &sub);
+    SPLog(@"scene %@ restore target=%.0fx%.0f (orig=%.0fx%.0f)", _bundleID,
+          target.width, target.height, orig.size.width, orig.size.height);
+    SPLog(@"scene %@ restored to %.0fx%.0f (%@)", _bundleID, screen.size.width, screen.size.height, sub ?: @"-");
+    _touchedSettings = NO;
 }
 
 - (void)detach {
