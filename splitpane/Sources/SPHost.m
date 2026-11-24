@@ -352,6 +352,10 @@ static BOOL SPSetI(id o, NSString *name, NSInteger v) {
     } @catch (__unused NSException *e) { return NO; }
 }
 
+static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
+    return SPSubmitSceneSettingsEx(scene, pane, orient, YES, diag);
+}
+
 // 把面板尺寸写进 scene settings。不推这一下，画面仍按全屏渲染，host 是空的。
 // 工厂出来的 SBDeviceApplicationSceneView 默认不渲染：必须关掉占位内容、
 // 关掉「宿主缩放上下文」、并把 displayMode 设成 4（活画面）。
@@ -375,7 +379,7 @@ static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
     }
 }
 
-static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
+static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOOL touchForeground, NSString **diag) {
     if (diag) *diag = nil;
     if (!scene) { if (diag) *diag = @"no-scene"; return NO; }
     @try {
@@ -390,9 +394,11 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
         SPSetI(desired, @"setInterfaceOrientation:", orient);
         NSInteger dev = SPInt0(settings, @"deviceOrientation");
         SPSetI(desired, @"setDeviceOrientation:", dev);
-        // 前台化，否则后台 scene 停渲染
+        // 前台化，否则后台 scene 停渲染。恢复时绝不做 ——
+        // 退出后把 App 推进前台会把桌面挡在后面，表现就是「桌面点不了」。
         SEL fgGet = NSSelectorFromString(@"isForeground");
-        if ([desired respondsToSelector:fgGet]) {
+        if (!touchForeground) { /* 不动前台状态 */ }
+        else if ([desired respondsToSelector:fgGet]) {
             SEL setFg = NSSelectorFromString(@"setForeground:");
             if ([desired respondsToSelector:setFg]) ((void (*)(id, SEL, BOOL))objc_msgSend)(desired, setFg, YES);
         } else {
@@ -649,10 +655,35 @@ static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSStr
     // 原值是半屏尺寸（我们接管后才记录的）就改用屏幕尺寸
     if (target.width < 2 || target.height < screen.size.height * 0.9) target = screen.size;
     NSString *sub = nil;
-    SPSubmitSceneSettings(_scene, target, oriVal ? oriVal.integerValue : 1, &sub);
+    SPSubmitSceneSettingsEx(_scene, target, oriVal ? oriVal.integerValue : 1, NO, &sub);
     SPLog(@"scene %@ restore target=%.0fx%.0f (orig=%.0fx%.0f)", _bundleID,
           target.width, target.height, orig.size.width, orig.size.height);
     SPLog(@"scene %@ restored to %.0fx%.0f (%@)", _bundleID, screen.size.width, screen.size.height, sub ?: @"-");
+    // 回读确认：没生效就说明推错了地方，必须写日志（否则用户看到的就是「App 坏了」）
+    @try {
+        id settings = SPGet(_scene, @"settings");
+        SEL fGet = NSSelectorFromString(@"frame");
+        if (settings && [settings respondsToSelector:fGet]) {
+            CGRect now = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
+            SPLog(@"scene %@ now reads %.0fx%.0f", _bundleID, now.size.width, now.size.height);
+            if (now.size.height < screen.size.height * 0.9) {
+                // 没生效：再推一次，用 2 参数版本
+                SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
+                id settings2 = SPGet(_scene, @"settings");
+                id desired = SPMsg0(settings2, @"mutableCopy");
+                SEL setF = NSSelectorFromString(@"setFrame:");
+                if (desired && [desired respondsToSelector:setF]) {
+                    ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setF,
+                        CGRectMake(0, 0, screen.size.width, screen.size.height));
+                    SPSetI(desired, @"setInterfaceOrientation:", oriVal ? oriVal.integerValue : 1);
+                    id imm = SPMsg0(desired, @"copy");
+                    if (imm && [_scene respondsToSelector:upd2])
+                        ((void (*)(id, SEL, id, id))objc_msgSend)(_scene, upd2, imm, nil);
+                    SPLog(@"scene %@ retried restore", _bundleID);
+                }
+            }
+        }
+    } @catch (NSException *e) { SPLog(@"verify ex %@", e.reason); }
     _touchedSettings = NO;
 }
 

@@ -5,6 +5,7 @@
 #import "SPLog.h"
 #import "SPGesture.h"
 #import "SPSettings.h"
+#import "SPRepair.h"
 
 // ════════════════════════════════════════════════════════════════════════════
 // 注入层。三条铁律（0.2.1 进安全模式就是踩了第一条）：
@@ -24,6 +25,16 @@ static IMP gOrigTouchesCancelled = NULL;
 static IMP gOrigTouchesMoved = NULL;
 
 void SPWriteEnvironmentProbe(void);
+
+static void SPRepairCallback(CFNotificationCenterRef center, void *observer,
+                             CFNotificationName name, const void *object, CFDictionaryRef info) {
+    (void)center; (void)observer; (void)name; (void)object; (void)info;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SPLog(@"repair requested via darwin notify");
+        @try { [SPRepair restoreAllScenes]; SPLog(@"repair done: %@", [SPRepair lastReport]); }
+        @catch (NSException *e) { SPLog(@"repair ex %@", e.reason); }
+    });
+}
 
 static void SPHookedTouchesBegan(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
     if (gOrigTouchesBegan)
@@ -128,7 +139,7 @@ static void SPBootstrapWhenReady(int tries) {
     @catch (NSException *e) { SPLog(@"gesture install ex %@", e.reason); }
 
     if ([SPSettings bannerEnabled])
-        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.6 已加载" : @"SplitPane 0.4.6 已加载 · 用状态栏双击"); }
+        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.7 已加载" : @"SplitPane 0.4.7 已加载 · 用状态栏双击"); }
         @catch (NSException *e) { SPLog(@"banner ex %@", e.reason); }
 
     SPLog(@"bootstrap: done hooks=%d banner=%d", hooked, [SPSettings bannerEnabled]);
@@ -138,9 +149,15 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
-        SPLog(@"=== SplitPane 0.4.6 loaded (bundle=%@ pid=%d log=%@) ===",
+        SPLog(@"=== SplitPane 0.4.7 loaded (bundle=%@ pid=%d log=%@) ===",
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
         if (![bid isEqualToString:@"com.apple.springboard"]) { SPLog(@"not springboard, idle"); return; }
+
+        static char repairToken;
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        &repairToken, SPRepairCallback,
+                                        CFSTR("com.seagull.splitpane.repair"),
+                                        NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
 
         @try { gHookMsgEx = (SPHookMsgExFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx"); }
         @catch (__unused NSException *e) {}

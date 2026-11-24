@@ -5,85 +5,150 @@
 	<key>items</key>
 	<array>
 		<dict>
-			<key>cell</key><string>PSGroupCell</string>
-			<key>label</key><string>SplitPane 上下分屏</string>
-			<key>footerText</key><string>装了之后如果进安全模式：先回这里把「Hook 系统上滑手势」和「自装 pan」都关掉，只留状态栏双击，再注销。入口：状态栏双击 → 选 App → 上下分屏。</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>装了之后如果进安全模式：先回这里把「Hook 系统上滑手势」和「自装 pan」都关掉，只留状态栏双击，再注销。入口：状态栏双击 → 选 App → 上下分屏。</string>
+			<key>label</key>
+			<string>SplitPane 上下分屏</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSwitchCell</string>
-			<key>key</key><string>enabled</string>
-			<key>default</key><true/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>启用</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>启用</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSGroupCell</string>
-			<key>label</key><string>入口（出问题逐个关）</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>入口（出问题逐个关）</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSwitchCell</string>
-			<key>key</key><string>statusTapEntry</string>
-			<key>default</key><true/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>状态栏双击（最安全，推荐先只用这个）</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>statusTapEntry</string>
+			<key>label</key>
+			<string>状态栏双击（最安全，推荐先只用这个）</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSwitchCell</string>
-			<key>key</key><string>hookHomeGesture</string>
-			<key>default</key><false/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>Hook 系统上滑手势（默认关）</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>hookHomeGesture</string>
+			<key>label</key>
+			<string>Hook 系统上滑手势（默认关）</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSwitchCell</string>
-			<key>key</key><string>fallbackPanEntry</string>
-			<key>default</key><false/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>自装 pan 备份（会跟系统抢触摸，默认关）</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>fallbackPanEntry</string>
+			<key>label</key>
+			<string>自装 pan 备份（会跟系统抢触摸，默认关）</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSwitchCell</string>
-			<key>key</key><string>showBanner</string>
-			<key>default</key><true/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>加载时显示浮条</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>showBanner</string>
+			<key>label</key>
+			<string>加载时显示浮条</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSGroupCell</string>
-			<key>label</key><string>手感</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>手感</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSliderCell</string>
-			<key>key</key><string>parkThreshold</string>
-			<key>default</key><integer>45</integer>
-			<key>min</key><integer>20</integer>
-			<key>max</key><integer>80</integer>
-			<key>showValue</key><true/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>上滑触发阈值（屏高百分比）</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>default</key>
+			<integer>45</integer>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>parkThreshold</string>
+			<key>label</key>
+			<string>上滑触发阈值（屏高百分比）</string>
+			<key>max</key>
+			<integer>80</integer>
+			<key>min</key>
+			<integer>20</integer>
+			<key>showValue</key>
+			<true/>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSSwitchCell</string>
-			<key>key</key><string>haptics</string>
-			<key>default</key><true/>
-			<key>defaults</key><string>com.seagull.splitpane</string>
-			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
-			<key>label</key><string>触感反馈</string>
+			<key>PostNotification</key>
+			<string>SplitPaneSettingsDidChange</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.seagull.splitpane</string>
+			<key>key</key>
+			<string>haptics</string>
+			<key>label</key>
+			<string>触感反馈</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSGroupCell</string>
-			<key>label</key><string>操作</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>操作</string>
 		</dict>
 		<dict>
-			<key>cell</key><string>PSButtonCell</string>
-			<key>label</key><string>注销主屏幕</string>
-			<key>action</key><string>respring</string>
+			<key>action</key>
+			<string>repairScenes</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>修复残留（App 黑屏/灰屏时点这个）</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>respring</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>注销主屏幕</string>
 		</dict>
 	</array>
 	<key>title</key>

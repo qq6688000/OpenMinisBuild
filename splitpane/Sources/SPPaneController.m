@@ -3,6 +3,7 @@
 #import "SPSettings.h"
 #import "SPCompat.h"
 #import "SPLog.h"
+#import "SPRepair.h"
 #import <objc/runtime.h>
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -365,6 +366,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
     @try {
         [_topHost restoreOriginalSceneSettings];
         [_bottomHost restoreOriginalSceneSettings];
+        // 兜底：把「被压小」的 scene 全扫一遍恢复（漏掉某个 host 也不会留下残废 App）
+        [SPRepair restoreAllScenes];
+        SPLog(@"repair report: %@", [SPRepair lastReport]);
     } @catch (NSException *e) { SPLog(@"restore ex %@", e.reason); }
 
     [_heartbeat invalidate];
@@ -378,8 +382,11 @@ static const CGFloat kMaxPaneRatio = 0.78;
     UIWindow *w = _window;
     _window = nil;
     _active = NO;
+    // 必须彻底撤掉：只 hidden 不释放会留一个隐形窗口，影响桌面点击/系统手势
     w.hidden = YES;
     w.rootViewController = nil;
+    w.windowScene = nil;
+    [w removeFromSuperview];
 }
 
 - (void)stopWithCompletion:(void (^)(void))completion {

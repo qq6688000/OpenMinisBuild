@@ -40,6 +40,17 @@ static NSString *const SPChangeNotification = @"SplitPaneSettingsDidChange";
     notify_post(SPChangeNotification.UTF8String);
 }
 
+- (void)repairScenes {
+    // 设置面板跑在自己的进程里，调不到 SpringBoard 的 SPRepair，
+    // 所以发 Darwin 通知，让 SpringBoard 那边执行修复
+    notify_post("com.seagull.splitpane.repair");
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"已发送修复"
+                                                              message:@"正在把被压小的 App 画面恢复成全屏。"
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)respring {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"注销主屏幕"
                                                               message:@"让改动完全生效？"
