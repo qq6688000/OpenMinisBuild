@@ -17,7 +17,7 @@
 //  · 退出 = 把主 App 交回系统全屏（openApp:suspended:NO），再拆窗。
 // ════════════════════════════════════════════════════════════════════════════
 
-static const CGFloat kChromeHeight = 46.0;
+static const CGFloat kChromeHeight = 28.0;
 static const CGFloat kSeamHeight = 26.0;
 static const CGFloat kMinPaneRatio = 0.22;
 static const CGFloat kMaxPaneRatio = 0.78;
@@ -136,6 +136,36 @@ static const CGFloat kMaxPaneRatio = 0.78;
     return inst;
 }
 
+
+// 两侧悬浮按钮：× 贴左上、交换贴右上，压在上半屏画面之上（用户标记的位置）
+- (void)addFloatingButtonsToView:(UIView *)host width:(CGFloat)width {
+    CGFloat d = 34.0;
+
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    [close setTitle:@"×" forState:UIControlStateNormal];
+    close.titleLabel.font = [UIFont systemFontOfSize:24 weight:UIFontWeightLight];
+    [close setTitleColor:[UIColor colorWithWhite:1 alpha:0.9] forState:UIControlStateNormal];
+    close.frame = CGRectMake(6, kChromeHeight + 6, d, d);
+    close.layer.cornerRadius = d / 2.0;
+    close.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    close.autoresizingMask = UIViewAutoresizingFlexibleRightMargin;
+    [close addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
+    close.layer.zPosition = 2000;
+    [host addSubview:close];
+
+    UIButton *swap = [UIButton buttonWithType:UIButtonTypeSystem];
+    [swap setTitle:@"交换" forState:UIControlStateNormal];
+    swap.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    [swap setTitleColor:[UIColor colorWithWhite:1 alpha:0.9] forState:UIControlStateNormal];
+    swap.frame = CGRectMake(width - 60 - 6, kChromeHeight + 6, 60, d);
+    swap.layer.cornerRadius = d / 2.0;
+    swap.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    swap.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [swap addTarget:self action:@selector(swapTapped) forControlEvents:UIControlEventTouchUpInside];
+    swap.layer.zPosition = 2000;
+    [host addSubview:swap];
+}
+
 #pragma mark 顶部控制条
 
 - (UIView *)buildChromeWithWidth:(CGFloat)width {
@@ -160,26 +190,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
     handle.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
     [bar addSubview:handle];
 
-    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-    [close setTitle:@"×" forState:UIControlStateNormal];
-    close.titleLabel.font = [UIFont systemFontOfSize:24 weight:UIFontWeightLight];
-    [close setTitleColor:[UIColor colorWithWhite:1 alpha:0.85] forState:UIControlStateNormal];
-    close.frame = CGRectMake(10, (kChromeHeight - 34) / 2.0, 34, 34);
-    close.layer.cornerRadius = 17;
-    close.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
-    [close addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
-    [bar addSubview:close];
-
-    UIButton *swap = [UIButton buttonWithType:UIButtonTypeSystem];
-    [swap setTitle:@"交换" forState:UIControlStateNormal];
-    swap.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
-    [swap setTitleColor:[UIColor colorWithWhite:1 alpha:0.8] forState:UIControlStateNormal];
-    swap.frame = CGRectMake(width - 70, (kChromeHeight - 30) / 2.0, 60, 30);
-    swap.layer.cornerRadius = 15;
-    swap.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
-    swap.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [swap addTarget:self action:@selector(swapTapped) forControlEvents:UIControlEventTouchUpInside];
-    [bar addSubview:swap];
     return bar;
 }
 
@@ -207,8 +217,14 @@ static const CGFloat kMaxPaneRatio = 0.78;
     // chrome 必须在最上层：split 一旦因为坐标系错位盖到顶部，× 就点不到了（已发生）
     chrome.layer.zPosition = 1000;
 
-    // 底部留 34pt 给系统的 home 手势，否则上滑回桌面会被我们整块吞掉
-    CGFloat bottomInset = 34.0;
+    // 底部只留 18pt（home 指示条高度），其余全给画面 —— 用户要求上下铺满
+    CGFloat bottomInset = 18.0;
+    // 铺满全屏：宽度/高度都取窗口真实 bounds，且关掉安全区域内边距（否则左右会被 insets 缩进）
+    vc.view.frame = w.bounds;
+    if (@available(iOS 11.0, *)) {
+        vc.view.insetsLayoutMarginsFromSafeArea = NO;
+        vc.view.directionalLayoutMargins = NSDirectionalEdgeInsetsZero;
+    }
     SPSplitView *split = [[SPSplitView alloc] initWithFrame:CGRectMake(0, kChromeHeight, w.bounds.size.width,
                                                                        w.bounds.size.height - kChromeHeight - bottomInset)];
     split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -217,6 +233,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     split.onSeamEnded = ^{ [wself flushResize]; };
     [vc.view addSubview:split];
     [vc.view bringSubviewToFront:chrome];
+    [self addFloatingButtonsToView:vc.view width:w.bounds.size.width];
 
     // 出口 1：三指下滑
     UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
