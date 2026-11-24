@@ -1,37 +1,34 @@
-// SPHost.h — 一个 App 的宿主：拿到它的活 scene，放进给定容器里渲染
-// 路线按 PV 的口径排序，每一层都用 SPABI 校验真实 method 签名，拿不到就降级，绝不猜。
 #import <UIKit/UIKit.h>
 #import "SPCompat.h"
+
+// scene view 工厂要的 requester：FrontBoard 会回调这两个方法。
+// 传字符串会让工厂 100% 失败（Duo 0.7.79 实证），必须给真实对象。
+@interface SPHostRequester : NSObject
+@property (nonatomic, copy) NSString *presentationIdentifier;
+@end
 
 @interface SPHost : NSObject
 @property (nonatomic, copy, readonly) NSString *bundleID;
 @property (nonatomic, weak, readonly) UIView *containerView;
-@property (nonatomic, assign, readonly) BOOL live;          // 活 scene 是否已经接上
-@property (nonatomic, assign) BOOL snapshotActive;          // 是否退到了冻结快照
+@property (nonatomic, assign, readonly) BOOL live;
+@property (nonatomic, assign) BOOL snapshotActive;
+@property (nonatomic, copy) NSString *lastDiag;
 
 - (instancetype)initWithBundleID:(NSString *)bundleID;
-
-// 把 scene 接进容器。失败返回 NO
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene;
-// 分屏刚建立时 App 可能还没起来：轮询续命，最多 attempts 次，每次间隔 interval
 - (void)attachWhenReady:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
                 attempts:(NSInteger)attempts interval:(NSTimeInterval)interval;
-
-// 用一张已经冻结的画面垫底（系统收走后台 scene 时顶上，防黑屏）
 - (void)installSnapshot:(UIImage *)snapshot;
-
-// 容器尺寸变了：把参考尺寸推给远端 scene，让 App 真的重排
 - (void)setFrameSize:(CGSize)size;
-
-// 探活：活画面还在不在。掉了就叫 snapshotActive=YES
 - (BOOL)refreshLiveness;
-
 - (void)detach;
 
-// --- SpringBoard 入口（多试几层） ---
 + (id)mainDisplaySceneManager;
-+ (id)sceneHandleForBundleID:(NSString *)bundleID;
 + (id)applicationProxyForBundleID:(NSString *)bundleID;
++ (id)fbSceneForBundleID:(NSString *)bundleID;
++ (id)sceneHandleForScene:(id)scene;
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL ok))completion;
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL ok))completion;
++ (BOOL)homePress;
++ (NSString *)homePressDiag;
 @end

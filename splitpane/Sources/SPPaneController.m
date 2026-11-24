@@ -2,6 +2,7 @@
 #import "SPHost.h"
 #import "SPSettings.h"
 #import "SPCompat.h"
+#import "SPLog.h"
 #import <objc/runtime.h>
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -111,6 +112,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @property (nonatomic, strong) NSTimer *heartbeat;
 @property (nonatomic, strong) UIImage *topSnapshot;
 @property (nonatomic, strong) UIImage *bottomSnapshot;
+- (void)startHeartbeat;
 @end
 
 @implementation SPPaneController
@@ -171,7 +173,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 #pragma mark 启动
 
 - (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene {
-    if (_active || !top.length) return NO;
+    if (_active || !top.length || !bottom.length) return NO;
     if (!scene) scene = self.foregroundWindowScene;
     if (!scene) return NO;
 
@@ -198,35 +200,47 @@ static const CGFloat kMaxPaneRatio = 0.78;
     _window = w;
     _chrome = chrome;
     _split = split;
-
-    _topHost = [[SPHost alloc] initWithBundleID:top];
-    BOOL topOK = [_topHost attachToContainer:split.topContainer inWindowScene:scene];
-    if (!topOK) {
-        [self teardown];
-        return NO;
-    }
     _topBundleID = [top copy];
-    _bottomHost = bottom.length ? [[SPHost alloc] initWithBundleID:bottom] : nil;
-    BOOL bottomOK = _bottomHost ? [_bottomHost attachToContainer:split.bottomContainer inWindowScene:scene] : NO;
-    _bottomBundleID = bottomOK ? [bottom copy] : nil;
+    _bottomBundleID = [bottom copy];
 
-    [self resizePanes];
-    _active = YES;
-
-    _heartbeat = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) {
-        __strong typeof(wself) self = wself;
-        if (!self->_active) { [t invalidate]; return; }
-        [self->_topHost refreshLiveness];
-        [self->_bottomHost refreshLiveness];
+    // 顺序很关键：先把下半屏那个 App 拉到前台，
+    // 上面的 App 就自然退到后台（不用按 home —— 这台机器 SBUIController 没有那个方法）。
+    [SPHost openApp:bottom suspended:NO completion:^(BOOL ok) {
+        SPLog(@"open bottom %@ -> %d", bottom, (int)ok);
     }];
 
-    if (bottomOK) {
-        // 让下半屏那个 App 拿到前台身份，不被系统挂起
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [SPHost activateApp:bottom windowScene:scene completion:nil];
-        });
-    }
+    // 等它退到后台再挂 scene；后台 scene 不会跟前台抢渲染
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(wself) self = wself;
+        if (!self || !self->_window) return;
+        SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
+        self->_topHost = topHost;
+        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:8 interval:0.5];
+        SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
+
+        SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
+        self->_bottomHost = bottomHost;
+        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:8 interval:0.5];
+        SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
+
+        [self resizePanes];
+        self->_active = YES;
+        [self startHeartbeat];
+    });
     return YES;
+}
+
+- (void)startHeartbeat {
+    __weak typeof(self) wself = self;
+    [_heartbeat invalidate];
+    _heartbeat = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) {
+        __strong typeof(wself) self = wself;
+        if (!self || !self->_active) { [t invalidate]; return; }
+        @try {
+            [self->_topHost refreshLiveness];
+            [self->_bottomHost refreshLiveness];
+        } @catch (__unused NSException *e) {}
+    }];
 }
 
 - (void)resizePanes {

@@ -21,6 +21,7 @@ static SPHookMsgExFn gHookMsgEx = NULL;
 static IMP gOrigTouchesBegan = NULL;
 static IMP gOrigTouchesEnded = NULL;
 static IMP gOrigTouchesCancelled = NULL;
+static IMP gOrigTouchesMoved = NULL;
 
 void SPWriteEnvironmentProbe(void);
 
@@ -54,6 +55,19 @@ static void SPHookedTouchesEnded(id self, SEL _cmd, NSSet *touches, UIEvent *eve
         ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesEnded)(self, _cmd, touches, event);
 }
 
+static void SPHookedTouchesMoved(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
+    if (gOrigTouchesMoved)
+        ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesMoved)(self, _cmd, touches, event);
+    @try {
+        if (![SPSettings enabled]) return;
+        SEL loc = NSSelectorFromString(@"locationInView:");
+        if ([self respondsToSelector:loc]) {
+            CGPoint p = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, loc, nil);
+            [[SPGesture shared] handleHomePanMoved:p];
+        }
+    } @catch (__unused NSException *e) {}
+}
+
 static void SPHookedTouchesCancelled(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
     if (gOrigTouchesCancelled)
         ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesCancelled)(self, _cmd, touches, event);
@@ -66,6 +80,7 @@ static BOOL SPInstallGestureHooks(void) {
         if (!gHookMsgEx) { SPLog(@"hook: MSHookMessageEx unavailable"); return NO; }
         gHookMsgEx(cls, NSSelectorFromString(@"touchesBegan:withEvent:"), (IMP)SPHookedTouchesBegan, &gOrigTouchesBegan);
         gHookMsgEx(cls, NSSelectorFromString(@"touchesEnded:withEvent:"), (IMP)SPHookedTouchesEnded, &gOrigTouchesEnded);
+        gHookMsgEx(cls, NSSelectorFromString(@"touchesMoved:withEvent:"), (IMP)SPHookedTouchesMoved, &gOrigTouchesMoved);
         gHookMsgEx(cls, NSSelectorFromString(@"touchesCancelled:withEvent:"), (IMP)SPHookedTouchesCancelled, &gOrigTouchesCancelled);
         BOOL ok = (gOrigTouchesEnded != NULL);
         SPLog(@"hook: installed=%d began=%d ended=%d", ok, gOrigTouchesBegan != NULL, gOrigTouchesEnded != NULL);
@@ -113,7 +128,7 @@ static void SPBootstrapWhenReady(int tries) {
     @catch (NSException *e) { SPLog(@"gesture install ex %@", e.reason); }
 
     if ([SPSettings bannerEnabled])
-        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.2.2 已加载" : @"SplitPane 0.2.2 已加载 · 用状态栏双击"); }
+        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.3.0 已加载" : @"SplitPane 0.3.0 已加载 · 用状态栏双击"); }
         @catch (NSException *e) { SPLog(@"banner ex %@", e.reason); }
 
     SPLog(@"bootstrap: done hooks=%d banner=%d", hooked, [SPSettings bannerEnabled]);
@@ -123,7 +138,7 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
-        SPLog(@"=== SplitPane 0.2.2 loaded (bundle=%@ pid=%d log=%@) ===",
+        SPLog(@"=== SplitPane 0.3.0 loaded (bundle=%@ pid=%d log=%@) ===",
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
         if (![bid isEqualToString:@"com.apple.springboard"]) { SPLog(@"not springboard, idle"); return; }
 

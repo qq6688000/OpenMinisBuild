@@ -22,6 +22,8 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 @property (nonatomic, assign) BOOL busy;
 @property (nonatomic, weak) UIWindowScene *scene;
 @property (nonatomic, assign) CGFloat dragStartY;
+@property (nonatomic, assign) CGFloat dragPeakY;
+@property (nonatomic, assign) BOOL tracking;
 @property (nonatomic, strong) UIPanGestureRecognizer *fallbackPan;
 @property (nonatomic, strong) UITapGestureRecognizer *statusTap;
 @property (nonatomic, weak) UIView *panHost;
@@ -55,21 +57,28 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
           self.hooksAvailable, _statusTap != nil, self.fallbackPan != nil);
 }
 
-- (UIView *)springBoardWindowInScene:(UIWindowScene *)scene {
-    // SpringBoard 的主窗口在 normal level，且铺满整屏
-    UIWindow *best = nil;
+- (UIWindow *)springBoardWindowInScene:(UIWindowScene *)scene {
+    // 日志实证的窗口栈：-2:SBHomeScreenWindow / 0:SBRootSceneWindow / 0:SBSystemApertureWindow
+    // 状态栏那层的 host 用 SBRootSceneWindow 最靠谱。
+    UIWindow *root = nil, *home = nil;
     for (UIWindow *w in scene.windows) {
         if (w.isHidden || w.alpha < 0.01) continue;
         if (w.windowLevel > UIWindowLevelStatusBar) continue;
-        if (!best || w.windowLevel < best.windowLevel) best = w;
+        NSString *cn = NSStringFromClass(w.class);
+        if ([cn containsString:@"RootScene"]) root = w;
+        else if ([cn containsString:@"HomeScreen"]) home = w;
     }
-    if (!best) best = [UIApplication sharedApplication].windows.firstObject;
-    return best;
+    if (root) return root;
+    if (home) return home;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (!w.isHidden && w.alpha > 0.01 && w.windowLevel <= UIWindowLevelStatusBar) return w;
+    }
+    return nil;
 }
 
 - (void)installStatusTapInScene:(UIWindowScene *)scene {
     if (_statusTap) return;
-    UIView *host = [self springBoardWindowInScene:scene];
+    UIWindow *host = [self springBoardWindowInScene:scene];
     if (!host) { SPLog(@"statusTap: no host window"); return; }
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statusDoubleTapped:)];
     tap.numberOfTapsRequired = 2;
@@ -77,7 +86,29 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     tap.cancelsTouchesInView = NO;
     [host addGestureRecognizer:tap];
     _statusTap = tap;
-    SPLog(@"statusTap installed on %@", NSStringFromClass(host.class));
+
+    // 状态栏本身是独立 window/子树：普通点击可能被系统吞掉，再往它的状态栏管理视图上挂一份
+    @try {
+        Class sbc = NSClassFromString(@"SBStatusBarManager");
+        id mgr = sbc ? SPMsg0(sbc, @"sharedInstance") : nil;
+        NSArray *views = nil;
+        for (NSString *k in @[@"statusBarViews", @"_statusBars", @"statusBars"]) {
+            id v = SPMsg0(mgr, k);
+            if ([v isKindOfClass:[NSArray class]]) { views = v; break; }
+        }
+        for (UIView *sv in views) {
+            if (![sv isKindOfClass:[UIView class]]) continue;
+            UITapGestureRecognizer *t2 = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statusDoubleTapped:)];
+            t2.numberOfTapsRequired = 2;
+            t2.delegate = self;
+            t2.cancelsTouchesInView = NO;
+            [sv addGestureRecognizer:t2];
+        }
+        SPLog(@"statusTap installed on %@ + %lu status bars", NSStringFromClass(host.class),
+              (unsigned long)views.count);
+    } @catch (NSException *e) {
+        SPLog(@"statusTap bar ex %@", e.reason);
+    }
 }
 
 - (void)installFallbackPanInScene:(UIWindowScene *)scene {
@@ -156,30 +187,49 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 #pragma mark - 前台 App
 
 - (NSString *)frontmostBundleID {
-    id mgr = [SPHost mainDisplaySceneManager];
-    if (mgr) {
-        NSArray *scenes = SPMsg0(mgr, @"allScenes");
-        if ([scenes isKindOfClass:[NSArray class]]) {
-            for (id s in scenes) {
-                if (!SPBool0(s, @"isActive")) continue;
-                id handle = SPMsg0(s, @"handle");
-                id app = SPMsg0(handle, @"application");
-                id bid = SPMsg0(app, @"bundleIdentifier");
-                if ([bid isKindOfClass:[NSString class]] && [(NSString *)bid length]) return bid;
-            }
-        }
-    }
+    // allScenes 在这台机器上是 0（日志实证），所以 SFScene 那条路走不通。
+    // 主路：SBApplicationController.allApplications（193 个）+ 前景/运行态判定。
     Class ac = NSClassFromString(@"SBApplicationController");
     id ctrl = ac ? SPMsg0(ac, @"sharedInstance") : nil;
     NSArray *apps = SPMsg0(ctrl, @"allApplications");
-    if ([apps isKindOfClass:[NSArray class]]) {
-        for (id app in apps) {
-            if (!SPBool0(app, @"isForeground")) continue;
-            id bid = SPMsg0(app, @"bundleIdentifier");
-            if ([bid isKindOfClass:[NSString class]]) return bid;
-        }
+    if (![apps isKindOfClass:[NSArray class]]) apps = SPMsg0(ctrl, @"applications");
+
+    NSString *best = nil;
+    NSInteger bestScore = -1;
+    for (id app in apps) {
+        @try {
+            id bidObj = SPMsg0(app, @"bundleIdentifier");
+            if (![bidObj isKindOfClass:[NSString class]]) continue;
+            NSString *bid = (NSString *)bidObj;
+            if (!bid.length) continue;
+            NSInteger score = -1;
+            if (SPBool0(app, @"isForeground")) score = 100;
+            else if (SPBool0(app, @"isFrontmost")) score = 90;
+            else if (SPBool0(app, @"isFrontmostApplication")) score = 90;
+            else if (SPBool0(app, @"isRunning")) score = 10;
+            // 有 scene 且是主显示
+            id handles = SPMsg0(app, @"sceneHandles");
+            if ([handles isKindOfClass:[NSArray class]] && [handles count]) score = MAX(score, (NSInteger)20);
+            if (score > bestScore) { bestScore = score; best = bid; }
+        } @catch (__unused NSException *e) {}
     }
-    return nil;
+    if (bestScore < 0) {
+        // 再退一层：SpringBoard 自己的前台判定
+        id mgr = [SPHost mainDisplaySceneManager];
+        NSArray *scenes = SPMsg0(mgr, @"allScenes");
+        for (id s in scenes) {
+            if (![s isKindOfClass:[NSObject class]]) continue;
+            if (!SPBool0(s, @"isActive")) continue;
+            id h = SPMsg0(s, @"handle");
+            id a = SPMsg0(h, @"application");
+            id b = SPMsg0(a, @"bundleIdentifier");
+            if ([b isKindOfClass:[NSString class]]) return b;
+        }
+        SPLog(@"frontmost: none (apps=%lu)", (unsigned long)([apps isKindOfClass:[NSArray class]] ? apps.count : 0));
+        return nil;
+    }
+    SPLog(@"frontmost=%@ score=%ld", best, (long)bestScore);
+    return best;
 }
 
 - (NSString *)displayNameForBundleID:(NSString *)bid {
@@ -192,6 +242,14 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
 - (void)handleHomePanBegan:(CGPoint)loc {
     _dragStartY = loc.y;
+    _dragPeakY = loc.y;
+    _tracking = YES;
+}
+
+// pan 每动一次就更新最高点（touchesEnded 时 translation 已被清零，只能自己记）
+- (void)handleHomePanMoved:(CGPoint)loc {
+    if (!_tracking) return;
+    if (loc.y < _dragPeakY) _dragPeakY = loc.y;
 }
 
 - (BOOL)consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity {
@@ -207,6 +265,9 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     CGFloat h = screen.height;
     // 有些情况下 recognizer 的 translation 已被清零，velocity 还能用，两个都算一遍取大的
     CGFloat up = MAX(-translation.y, -velocity.y * 0.18);
+    // 自己记的位移优先：官方 translation 在 touchesEnded 常常是 0（日志实测 up=-0）
+    if (_tracking) up = MAX(up, _dragStartY - _dragPeakY);
+    _tracking = NO;
     CGFloat need = MAX(150.0, h * [SPSettings parkThreshold] * 0.75);
     BOOL fromBottom = (_dragStartY >= h - kBottomStrip);
     SPLog(@"pan up=%.0f need=%.0f startY=%.0f fromBottom=%d active=%d",
@@ -258,7 +319,6 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         __strong typeof(wself) self = wself;
         self.busy = NO;
         SPLog(@"card presented");
-        [self sendHomePress];
     }];
 }
 
