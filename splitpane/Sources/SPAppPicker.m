@@ -3,6 +3,8 @@
 #import "SPHost.h"
 #import <objc/runtime.h>
 
+typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } SBIconImageInfo;
+
 // 选 App 面板。两条路径：
 //   A. SBIconController + SBIconListView 原位（主屏网格搬过来，系统原样图标）
 //   B. 自绘：从 SBApplicationController 枚举已安装 App，取图标，网格排
@@ -19,14 +21,18 @@ static UIImage *SPIconForBundleID(NSString *bundleID, CGSize size) {
     id app = ctrl ? SPMsg1(ctrl, @"applicationWithBundleIdentifier:", bundleID) : nil;
     id icon = SPMsg0(app, @"icon");
     if (icon) {
-        // SBIcon -iconImageWithInfo:（SBIconImageInfo{size, scale, continuousCornerRadius}）
-        struct { CGSize size; CGFloat scale; CGFloat corner; } info = { size, [UIScreen mainScreen].scale, size.width * 0.2237 };
+        // SBIcon -iconImageWithInfo: 收的是 SBIconImageInfo{size, scale, continuousCornerRadius}
+        SBIconImageInfo info = { size, [UIScreen mainScreen].scale, size.width * 0.2237 };
         SEL infoSel = NSSelectorFromString(@"iconImageWithInfo:");
-        if ([icon respondsToSelector:infoSel]) {
-            @try {
-                UIImage *img = ((UIImage * (*)(id, SEL, CGRect))objc_msgSend)(icon, infoSel, *(CGRect *)&info);
-                if (img) return img;
-            } @catch (__unused NSException *e) {}
+        Method m = class_getInstanceMethod(object_getClass(icon), infoSel);
+        if (m) {
+            NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(m)];
+            if (sig.numberOfArguments == 3 && sig.methodReturnType && strcmp(sig.methodReturnType, "@") == 0) {
+                @try {
+                    UIImage *img = ((UIImage * (*)(id, SEL, SBIconImageInfo))objc_msgSend)(icon, infoSel, info);
+                    if ([img isKindOfClass:[UIImage class]]) return img;
+                } @catch (__unused NSException *e) {}
+            }
         }
     }
     // ② Fallback：主屏图标视图（SBIconView）渲染一帧

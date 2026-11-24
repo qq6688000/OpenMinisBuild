@@ -96,8 +96,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @interface SPOverlayWindow : UIWindow
 @end
 @implementation SPOverlayWindow
-- (BOOL)canBecomeKeyWindow { return NO; }
-- (BOOL)_canBecomeKeyWindow { return NO; }
+// 允许成为 key：面板里的 App 要能弹键盘。默认行为即可，不额外压制。
 @end
 
 @interface SPPaneController ()
