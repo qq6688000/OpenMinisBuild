@@ -43,8 +43,8 @@ static const CGFloat kMaxPaneRatio = 0.78;
         _bottomContainer = [UIView new];
         for (UIView *c in @[_topContainer, _bottomContainer]) {
             c.backgroundColor = [UIColor blackColor];
-            c.layer.cornerRadius = 14;
-            c.layer.cornerCurve = kCACornerCurveContinuous;
+            // 铺满全屏就该是直角；圆角会让画面四角被切出缺口
+            c.layer.cornerRadius = 0;
             c.layer.masksToBounds = YES;
             [self addSubview:c];
         }
@@ -70,10 +70,11 @@ static const CGFloat kMaxPaneRatio = 0.78;
     CGRect b = self.bounds;
     CGFloat usable = b.size.height;
     CGFloat topH = round((usable - kSeamHeight) * _splitRatio);
-    CGFloat w = b.size.width - 8;
-    _topContainer.frame = CGRectMake(4, 0, w, topH);
+    // 容器必须铺满整个屏幕宽度，不留左右内边距（用户要求：容器也铺满全屏）
+    CGFloat w = b.size.width;
+    _topContainer.frame = CGRectMake(0, 0, w, topH);
     _seam.frame = CGRectMake(0, topH, b.size.width, kSeamHeight);
-    _bottomContainer.frame = CGRectMake(4, topH + kSeamHeight, w, usable - topH - kSeamHeight);
+    _bottomContainer.frame = CGRectMake(0, topH + kSeamHeight, w, usable - topH - kSeamHeight);
     _grabber.frame = CGRectMake((b.size.width - 64) / 2.0, (kSeamHeight - 5) / 2.0, 64, 5);
 }
 

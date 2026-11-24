@@ -522,18 +522,21 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 }
 
 
-// 把按 referenceSize 渲染的 host 等比塞进 container：MIN(sx,sy) 缩放 + 居中。
-// 只缩不放，避免画面被拉变形；两侧留黑是等比缩放的必然结果，但内容比例正确。
+// 把按 referenceSize 渲染的 host 铺满 container（cover）：取 MAX(sx,sy)，
+// 画面覆盖整个容器，超出的部分由容器 clipsToBounds 裁掉。
+// 之前用 MIN（contain）导致画面只占 60% 宽、四周大片留白 —— 用户明确要求铺满。
 static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (!host || !container || reference.width < 2 || reference.height < 2) return;
     CGSize c = container.bounds.size;
     if (c.width < 2 || c.height < 2) return;
     CGFloat sx = c.width / reference.width;
     CGFloat sy = c.height / reference.height;
-    CGFloat s = MIN(sx, sy);
+    // 参考尺寸就是容器尺寸时 s≈1.0（精确铺满）；有微小偏差时用 MAX 补齐，避免露边
+    CGFloat s = MAX(sx, sy);
     host.transform = CGAffineTransformIdentity;
     host.frame = CGRectMake(0, 0, reference.width, reference.height);
     host.transform = CGAffineTransformMakeScale(s, s);
+    // 居中：超出容器的部分两边对称裁掉
     host.center = CGPointMake(c.width / 2.0, c.height / 2.0);
 }
 
@@ -542,12 +545,10 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     _containerView = container;
     if (_attached && _hostView && _hostView.superview == container) return YES;
 
-    // 参考尺寸必须固定为「全屏」，绝不能拿容器（半屏）尺寸去推 scene。
-    // 拿半屏尺寸推 = App 按 422x413 重排版，WebView / 列表类 App 会缩在角落 + 黑边。
-    // 正确做法：scene 保持全屏排版，我们再等比缩放贴进容器（见 SPFitHostView）。
-    CGSize screen = [UIScreen mainScreen].bounds.size;
-    CGSize ref = screen;
-    if (ref.width < 2 || ref.height < 2) ref = container.bounds.size;
+    // 按容器真实尺寸推 scene：App 会按「半屏正方形」重新排版，内容自然铺满，不裁剪不失真。
+    // （用户选定方案。之前固定全屏 + MIN 缩放会留下大片留白，MAX 缩放会裁掉左右。）
+    CGSize ref = container.bounds.size;
+    if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
     _referenceSize = ref;
     _lastSize = ref;
     NSInteger orient = (ref.width > ref.height) ? 4 : 1;
