@@ -189,6 +189,9 @@ static void SPBootstrapWhenReady(int tries) {
     @try { SPProbeForegroundAPI(); } @catch (NSException *e) { SPLog(@"probe ex %@", e.reason); }
     @try { SPProbeIconMenu(); } @catch (NSException *e) { SPLog(@"probe ex %@", e.reason); }
 
+    // 装图标长按菜单：这是现在唯一的分屏入口
+    @try { SPInstallIconMenuHook(); } @catch (NSException *e) { SPLog(@"icon hook ex %@", e.reason); }
+
     BOOL hooked = NO;
     if ([SPSettings hooksEnabled]) hooked = SPInstallGestureHooks();
     else SPLog(@"hook: disabled by settings");
@@ -198,7 +201,7 @@ static void SPBootstrapWhenReady(int tries) {
     @catch (NSException *e) { SPLog(@"gesture install ex %@", e.reason); }
 
     if ([SPSettings bannerEnabled])
-        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.20 已加载" : @"SplitPane 0.4.20 已加载 · 用状态栏双击"); }
+        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.21 已加载" : @"SplitPane 0.4.21 已加载 · 用状态栏双击"); }
         @catch (NSException *e) { SPLog(@"banner ex %@", e.reason); }
 
     SPLog(@"bootstrap: done hooks=%d banner=%d", hooked, [SPSettings bannerEnabled]);
@@ -208,7 +211,7 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
-        SPLog(@"=== SplitPane 0.4.20 loaded (bundle=%@ pid=%d log=%@) ===",
+        SPLog(@"=== SplitPane 0.4.21 loaded (bundle=%@ pid=%d log=%@) ===",
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
         if (![bid isEqualToString:@"com.apple.springboard"]) { SPLog(@"not springboard, idle"); return; }
 

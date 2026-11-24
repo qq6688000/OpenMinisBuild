@@ -31,10 +31,16 @@ static NSString *SPBundleIDForIconView(id iconView) {
 }
 
 static id SPHookedCtxMenu(id self, SEL _cmd, id interaction, CGPoint location) {
+    // 这一行出现 = 长按确实走到了我们的 hook
+    SPLog(@"icon menu: 长按触发");
     id original = gOrigCtxMenu ? gOrigCtxMenu(self, _cmd, interaction, location) : nil;
-    if (![original isKindOfClass:[UIContextMenuConfiguration class]]) return original;
+    if (![original isKindOfClass:[UIContextMenuConfiguration class]]) {
+        SPLog(@"icon menu: original 不是 configuration (%@)", NSStringFromClass([original class]));
+        return original;
+    }
 
     NSString *bid = SPBundleIDForIconView(self);
+    SPLog(@"icon menu: bundleID=%@", bid ?: @"nil");
     if (!bid.length) return original;
 
     UIContextMenuConfiguration *cfg = (UIContextMenuConfiguration *)original;
@@ -83,6 +89,7 @@ typedef void (*SPHookMsgExFn)(Class, SEL, IMP, IMP *);
 void SPInstallIconMenuHook(void) {
     Class cls = NSClassFromString(@"SBIconView");
     NSString *selName = @"contextMenuInteraction:configurationForMenuAtLocation:";
+    SPLog(@"icon menu: 开始安装, SBIconView=%@", cls ? @"Y" : @"n");
     if (!cls) { SPLog(@"icon menu: SBIconView 不存在"); return; }
     SEL sel = NSSelectorFromString(selName);
     if (![cls instancesRespondToSelector:sel]) {
@@ -93,4 +100,6 @@ void SPInstallIconMenuHook(void) {
     if (!hook) { SPLog(@"icon menu: MSHookMessageEx 不可用"); return; }
     hook(cls, sel, (IMP)SPHookedCtxMenu, (IMP *)&gOrigCtxMenu);
     SPLog(@"icon menu hooked: SBIconView (orig=%p)", gOrigCtxMenu);
+    // 自检：hook 后 original 必须非空，否则等于没装上
+    if (!gOrigCtxMenu) SPLog(@"icon menu: ⚠️ original 为空，hook 可能未生效");
 }
