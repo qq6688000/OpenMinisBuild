@@ -1,6 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <substrate.h>
+#import <dlfcn.h>
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPGesture.h"
@@ -77,6 +77,9 @@ static id SPHookedCtxMenu(id self, SEL _cmd, id interaction, CGPoint location) {
     return modified ?: original;
 }
 
+// 不能直接引 MSHookMessageEx 符号（链接期会 undefined），必须 dlsym 取。
+typedef void (*SPHookMsgExFn)(Class, SEL, IMP, IMP *);
+
 void SPInstallIconMenuHook(void) {
     Class cls = NSClassFromString(@"SBIconView");
     NSString *selName = @"contextMenuInteraction:configurationForMenuAtLocation:";
@@ -86,6 +89,8 @@ void SPInstallIconMenuHook(void) {
         SPLog(@"icon menu: %@ 不存在", selName);
         return;
     }
-    MSHookMessageEx(cls, sel, (IMP)SPHookedCtxMenu, (IMP *)&gOrigCtxMenu);
-    SPLog(@"icon menu hooked: SBIconView");
+    SPHookMsgExFn hook = (SPHookMsgExFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
+    if (!hook) { SPLog(@"icon menu: MSHookMessageEx 不可用"); return; }
+    hook(cls, sel, (IMP)SPHookedCtxMenu, (IMP *)&gOrigCtxMenu);
+    SPLog(@"icon menu hooked: SBIconView (orig=%p)", gOrigCtxMenu);
 }

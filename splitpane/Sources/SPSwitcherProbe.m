@@ -66,3 +66,28 @@ void SPProbeIconMenu(void) {
     }
     SPLog(@"icon menu probe: %@", [rows componentsJoinedByString:@" | "]);
 }
+
+
+// 让 App 的 scene 真正出画面，需要同时改两处：scene settings 的前台标记、
+// 以及 App 进程自己的「我在前台」状态。先探测后者有没有可用接口。
+void SPProbeForegroundAPI(void) {
+    NSMutableArray *rows = [NSMutableArray array];
+    Class appCls = NSClassFromString(@"SBApplication");
+    if (appCls) {
+        for (NSString *sel in @[@"setProcessState:", @"processState", @"isFrontmost",
+                                @"setIsFrontmost:", @"_setProcessState:"]) {
+            [rows addObject:[NSString stringWithFormat:@"%@=%@", sel,
+                             [appCls instancesRespondToSelector:NSSelectorFromString(sel)] ? @"Y" : @"n"]];
+        }
+    } else {
+        [rows addObject:@"SBApplication=n"];
+    }
+    Class proc = NSClassFromString(@"FBProcess");
+    if (proc) {
+        for (NSString *sel in @[@"setTaskState:", @"taskState", @"setVisibility:", @"visibility"]) {
+            [rows addObject:[NSString stringWithFormat:@"FBProcess.%@=%@", sel,
+                             [proc instancesRespondToSelector:NSSelectorFromString(sel)] ? @"Y" : @"n"]];
+        }
+    }
+    SPLog(@"foreground probe: %@", [rows componentsJoinedByString:@" | "]);
+}
