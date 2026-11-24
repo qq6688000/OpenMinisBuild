@@ -118,8 +118,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 // 必须能成为 key window，否则里面的 App 弹不出键盘、点进去也没光标
 // 不能抢 key：一旦成为 key window，触摸事件就归我们，SpringBoard 上挂的
 // home 手势识别器收不到 → 用户永远回不了桌面。
-- (BOOL)canBecomeKeyWindow { return NO; }
-- (BOOL)becomeFirstResponder { return YES; }
+- (BOOL)canBecomeKeyWindow { return YES; }
 @end
 
 @interface SPPaneController ()
@@ -135,6 +134,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @property (nonatomic, strong) UIImage *topSnapshot;
 @property (nonatomic, strong) UIPanGestureRecognizer *homeSwipe;
 @property (nonatomic, assign) CGFloat homeSwipeStartY;
+@property (nonatomic, assign) BOOL homeSwipeArmed;
 @property (nonatomic, assign) BOOL resizeCoalescing;
 @property (nonatomic, assign) BOOL pendingResize;
 @property (nonatomic, strong) UIImage *bottomSnapshot;
@@ -351,18 +351,25 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 #pragma mark 操作
 
-// 底部上滑：起手在底 90pt 内、往上超过 80pt 就退出分屏（等价于「回桌面」）
+// 底部上滑 = 回桌面。
+// 严格要求「从底部条起手」：中缝拖动、面板内滚动都会产生 pan，
+// 不限制起点就会把接缝拖动吃掉（0.5.3 日志里的 up=-319 就是这个）。
 - (void)homeSwipePanned:(UIPanGestureRecognizer *)g {
     CGPoint p = [g locationInView:g.view];
     CGFloat h = g.view.bounds.size.height;
+
     if (g.state == UIGestureRecognizerStateBegan) {
         _homeSwipeStartY = p.y;
+        _homeSwipeArmed = (p.y >= h - 110.0);
         return;
     }
+    if (!_homeSwipeArmed) return;
     if (g.state != UIGestureRecognizerStateEnded) return;
+
+    _homeSwipeArmed = NO;
     CGFloat up = _homeSwipeStartY - p.y;
     SPLog(@"homeSwipe: startY=%.0f endY=%.0f up=%.0f (need 80)", _homeSwipeStartY, p.y, up);
-    if (_homeSwipeStartY >= h - 110 && up >= 80) {
+    if (up >= 80) {
         SPLog(@"homeSwipe -> stop (back to home)");
         [self stopWithCompletion:nil];
     }
@@ -452,10 +459,11 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
     _active = NO;
-    [self teardown];          // 内部先恢复 scene 尺寸，再隐藏窗口
+    // 先把窗口从屏幕上撤掉（teardown 会用 releaseWindow 真正销毁它，
+    // 所以这里先抓一份引用做 hidden，避免 teardown 后 _window 已是 nil）
     _window.hidden = YES;
-    // 退出必须瞬时完成：拆窗即回到桌面（我们的窗口本来就低于键盘层，
-    // 拆掉之后系统自己的界面就露出来了）。
+    [self teardown];
+    // 退出必须瞬时完成：拆窗即回到桌面。
     // 不要把 App 重新 open 一遍 —— 那是跨进程同步调用，日志实证会卡 10 秒。
     SPLog(@"stop: window torn down, main=%@", main);
     // 让 App 自己重新走一遍全屏布局（scene 尺寸已恢复，但内部排版要它自己重算）
@@ -465,7 +473,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
         });
     }
     if (completion) completion();
-
 }
 
 @end
