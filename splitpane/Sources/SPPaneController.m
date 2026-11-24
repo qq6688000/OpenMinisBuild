@@ -97,7 +97,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @interface SPOverlayWindow : UIWindow
 @end
 @implementation SPOverlayWindow
-// 允许成为 key：面板里的 App 要能弹键盘。默认行为即可，不额外压制。
+// 必须能成为 key window，否则里面的 App 弹不出键盘、点进去也没光标
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)becomeFirstResponder { return YES; }
 @end
 
 @interface SPPaneController ()
@@ -178,7 +180,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!scene) return NO;
 
     SPOverlayWindow *w = [[SPOverlayWindow alloc] initWithWindowScene:scene];
-    w.windowLevel = UIWindowLevelStatusBar + 100;
+    w.windowLevel = UIWindowLevelNormal + 1;   // 必须低于键盘，否则键盘被盖住
     w.backgroundColor = [UIColor blackColor];
     w.frame = scene.coordinateSpace.bounds;
     UIViewController *vc = [UIViewController new];
@@ -190,12 +192,21 @@ static const CGFloat kMaxPaneRatio = 0.78;
     chrome.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [vc.view addSubview:chrome];
 
+    // 底部留 34pt 给系统的 home 手势，否则上滑回桌面会被我们整块吞掉
+    CGFloat bottomInset = 34.0;
     SPSplitView *split = [[SPSplitView alloc] initWithFrame:CGRectMake(0, kChromeHeight, w.bounds.size.width,
-                                                                       w.bounds.size.height - kChromeHeight)];
+                                                                       w.bounds.size.height - kChromeHeight - bottomInset)];
     split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     __weak typeof(self) wself = self;
     split.onSeamMoved = ^{ [wself resizePanes]; };
     [vc.view addSubview:split];
+
+    // 保险出口：三指下滑 = 立即退出（不依赖被遮挡的 home 手势，也不依赖 × 按钮）
+    UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
+    escape.numberOfTouchesRequired = 3;
+    escape.direction = UISwipeGestureRecognizerDirectionDown;
+    escape.delegate = (id<UIGestureRecognizerDelegate>)self;
+    [vc.view addGestureRecognizer:escape];
 
     _window = w;
     _chrome = chrome;
@@ -253,6 +264,11 @@ static const CGFloat kMaxPaneRatio = 0.78;
 }
 
 #pragma mark 操作
+
+- (void)escapeSwipe:(UISwipeGestureRecognizer *)g {
+    SPLog(@"escape swipe -> stop");
+    [self stopWithCompletion:nil];
+}
 
 - (void)closeTapped {
     [self stopWithCompletion:nil];
@@ -313,10 +329,21 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 - (void)stopWithCompletion:(void (^)(void))completion {
     if (!_active) { if (completion) completion(); return; }
-    NSString *main = _topBundleID;
+    NSString *main = _topBundleID ?: _bottomBundleID;
     [self teardown];
-    // 交回全屏：系统自己把主 App 拉到前台全屏，用户看不到黑屏帧
-    if (main.length) [SPHost openApp:main suspended:NO completion:nil];
+    // 交回全屏。先 open 主 App；open 不成就 activate；都不成就发 home 回桌面。
+    // 这台机器 SBUIController 没有 home 方法，所以三项都写日志，失败也看得见。
+    if (main.length) {
+        BOOL ok = [SPHost openApp:main suspended:NO completion:nil];
+        if (!ok) {
+            ok = [SPHost activateApp:main windowScene:nil completion:nil];
+            SPLog(@"stop: activate fallback -> %d", (int)ok);
+        }
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        BOOL h = [SPHost homePress];
+        SPLog(@"stop: homePress -> %d (%@)", (int)h, [SPHost homePressDiag]);
+    });
     if (completion) completion();
 }
 

@@ -174,7 +174,7 @@ def main():
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'SplitPanePrefs',
             'CFBundleIdentifier':'com.seagull.splitpane.prefs','CFBundleInfoDictionaryVersion':'6.0',
-            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.3.3','CFBundleVersion':'1',
+            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.4.0','CFBundleVersion':'1',
             'NSPrincipalClass':'SPRootListController'},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'Preferences/Resources/Root.plist',pb/'Root.plist')
         (pl/'SplitPane.plist').write_bytes(plistlib.dumps({
@@ -187,7 +187,7 @@ def main():
                 p=Path(cur)/n
                 os.chmod(p,0o755 if p.name in ('SplitPane.dylib','SplitPanePrefs') else 0o644)
         out=ROOT/'dist-apple';out.mkdir(exist_ok=True)
-        deb=out/'SplitPane_0.3.3_iphoneos-arm64e.deb'
+        deb=out/'SplitPane_0.4.0_iphoneos-arm64e.deb'
         run([dpkg,'--root-owner-group','-Zgzip','--build',str(stage),str(deb)])
         print(f'Built {deb} ({deb.stat().st_size} bytes); NOT device-validated.')
 

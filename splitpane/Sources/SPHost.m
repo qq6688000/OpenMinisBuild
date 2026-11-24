@@ -263,25 +263,74 @@ static NSMutableSet *gHomeTried = nil;
     return NO;
 }
 
+// 打开 App。这台机器上 SBMainWorkspace 的 openApplication 签名不一定对得上，
+// 所以按「最可能成功」的顺序全试一遍，并逐条写日志 —— 不写日志就永远不知道卡在哪。
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL))completion {
-    Class wsCls = NSClassFromString(@"SBMainWorkspace");
-    id ws = wsCls ? SPMsg0(wsCls, @"sharedInstance") : nil;
-    if (!ws || !bundleID.length) return NO;
+    if (!bundleID.length) return NO;
     id opts = nil;
     Class optCls = NSClassFromString(@"FBSOpenApplicationOptions");
     if (optCls) {
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
         if (suspended) d[@"__Suspended"] = @(YES);
         opts = SPMsg1(optCls, @"optionsWithDictionary:", d);
+        if (!opts) opts = SPMsg0(optCls, @"optionsWithDictionary:");
     }
-    SEL s1 = NSSelectorFromString(@"openApplicationWithBundleID:options:withResult:");
-    SEL s2 = NSSelectorFromString(@"openApplicationWithBundleIdentifier:options:withResult:");
-    SEL sel = [ws respondsToSelector:s1] ? s1 : ([ws respondsToSelector:s2] ? s2 : NULL);
-    if (!sel) return NO;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(ws, sel, bundleID, opts, ^(BOOL ok) {
-        if (completion) completion(ok);
-    });
-    return YES;
+
+    // 候选 1：SBMainWorkspace（单例名有两种）
+    NSMutableArray *wsList = [NSMutableArray array];
+    for (NSString *cn in @[@"SBMainWorkspace", @"SBWorkspace"]) {
+        Class c = NSClassFromString(cn);
+        if (!c) continue;
+        id ws = SPMsg0(c, @"sharedInstance");
+        if (!ws) ws = SPMsg0(c, @"mainWorkspace");
+        if (ws) [wsList addObject:ws];
+    }
+    NSArray *openSels = @[@"openApplicationWithBundleID:options:withResult:",
+                          @"openApplicationWithBundleIdentifier:options:withResult:",
+                          @"openApplicationWithBundleID:options:withResult:client:",
+                          @"activateApplication:withResult:"];
+    for (id ws in wsList) {
+        for (NSString *sn in openSels) {
+            SEL sel = NSSelectorFromString(sn);
+            if (![ws respondsToSelector:sel]) continue;
+            @try {
+                if ([sn containsString:@"client:"]) continue;
+                if ([sn hasPrefix:@"activate"]) {
+                    id app = [self applicationProxyForBundleID:bundleID];
+                    if (!app) continue;
+                    ((void (*)(id, SEL, id, id))objc_msgSend)(ws, sel, app, ^(BOOL ok) {
+                        SPLog(@"open %@ via activate -> %d", bundleID, (int)ok);
+                        if (completion) completion(ok);
+                    });
+                    return YES;
+                }
+                ((void (*)(id, SEL, id, id, id))objc_msgSend)(ws, sel, bundleID, opts, ^(BOOL ok) {
+                    SPLog(@"open %@ via %@ -> %d", bundleID, sn, (int)ok);
+                    if (completion) completion(ok);
+                });
+                SPLog(@"open %@ dispatched via %@", bundleID, sn);
+                return YES;
+            } @catch (NSException *e) {
+                SPLog(@"open %@ %@ ex %@", bundleID, sn, e.reason);
+            }
+        }
+    }
+
+    // 候选 2：LSApplicationWorkspace（UIKit 层，最稳）
+    Class lsw = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = lsw ? SPMsg0(lsw, @"defaultWorkspace") : nil;
+    for (NSString *sn in @[@"openApplicationWithBundleID:", @"openApplicationWithBundleIdentifier:"]) {
+        SEL sel = NSSelectorFromString(sn);
+        if (![workspace respondsToSelector:sel]) continue;
+        @try {
+            BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, sel, bundleID);
+            SPLog(@"open %@ via LSApplicationWorkspace.%@ -> %d", bundleID, sn, (int)ok);
+            if (completion) completion(ok);
+            return ok;
+        } @catch (NSException *e) { SPLog(@"LS open ex %@", e.reason); }
+    }
+    SPLog(@"open %@: no usable API", bundleID);
+    return NO;
 }
 
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL))completion {

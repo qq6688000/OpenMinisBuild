@@ -3,7 +3,7 @@
 //   window(overlay) → topHost / bottomHost / seam(pan) / chrome(状态栏遮挡+退出按钮)
 #import <UIKit/UIKit.h>
 
-@interface SPPaneController : NSObject
+@interface SPPaneController : NSObject <UIGestureRecognizerDelegate>
 @property (class, readonly) SPPaneController *shared;
 
 @property (nonatomic, readonly) BOOL active;
