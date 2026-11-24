@@ -104,6 +104,15 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @interface SPOverlayWindow : UIWindow
 @end
 @implementation SPOverlayWindow
+
+// 底部那条（home 手势区）不接触摸：返回 nil 让事件落到 SpringBoard，
+// 否则系统上滑手势永远收不到，用户就回不了桌面。
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    CGFloat h = self.bounds.size.height;
+    if (point.y >= h - 54.0) return nil;
+    return [super hitTest:point withEvent:event];
+}
+
 // 必须能成为 key window，否则里面的 App 弹不出键盘、点进去也没光标
 - (BOOL)canBecomeKeyWindow { return YES; }
 - (BOOL)becomeFirstResponder { return YES; }
@@ -208,9 +217,11 @@ static const CGFloat kMaxPaneRatio = 0.78;
     chrome.layer.zPosition = 1000;
 
     // 底部留 34pt 给系统的 home 手势，否则上滑回桌面会被我们整块吞掉
-    CGFloat bottomInset = 34.0;
+    CGFloat bottomInset = 60.0;   // 给系统 home 手势留足空间，否则回不了桌面
     SPSplitView *split = [[SPSplitView alloc] initWithFrame:CGRectMake(0, kChromeHeight, w.bounds.size.width,
                                                                        w.bounds.size.height - kChromeHeight - bottomInset)];
+    // 底部那条不能吃触摸，让系统 home 手势直接穿过去
+    split.clipsToBounds = YES;
     split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     __weak typeof(self) wself = self;
     split.onSeamMoved = ^{ [wself resizePanes]; };

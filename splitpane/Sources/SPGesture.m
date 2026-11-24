@@ -298,9 +298,10 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     // 自己记的位移优先：官方 translation 在 touchesEnded 常常是 0（日志实测 up=-0）
     if (_tracking) up = MAX(up, _dragStartY - _dragPeakY);
     _tracking = NO;
-    // 日志实证：用户稳定能到 300pt 左右但常常差几 pt 够不到
-    // 原来 h*0.45*0.75≈315 太苛刻，改成 max(120, h*0.22)≈200
-    CGFloat need = MAX(120.0, h * 0.22);
+    // 按「手指从底部往上拉了多少」算，不按屏高百分比。
+    // 之前 need=205 意味着要拉到屏幕上方 20% 才触发，太累。
+    // 90pt 大约是拇指一次自然上推的距离。
+    CGFloat need = 90.0;
     BOOL fromBottom = (_dragStartY >= h - kBottomStrip);
     SPLog(@"pan up=%.0f need=%.0f startY=%.0f fromBottom=%d active=%d",
           up, need, _dragStartY, fromBottom, (int)SPPaneController.shared.active);
