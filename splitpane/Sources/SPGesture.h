@@ -6,6 +6,7 @@
 @property (nonatomic, assign) BOOL hooksAvailable;   // 系统手势钩子是否装上
 - (void)installInWindowScene:(UIWindowScene *)scene;
 - (void)handleHomePanBegan:(CGPoint)loc;
+- (void)cancelTracking;
 - (void)handleHomePanMoved:(CGPoint)loc;
 - (BOOL)consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity;
 @end

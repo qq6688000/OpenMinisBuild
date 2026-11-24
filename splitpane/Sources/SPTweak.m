@@ -6,6 +6,7 @@
 #import "SPGesture.h"
 #import "SPSettings.h"
 #import "SPRepair.h"
+#import "SPPaneController.h"
 
 // ════════════════════════════════════════════════════════════════════════════
 // 注入层。三条铁律（0.2.1 进安全模式就是踩了第一条）：
@@ -17,6 +18,30 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 typedef void (*SPHookMsgExFn)(Class, SEL, IMP, IMP *);
+
+// 判断触摸是否落在我们自己建的分屏窗口内。
+// 落在里面 = 用户是在操作分屏 UI（×、交换、接缝、面板内容），
+// 系统 home 手势这套逻辑必须完全让开，否则按钮收不到 touchUpInside
+// （日志实证：点 × 时记到 pan up=-0 startY=9，全程没有一次 closeTapped）。
+static BOOL SPPointInOurPaneWindow(CGPoint p) {
+    @try {
+        // 只要 SPWindowRegistry 里有活着的窗口，且这一点命中它，就让开。
+        // 用登记表判断比猜类名可靠：所有自建窗口都在册。
+        Class reg = NSClassFromString(@"SPWindowRegistry");
+        if (!reg || ![reg respondsToSelector:NSSelectorFromString(@"count")]) return NO;
+        NSUInteger n = ((NSUInteger (*)(id, SEL))objc_msgSend)(reg, NSSelectorFromString(@"count"));
+        if (n == 0) return NO;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isHidden || w.alpha < 0.01) continue;
+            CGPoint lp = [w convertPoint:p fromWindow:nil];
+            if (!CGRectContainsPoint(w.bounds, lp)) continue;
+            // 命中测试：这个点上有我们窗口的视图吗
+            UIView *hit = [w hitTest:lp withEvent:nil];
+            if (hit) return YES;
+        }
+    } @catch (__unused NSException *e) {}
+    return NO;
+}
 static SPHookMsgExFn gHookMsgEx = NULL;
 
 static IMP gOrigTouchesBegan = NULL;
@@ -32,6 +57,22 @@ static void SPRepairCallback(CFNotificationCenterRef center, void *observer,
     (void)center; (void)observer; (void)name; (void)object; (void)info;
     dispatch_async(dispatch_get_main_queue(), ^{
         SPLog(@"repair requested via darwin notify");
+        // 这个通知是「卡住了」的自救通道：先把分屏强制关掉，再修 scene
+        @try {
+            SPLog(@"repair: force stop pane if active");
+            [SPPaneController.shared stopWithCompletion:nil];
+        } @catch (NSException *e) { SPLog(@"force stop ex %@", e.reason); }
+        @try {
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                if (w.isHidden) continue;
+                if (w.windowLevel > UIWindowLevelNormal && w.windowLevel < 100) {
+                    w.hidden = YES;
+                    w.rootViewController = nil;
+                    w.windowScene = nil;
+                    [w removeFromSuperview];
+                }
+            }
+        } @catch (__unused NSException *e) {}
         @try { [SPRepair restoreAllScenes]; SPLog(@"repair done: %@", [SPRepair lastReport]); }
         @catch (NSException *e) { SPLog(@"repair ex %@", e.reason); }
     });
@@ -46,6 +87,8 @@ static void SPHookedTouchesBegan(id self, SEL _cmd, NSSet *touches, UIEvent *eve
         SEL loc = NSSelectorFromString(@"locationInView:");
         if ([self respondsToSelector:loc])
             p = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, loc, nil);
+        // 分屏窗口内的触摸交给分屏自己处理，手势层完全不介入
+        if (SPPointInOurPaneWindow(p)) { [[SPGesture shared] cancelTracking]; return; }
         [[SPGesture shared] handleHomePanBegan:p];
     } @catch (__unused NSException *e) {}
 }
@@ -53,6 +96,15 @@ static void SPHookedTouchesBegan(id self, SEL _cmd, NSSet *touches, UIEvent *eve
 static void SPHookedTouchesEnded(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
     @try {
         if ([SPSettings enabled]) {
+            CGPoint lp = CGPointZero;
+            SEL loc2 = NSSelectorFromString(@"locationInView:");
+            if ([self respondsToSelector:loc2])
+                lp = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, loc2, nil);
+            if (SPPointInOurPaneWindow(lp)) {
+                if (gOrigTouchesEnded)
+                    ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesEnded)(self, _cmd, touches, event);
+                return;
+            }
             CGPoint t = CGPointZero, v = CGPointZero;
             SEL tr = NSSelectorFromString(@"translationInView:");
             SEL ve = NSSelectorFromString(@"velocityInView:");
@@ -141,7 +193,7 @@ static void SPBootstrapWhenReady(int tries) {
     @catch (NSException *e) { SPLog(@"gesture install ex %@", e.reason); }
 
     if ([SPSettings bannerEnabled])
-        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.15 已加载" : @"SplitPane 0.4.15 已加载 · 用状态栏双击"); }
+        @try { SPShowLoadBanner(hooked ? @"SplitPane 0.4.16 已加载" : @"SplitPane 0.4.16 已加载 · 用状态栏双击"); }
         @catch (NSException *e) { SPLog(@"banner ex %@", e.reason); }
 
     SPLog(@"bootstrap: done hooks=%d banner=%d", hooked, [SPSettings bannerEnabled]);
@@ -151,7 +203,7 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
-        SPLog(@"=== SplitPane 0.4.15 loaded (bundle=%@ pid=%d log=%@) ===",
+        SPLog(@"=== SplitPane 0.4.16 loaded (bundle=%@ pid=%d log=%@) ===",
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
         if (![bid isEqualToString:@"com.apple.springboard"]) { SPLog(@"not springboard, idle"); return; }
 

@@ -260,6 +260,13 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
 #pragma mark - 上滑判定
 
+// 触摸落在分屏窗口里：取消本次手势追踪，别误判
+- (void)cancelTracking {
+    _tracking = NO;
+    _dragStartY = 0;
+    _dragPeakY = 0;
+}
+
 - (void)handleHomePanBegan:(CGPoint)loc {
     _dragStartY = loc.y;
     _dragPeakY = loc.y;
