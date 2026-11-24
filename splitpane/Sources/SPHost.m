@@ -739,13 +739,11 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     // 拆窗后它没有别的 present，画面不再刷新 → 再次打开就是灰屏/黑屏。
     @try {
         if (_hostView) {
-            SEL enc = NSSelectorFromString(@"setContentReferenceSize:withContentOrientation:andContainerOrientation:");
-            if ([_hostView respondsToSelector:enc]) {
-                CGSize s0 = [UIScreen mainScreen].bounds.size;
-                ((void (*)(id, SEL, CGSize, NSInteger, NSInteger))objc_msgSend)(_hostView, enc, s0, 1, 1);
-            }
+            // ⚠️ 这里不再推全屏参考尺寸。
+            // 改尺寸要等 hostView 摘掉之后由 restoreOriginalSceneSettings 统一做，
+            // 否则「半屏视图 + 全屏 settings」同时存在，那一帧就是黑的。
             // 有些版本提供 invalidate / 释放接口，存在就调
-            for (NSString *selName in @[@"invalidate", @"setSceneHandle:", @"detachScene"]) {
+            for (NSString *selName in @[@"invalidate", @"detachScene"]) {
                 SEL sel = NSSelectorFromString(selName);
                 if (![_hostView respondsToSelector:sel]) continue;
                 @try { ((void (*)(id, SEL))objc_msgSend)(_hostView, sel); }

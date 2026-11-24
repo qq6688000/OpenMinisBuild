@@ -365,12 +365,18 @@ static const CGFloat kMaxPaneRatio = 0.78;
 #pragma mark 收工
 
 - (void)teardown {
-    // 先把两个 scene 的尺寸恢复成全屏，再拆窗口。
-    // 顺序不能反：拆掉窗口后我们就不再持有 scene 的接管权，恢复会失效。
     // 卡片窗口层级很高，不清理会一直挡在桌面上（也会挡点击）
     [SPParkCard dismissAll];
 
     SPDumpScenes("before-teardown");
+
+    // ⚠️ 顺序是「先摘视图、再恢复 settings」，跟之前相反。
+    // 之前先推全屏 settings 再 detach：那一瞬 scene 被要求按全屏渲染，
+    // 而唯一的呈现者（我们的 hostView）还在显示半屏内容，两边打架 → 黑屏。
+    // 先 detach 让 scene 失去我们的呈现者，再把它交回系统全屏，中间不会出现空的渲染态。
+    [_topHost detach];
+    [_bottomHost detach];
+
     @try {
         [_topHost restoreOriginalSceneSettings];
         [_bottomHost restoreOriginalSceneSettings];
@@ -381,8 +387,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
     [_heartbeat invalidate];
     _heartbeat = nil;
-    [_topHost detach];
-    [_bottomHost detach];
     _topHost = nil;
     _bottomHost = nil;
     _split = nil;
@@ -401,14 +405,19 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
     _active = NO;
-    [self teardown];          // 内部先恢复 scene 尺寸、再释放窗口并 killAll
+    [self teardown];          // 内部先摘视图、再恢复 scene 尺寸、最后释放窗口
     SPLog(@"stop: window torn down, main=%@", main);
 
-    // ⚠️ 退出后绝不重新激活 App。
-    // 之前这里调 reactivateApp:，会把 App 推回前台：它的 scene 刚被改回全屏、
-    // 内部还没重排完，用户看到的就是「一整块黑屏」，而且它盖住桌面 → 退不回去。
-    // 正确做法：直接回桌面。
-    [SPHost homePress];
+    // 这台机器 homePress 不可用（日志实证 `homePress: none available`），
+    // 所以不指望「回桌面」这个动作。改为：把主 App 交回系统正常全屏渲染，
+    // 用户看到的是 App 本身而不是黑屏，随后自己上滑就能回桌面。
+    if (main.length) {
+        [SPHost reactivateApp:main];
+        // 再补一次 settings 恢复：activate 之后系统会重新计算全屏布局
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try { [SPRepair restoreAllScenes]; } @catch (__unused NSException *e) {}
+        });
+    }
     if (completion) completion();
 }
 
