@@ -137,7 +137,7 @@ def main():
         dylib=work/'SplitPane.dylib'
         link=[tools['ld'],'-dylib','-arch','arm64e','-platform_version','ios',DEPLOYMENT,sdkversion,
               '-syslibroot',str(sdk),'-fixup_chains','-install_name',INSTALL,
-              '-o',str(dylib),*objs,'-L',str(ROOT/'vendor'),'-lsubstrate','-lSystem','-lobjc']
+              '-o',str(dylib),*objs,'-L',str(ROOT/'vendor'),'-lSystem','-lobjc']
         for fw in FRAMEWORKS: link.extend(['-framework',fw])
         run(link)
         MachO(dylib,6).validate()
@@ -174,7 +174,7 @@ def main():
         (pb/'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleDevelopmentRegion':'zh_CN','CFBundleExecutable':'SplitPanePrefs',
             'CFBundleIdentifier':'com.seagull.splitpane.prefs','CFBundleInfoDictionaryVersion':'6.0',
-            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.1.1','CFBundleVersion':'1',
+            'CFBundlePackageType':'BNDL','CFBundleShortVersionString':'0.2.0','CFBundleVersion':'1',
             'NSPrincipalClass':'SPRootListController'},fmt=plistlib.FMT_XML))
         shutil.copyfile(ROOT/'Preferences/Resources/Root.plist',pb/'Root.plist')
         (pl/'SplitPane.plist').write_bytes(plistlib.dumps({
@@ -187,7 +187,7 @@ def main():
                 p=Path(cur)/n
                 os.chmod(p,0o755 if p.name in ('SplitPane.dylib','SplitPanePrefs') else 0o644)
         out=ROOT/'dist-apple';out.mkdir(exist_ok=True)
-        deb=out/'SplitPane_0.1.1_iphoneos-arm64e.deb'
+        deb=out/'SplitPane_0.2.0_iphoneos-arm64e.deb'
         run([dpkg,'--root-owner-group','-Zgzip','--build',str(stage),str(deb)])
         print(f'Built {deb} ({deb.stat().st_size} bytes); NOT device-validated.')
 

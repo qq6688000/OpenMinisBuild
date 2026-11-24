@@ -1,22 +1,30 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <substrate.h>
+#import <dlfcn.h>
 #import "SPCompat.h"
+#import "SPLog.h"
 #import "SPGesture.h"
 #import "SPSettings.h"
-#import "SPPaneController.h"
 
-// 入口注入层。
-// iOS 16 的底部上滑真身是 SBHomeGesturePanGestureRecognizer（Duo split_16 实证），
-// 不是 SBFluidSwitcherScreenEdgePanGestureRecognizer。这里只接管「往上拎到位」的一次，
-// 其余一律交回系统；并且绝不跳过原实现（跳过会把过渡动画冻在中间帧）。
+// ════════════════════════════════════════════════════════════════════════════
+// 注入层。两条铁律：
+//  1) 不硬链接 libsubstrate —— 用 dlsym 拿 MSHookMessageEx。
+//     硬链接 @loader_path/.jbroot/usr/lib/libsubstrate.dylib 在非 roothide 布局下
+//     dlopen 直接失败，整个 dylib 不加载（v0.1.x 就是这么死的）。
+//  2) constructor 第一件事就写日志 + 弹可见浮条。
+//     看得见浮条 = 注入成功；看不见 = 跟手势逻辑无关，别再瞎调参数。
+// ════════════════════════════════════════════════════════════════════════════
 
-static void (*origTouchesBegan)(id, SEL, NSSet *, UIEvent *);
-static void (*origTouchesEnded)(id, SEL, NSSet *, UIEvent *);
-static void (*origTouchesCancelled)(id, SEL, NSSet *, UIEvent *);
+typedef void (*SPHookMsgExFn)(Class, SEL, IMP, IMP *);
+static SPHookMsgExFn gHookMsgEx = NULL;
+
+static IMP gOrigTouchesBegan = NULL;
+static IMP gOrigTouchesEnded = NULL;
+static IMP gOrigTouchesCancelled = NULL;
 
 static void SPHookedTouchesBegan(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
-    if (origTouchesBegan) origTouchesBegan(self, _cmd, touches, event);
+    if (gOrigTouchesBegan)
+        ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesBegan)(self, _cmd, touches, event);
     if (![SPSettings enabled]) return;
     CGPoint p = CGPointZero;
     SEL loc = NSSelectorFromString(@"locationInView:");
@@ -26,7 +34,6 @@ static void SPHookedTouchesBegan(id self, SEL _cmd, NSSet *touches, UIEvent *eve
 }
 
 static void SPHookedTouchesEnded(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
-    BOOL took = NO;
     if ([SPSettings enabled]) {
         CGPoint t = CGPointZero, v = CGPointZero;
         SEL tr = NSSelectorFromString(@"translationInView:");
@@ -35,38 +42,45 @@ static void SPHookedTouchesEnded(id self, SEL _cmd, NSSet *touches, UIEvent *eve
             t = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, tr, nil);
         if ([self respondsToSelector:ve])
             v = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, ve, nil);
-        took = [[SPGesture shared] consumeHomePan:nil translation:t velocity:v];
+        [[SPGesture shared] consumeHomePan:nil translation:t velocity:v];
     }
-    if (origTouchesEnded) origTouchesEnded(self, _cmd, touches, event);
-    (void)took;
+    if (gOrigTouchesEnded)
+        ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesEnded)(self, _cmd, touches, event);
 }
 
 static void SPHookedTouchesCancelled(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
-    if (origTouchesCancelled) origTouchesCancelled(self, _cmd, touches, event);
+    if (gOrigTouchesCancelled)
+        ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesCancelled)(self, _cmd, touches, event);
 }
 
-static void SPInstallGestureHooks(void) {
+static BOOL SPInstallGestureHooks(void) {
     Class cls = NSClassFromString(@"SBHomeGesturePanGestureRecognizer");
-    if (!cls) {
-        NSLog(@"[SplitPane] SBHomeGesturePanGestureRecognizer not found");
-        return;
-    }
-    SEL b = NSSelectorFromString(@"touchesBegan:withEvent:");
-    SEL e = NSSelectorFromString(@"touchesEnded:withEvent:");
-    SEL c = NSSelectorFromString(@"touchesCancelled:withEvent:");
-    MSHookMessageEx(cls, b, (IMP)SPHookedTouchesBegan, (IMP *)&origTouchesBegan);
-    MSHookMessageEx(cls, e, (IMP)SPHookedTouchesEnded, (IMP *)&origTouchesEnded);
-    MSHookMessageEx(cls, c, (IMP)SPHookedTouchesCancelled, (IMP *)&origTouchesCancelled);
-    NSLog(@"[SplitPane] home gesture hooked");
+    if (!cls) { SPLog(@"hook: class missing"); return NO; }
+    if (!gHookMsgEx) { SPLog(@"hook: MSHookMessageEx unavailable"); return NO; }
+    gHookMsgEx(cls, NSSelectorFromString(@"touchesBegan:withEvent:"), (IMP)SPHookedTouchesBegan, &gOrigTouchesBegan);
+    gHookMsgEx(cls, NSSelectorFromString(@"touchesEnded:withEvent:"), (IMP)SPHookedTouchesEnded, &gOrigTouchesEnded);
+    gHookMsgEx(cls, NSSelectorFromString(@"touchesCancelled:withEvent:"), (IMP)SPHookedTouchesCancelled, &gOrigTouchesCancelled);
+    BOOL ok = (gOrigTouchesEnded != NULL);
+    SPLog(@"hook: installed=%d began=%d ended=%d", ok, gOrigTouchesBegan != NULL, gOrigTouchesEnded != NULL);
+    return ok;
 }
 
 __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
-        if (![bid isEqualToString:@"com.apple.springboard"]) return;
+        SPLog(@"=== SplitPane 0.2.0 loaded (bundle=%@ pid=%d) log=%@ ===",
+              bid ?: @"?", getpid(), SPLogPath());
+        if (![bid isEqualToString:@"com.apple.springboard"]) {
+            SPLog(@"not springboard, idle");
+            return;
+        }
+        gHookMsgEx = (SPHookMsgExFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
+        SPLog(@"dlsym MSHookMessageEx -> %p", gHookMsgEx);
+
         dispatch_async(dispatch_get_main_queue(), ^{
             [SPSettings startObserving];
-            SPInstallGestureHooks();
+            BOOL hooked = SPInstallGestureHooks();
+            [SPGesture shared].hooksAvailable = hooked;
             NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
             [nc addObserverForName:UISceneDidActivateNotification object:nil queue:[NSOperationQueue mainQueue]
                         usingBlock:^(NSNotification *n) {
@@ -74,6 +88,9 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
                     [[SPGesture shared] installInWindowScene:(UIWindowScene *)n.object];
             }];
             [[SPGesture shared] installInWindowScene:nil];
+            SPShowLoadBanner(hooked
+                ? [NSString stringWithFormat:@"SplitPane 0.2.0 已加载 · %@", [SPLogPath() lastPathComponent]]
+                : @"SplitPane 0.2.0 已加载 · 手势钩子失败，仅备用入口");
         });
     }
 }
