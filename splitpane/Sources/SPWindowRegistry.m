@@ -16,11 +16,7 @@ static NSMutableArray *gWindows(void) {
     UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
     w.windowLevel = level;
     w.backgroundColor = UIColor.clearColor;
-    if (!keyable) {
-        // 不接输入焦点：避免抢键盘、抢状态栏
-        Class passthrough = NSClassFromString(@"SPPassthroughWindow");
-        (void)passthrough;
-    }
+
     if (![gWindows() containsObject:w]) [gWindows() addObject:w];
     SPLog(@"window +1 (%@ level=%.0f total=%lu)", NSStringFromClass(w.class), level,
           (unsigned long)[gWindows() count]);

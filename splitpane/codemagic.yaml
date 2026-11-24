@@ -1,0 +1,39 @@
+workflows:
+  splitpane-macos:
+    name: SplitPane arm64e deb
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      vars:
+        SPLITPANE_DIR: splitpane
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: seagull-pair-build
+          include: true
+    scripts:
+      - name: Install dpkg
+        script: |
+          set -e
+          if ! command -v dpkg-deb >/dev/null 2>&1; then
+            brew install dpkg || true
+          fi
+          dpkg-deb --version | head -1
+      - name: Build (real Apple ld -fixup_chains)
+        script: |
+          set -e
+          cd "$SPLITPANE_DIR"
+          python3 build-apple.py 2>&1 | tee apple-build.log
+      - name: Verify artifact
+        script: |
+          set -e
+          cd "$SPLITPANE_DIR"
+          ls -la dist-apple/
+          for f in dist-apple/*.deb; do
+            dpkg-deb --field "$f" Package Version Architecture
+            sha256sum "$f"
+          done
+    artifacts:
+      - splitpane/dist-apple/*.deb
+      - splitpane/apple-build.log

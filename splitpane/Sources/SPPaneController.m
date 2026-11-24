@@ -109,12 +109,16 @@ static const CGFloat kMaxPaneRatio = 0.78;
 // 否则系统上滑手势永远收不到，用户就回不了桌面。
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     CGFloat h = self.bounds.size.height;
-    if (point.y >= h - 54.0) return nil;
-    return [super hitTest:point withEvent:event];
+    // 底部 70pt（系统 home 手势的起手区）完全透传，事件落到 SpringBoard
+    if (point.y >= h - 70.0) return nil;
+    UIView *hit = [super hitTest:point withEvent:event];
+    return hit;
 }
 
 // 必须能成为 key window，否则里面的 App 弹不出键盘、点进去也没光标
-- (BOOL)canBecomeKeyWindow { return YES; }
+// 不能抢 key：一旦成为 key window，触摸事件就归我们，SpringBoard 上挂的
+// home 手势识别器收不到 → 用户永远回不了桌面。
+- (BOOL)canBecomeKeyWindow { return NO; }
 - (BOOL)becomeFirstResponder { return YES; }
 @end
 
@@ -129,6 +133,8 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @property (nonatomic, assign, readwrite) BOOL active;
 @property (nonatomic, strong) NSTimer *heartbeat;
 @property (nonatomic, strong) UIImage *topSnapshot;
+@property (nonatomic, strong) UIPanGestureRecognizer *homeSwipe;
+@property (nonatomic, assign) CGFloat homeSwipeStartY;
 @property (nonatomic, assign) BOOL resizeCoalescing;
 @property (nonatomic, assign) BOOL pendingResize;
 @property (nonatomic, strong) UIImage *bottomSnapshot;
@@ -229,6 +235,16 @@ static const CGFloat kMaxPaneRatio = 0.78;
     [vc.view addSubview:split];
     [vc.view bringSubviewToFront:chrome];
 
+    // 出口 0：从底部往上滑 = 回桌面。
+    // 系统的 home 手势会被我们的窗口挡住（日志实证：从底部起手只能拿到 70~126pt），
+    // 所以自己认一次：位移超过 80pt 就当作「回桌面」，直接退出分屏。
+    UIPanGestureRecognizer *homeSwipe = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(homeSwipePanned:)];
+    homeSwipe.maximumNumberOfTouches = 1;
+    homeSwipe.cancelsTouchesInView = NO;
+    homeSwipe.delegate = (id<UIGestureRecognizerDelegate>)self;
+    [vc.view addGestureRecognizer:homeSwipe];
+    _homeSwipe = homeSwipe;
+
     // 出口 1：三指下滑
     UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
     escape.numberOfTouchesRequired = 3;
@@ -287,6 +303,12 @@ static const CGFloat kMaxPaneRatio = 0.78;
     return YES;
 }
 
+#pragma mark - UIGestureRecognizerDelegate
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES;
+}
+
 - (void)startHeartbeat {
     __weak typeof(self) wself = self;
     [_heartbeat invalidate];
@@ -328,6 +350,23 @@ static const CGFloat kMaxPaneRatio = 0.78;
 }
 
 #pragma mark 操作
+
+// 底部上滑：起手在底 90pt 内、往上超过 80pt 就退出分屏（等价于「回桌面」）
+- (void)homeSwipePanned:(UIPanGestureRecognizer *)g {
+    CGPoint p = [g locationInView:g.view];
+    CGFloat h = g.view.bounds.size.height;
+    if (g.state == UIGestureRecognizerStateBegan) {
+        _homeSwipeStartY = p.y;
+        return;
+    }
+    if (g.state != UIGestureRecognizerStateEnded) return;
+    CGFloat up = _homeSwipeStartY - p.y;
+    SPLog(@"homeSwipe: startY=%.0f endY=%.0f up=%.0f (need 80)", _homeSwipeStartY, p.y, up);
+    if (_homeSwipeStartY >= h - 110 && up >= 80) {
+        SPLog(@"homeSwipe -> stop (back to home)");
+        [self stopWithCompletion:nil];
+    }
+}
 
 - (void)escapeSwipe:(UIGestureRecognizer *)g {
     SPLog(@"escape swipe -> stop");
