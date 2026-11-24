@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>SplitPane 上下分屏</string>
+			<key>footerText</key><string>任意 App 内从最底部（home 条）往上拎到位松手 → 当前 App 缩成挂起卡片 → 点卡片选第二个 App → 上半屏是卡片里的 App，下半屏是新选的 App。两块中间那条把手可以上下拖，改比例。左上角 × 退出。</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>key</key><string>enabled</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.splitpane</string>
+			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
+			<key>label</key><string>启用</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>key</key><string>swapOnSecondSwipe</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.splitpane</string>
+			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
+			<key>label</key><string>分屏中再次上滑 = 换上面的 App</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>key</key><string>keepSnapshots</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.splitpane</string>
+			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
+			<key>label</key><string>后台 App 掉画面时垫冻结快照（防黑屏）</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>key</key><string>haptics</string>
+			<key>default</key><true/>
+			<key>defaults</key><string>com.seagull.splitpane</string>
+			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
+			<key>label</key><string>触感反馈</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>手感</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSliderCell</string>
+			<key>key</key><string>parkThreshold</string>
+			<key>default</key><real>0.45</real>
+			<key>min</key><integer>20</integer>
+			<key>max</key><integer>80</integer>
+			<key>showValue</key><true/>
+			<key>defaults</key><string>com.seagull.splitpane</string>
+			<key>PostNotification</key><string>SplitPaneSettingsDidChange</string>
+			<key>label</key><string>上滑触发阈值（屏高百分比）</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>操作</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSButtonCell</string>
+			<key>label</key><string>注销主屏幕</string>
+			<key>action</key><string>respring</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>SplitPane</string>
+</dict>
+</plist>
