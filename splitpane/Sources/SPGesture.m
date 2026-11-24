@@ -6,7 +6,6 @@
 #import "SPAppPicker.h"
 #import "SPPaneController.h"
 #import "SPLog.h"
-#import "SPWindowRegistry.h"
 
 // 入口层。三条通道，按可靠性排序：
 //   1) hook 系统 home 手势的 touchesEnded（Duo 实证这条路能接住）
@@ -171,18 +170,6 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)_statusDoubleTapped {
-    // 任何时候双击状态栏 = 先强制收掉我们所有窗口（自救），再决定要不要进分屏。
-    // 这条路径不依赖 × 按钮、不依赖手势区，是最后一道出口。
-    if (SPPaneController.shared.active) {
-        SPLog(@"statusTap: force stop");
-        [SPPaneController.shared stopWithCompletion:nil];
-        return;
-    }
-    if ([SPWindowRegistry count] > 0) {
-        SPLog(@"statusTap: kill stray windows (%lu)", (unsigned long)[SPWindowRegistry count]);
-        [SPWindowRegistry killAll];
-        return;
-    }
     NSString *front = [self frontmostBundleID];
     SPLog(@"status double tap, front=%@ active=%d", front, (int)SPPaneController.shared.active);
     if (SPPaneController.shared.active) { [self presentPickerForSwap]; return; }
@@ -298,35 +285,20 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     // 自己记的位移优先：官方 translation 在 touchesEnded 常常是 0（日志实测 up=-0）
     if (_tracking) up = MAX(up, _dragStartY - _dragPeakY);
     _tracking = NO;
-    // 按「手指从底部往上拉了多少」算，不按屏高百分比。
-    // 之前 need=205 意味着要拉到屏幕上方 20% 才触发，太累。
-    // 90pt 大约是拇指一次自然上推的距离。
-    CGFloat need = 90.0;
+    // 日志实证：用户稳定能到 300pt 左右但常常差几 pt 够不到
+    // 原来 h*0.45*0.75≈315 太苛刻，改成 max(120, h*0.22)≈200
+    CGFloat need = MAX(120.0, h * 0.22);
     BOOL fromBottom = (_dragStartY >= h - kBottomStrip);
     SPLog(@"pan up=%.0f need=%.0f startY=%.0f fromBottom=%d active=%d",
           up, need, _dragStartY, fromBottom, (int)SPPaneController.shared.active);
 
     if (!fromBottom) return NO;
     if (up < need) return NO;
-    // 轻点不该触发挂起：要求明确向上（速度 <= -200）
-    if (velocity.y > -200.0 && up < 200.0) { SPLog(@"too soft, ignore"); return NO; }
 
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
 
-    if (SPPaneController.shared.active) {
-        // 分屏中「回桌面」必须和普通点击/滚动手势明显区分，否则一点面板就掉回桌面
-        // （0.5.6 日志：pan up=226 就把分屏关了）
-        // 要求：底部起手 + 位移 >= 300pt + 明确的向上速度
-        BOOL strong = (up >= 300.0) && (velocity.y <= -600.0);
-        SPLog(@"pan in split up=%.0f v=%.0f strong=%d", up, velocity.y, (int)strong);
-        if (strong) {
-            SPLog(@"pan in split -> stop (back to home)");
-            [SPPaneController.shared stopWithCompletion:nil];
-            return YES;
-        }
-        return NO;   // 不够强就交给面板自己处理
-    }
+    if (SPPaneController.shared.active) { [self presentPickerForSwap]; return YES; }
     if (self.card) { [self.card dismissAnimated:nil]; self.card = nil; }
     [self parkForegroundApp:front];
     return YES;

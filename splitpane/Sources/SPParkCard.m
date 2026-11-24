@@ -98,10 +98,8 @@ static NSHashTable *SPCards(void) {
 - (void)presentInWindowScene:(UIWindowScene *)scene fromRect:(CGRect)fromRect completion:(void (^)(void))completion {
     if (!scene && self.window.windowScene) scene = self.window.windowScene;
     if (!scene) return;
-    // 必须走登记表：否则 killAll 收不到它，就会在桌面上留一块黑窗挡点击
-    UIWindow *overlay = [SPWindowRegistry makeWindowWithScene:scene
-                                                       level:UIWindowLevelNormal + 2
-                                                     keyable:NO];
+    UIWindow *overlay = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelNormal + 2];
+    overlay.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;
     overlay.rootViewController = vc;

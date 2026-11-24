@@ -3,9 +3,9 @@
 #import "SPSettings.h"
 #import "SPCompat.h"
 #import "SPLog.h"
+#import "SPWindowRegistry.h"
 #import "SPRepair.h"
 #import "SPParkCard.h"
-#import "SPWindowRegistry.h"
 #import <objc/runtime.h>
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -104,21 +104,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @interface SPOverlayWindow : UIWindow
 @end
 @implementation SPOverlayWindow
-
-// 底部那条（home 手势区）不接触摸：返回 nil 让事件落到 SpringBoard，
-// 否则系统上滑手势永远收不到，用户就回不了桌面。
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    CGFloat h = self.bounds.size.height;
-    // 底部 70pt（系统 home 手势的起手区）完全透传，事件落到 SpringBoard
-    if (point.y >= h - 70.0) return nil;
-    UIView *hit = [super hitTest:point withEvent:event];
-    return hit;
-}
-
 // 必须能成为 key window，否则里面的 App 弹不出键盘、点进去也没光标
-// 不能抢 key：一旦成为 key window，触摸事件就归我们，SpringBoard 上挂的
-// home 手势识别器收不到 → 用户永远回不了桌面。
 - (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)becomeFirstResponder { return YES; }
 @end
 
 @interface SPPaneController ()
@@ -132,9 +120,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
 @property (nonatomic, assign, readwrite) BOOL active;
 @property (nonatomic, strong) NSTimer *heartbeat;
 @property (nonatomic, strong) UIImage *topSnapshot;
-@property (nonatomic, strong) UIPanGestureRecognizer *homeSwipe;
-@property (nonatomic, assign) CGFloat homeSwipeStartY;
-@property (nonatomic, assign) BOOL homeSwipeArmed;
 @property (nonatomic, assign) BOOL resizeCoalescing;
 @property (nonatomic, assign) BOOL pendingResize;
 @property (nonatomic, strong) UIImage *bottomSnapshot;
@@ -194,8 +179,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
     swap.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [swap addTarget:self action:@selector(swapTapped) forControlEvents:UIControlEventTouchUpInside];
     [bar addSubview:swap];
-    // 顶部区域整体允许接收点击（否则父视图不吃触摸时按钮点不到）
-    bar.userInteractionEnabled = YES;
     return bar;
 }
 
@@ -209,8 +192,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!scene) return NO;
 
     SPOverlayWindow *w = (SPOverlayWindow *)[SPWindowRegistry makeWindowWithScene:scene
-                                                                            level:UIWindowLevelStatusBar + 10   // 必须高于状态栏；键盘另作处理
-                                                                          keyable:YES];
+                                                                            level:UIWindowLevelNormal + 1];
     w.backgroundColor = [UIColor blackColor];
     w.frame = scene.coordinateSpace.bounds;
     UIViewController *vc = [UIViewController new];
@@ -225,33 +207,15 @@ static const CGFloat kMaxPaneRatio = 0.78;
     chrome.layer.zPosition = 1000;
 
     // 底部留 34pt 给系统的 home 手势，否则上滑回桌面会被我们整块吞掉
-    CGFloat bottomInset = 60.0;   // 给系统 home 手势留足空间，否则回不了桌面
+    CGFloat bottomInset = 34.0;
     SPSplitView *split = [[SPSplitView alloc] initWithFrame:CGRectMake(0, kChromeHeight, w.bounds.size.width,
                                                                        w.bounds.size.height - kChromeHeight - bottomInset)];
-    // 底部那条不能吃触摸，让系统 home 手势直接穿过去
-    split.clipsToBounds = YES;
     split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     __weak typeof(self) wself = self;
     split.onSeamMoved = ^{ [wself resizePanes]; };
     split.onSeamEnded = ^{ [wself flushResize]; };
     [vc.view addSubview:split];
     [vc.view bringSubviewToFront:chrome];
-
-    // 键盘联动：弹出时让位，收起后回到状态栏之上
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillShow:)
-                                                 name:UIKeyboardWillShowNotification object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillHide:)
-                                                 name:UIKeyboardWillHideNotification object:nil];
-
-    // 出口 0：从底部往上滑 = 回桌面。
-    // 系统的 home 手势会被我们的窗口挡住（日志实证：从底部起手只能拿到 70~126pt），
-    // 所以自己认一次：位移超过 80pt 就当作「回桌面」，直接退出分屏。
-    UIPanGestureRecognizer *homeSwipe = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(homeSwipePanned:)];
-    homeSwipe.maximumNumberOfTouches = 1;
-    homeSwipe.cancelsTouchesInView = NO;
-    homeSwipe.delegate = (id<UIGestureRecognizerDelegate>)self;
-    [vc.view addGestureRecognizer:homeSwipe];
-    _homeSwipe = homeSwipe;
 
     // 出口 1：三指下滑
     UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
@@ -266,7 +230,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
     triple.numberOfTouchesRequired = 3;
     triple.delegate = (id<UIGestureRecognizerDelegate>)self;
     triple.cancelsTouchesInView = NO;
-    triple.delaysTouchesEnded = NO;
     [vc.view addGestureRecognizer:triple];
 
     // 出口 3：右上角整块热区也可退出（点不到 × 时往右上角戳两下）
@@ -312,33 +275,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
     return YES;
 }
 
-#pragma mark - UIGestureRecognizerDelegate
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    return YES;
-}
-
-// 关键：homeSwipe 只能在底部条内接收触摸。
-// 之前它挂在整个 vc.view 上，用户点顶部的 × / 交换 时手指的微小位移
-// 会被它当成 pan 抢走，按钮永远收不到 touchUpInside（日志实证：全程零次 closeTapped）。
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
-    if (g == _homeSwipe) {
-        CGPoint p = [touch locationInView:g.view];
-        return p.y >= g.view.bounds.size.height - 110.0;
-    }
-    return YES;
-}
-
-// 键盘可见时把分屏窗口降到键盘层以下，否则键盘被盖住；收起后恢复。
-- (void)keyboardWillShow:(NSNotification *)note {
-    if (!_window) return;
-    _window.windowLevel = UIWindowLevelNormal + 1;
-}
-- (void)keyboardWillHide:(NSNotification *)note {
-    if (!_window) return;
-    _window.windowLevel = UIWindowLevelStatusBar + 10;
-}
-
 - (void)startHeartbeat {
     __weak typeof(self) wself = self;
     [_heartbeat invalidate];
@@ -353,7 +289,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
 - (void)resizePanes {
     if (!_split) return;
-    if (_chrome && _chrome.superview) [_chrome.superview bringSubviewToFront:_chrome];
     [_split setNeedsLayout];
     [_split layoutIfNeeded];
     // 布局立刻改（本地、便宜），但推给远端 scene 要节流：
@@ -381,32 +316,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
 }
 
 #pragma mark 操作
-
-// 底部上滑 = 回桌面。
-// 严格要求「从底部条起手」：中缝拖动、面板内滚动都会产生 pan，
-// 不限制起点就会把接缝拖动吃掉（0.5.3 日志里的 up=-319 就是这个）。
-- (void)homeSwipePanned:(UIPanGestureRecognizer *)g {
-    CGPoint p = [g locationInView:g.view];
-    CGFloat h = g.view.bounds.size.height;
-
-    if (g.state == UIGestureRecognizerStateBegan) {
-        _homeSwipeStartY = p.y;
-        _homeSwipeArmed = (p.y >= h - 110.0);
-        return;
-    }
-    if (!_homeSwipeArmed) return;
-    if (g.state != UIGestureRecognizerStateEnded) return;
-
-    _homeSwipeArmed = NO;
-    CGFloat up = _homeSwipeStartY - p.y;
-    CGPoint v = [g velocityInView:g.view];
-    SPLog(@"homeSwipe: startY=%.0f up=%.0f v=%.0f (need 300 & v<=-600)", _homeSwipeStartY, up, v.y);
-    // 阈值和 SPGesture 保持一致：普通点击/滚动不会误触
-    if (up >= 300.0 && v.y <= -600.0) {
-        SPLog(@"homeSwipe -> stop (back to home)");
-        [self stopWithCompletion:nil];
-    }
-}
 
 - (void)escapeSwipe:(UIGestureRecognizer *)g {
     SPLog(@"escape swipe -> stop");
@@ -470,7 +379,6 @@ static const CGFloat kMaxPaneRatio = 0.78;
         SPLog(@"repair report: %@", [SPRepair lastReport]);
     } @catch (NSException *e) { SPLog(@"restore ex %@", e.reason); }
 
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_heartbeat invalidate];
     _heartbeat = nil;
     [_topHost detach];
@@ -484,7 +392,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     _active = NO;
     // 必须彻底撤掉：只 hidden 不释放会留一个隐形窗口，影响桌面点击/系统手势
     [SPWindowRegistry releaseWindow:w];
-    // 无论前面哪一步漏了什么，这里把所有自建窗口一并收掉
+    // 兜底：任何一条退出路径漏掉了窗口，这里一并收掉
     [SPWindowRegistry killAll];
     SPDumpScenes("after-teardown");
 }
@@ -493,11 +401,9 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
     _active = NO;
-    // 先把窗口从屏幕上撤掉（teardown 会用 releaseWindow 真正销毁它，
-    // 所以这里先抓一份引用做 hidden，避免 teardown 后 _window 已是 nil）
-    _window.hidden = YES;
-    [self teardown];
-    // 退出必须瞬时完成：拆窗即回到桌面。
+    [self teardown];          // 内部先恢复 scene 尺寸、再释放窗口并 killAll
+    // 退出必须瞬时完成：拆窗即回到桌面（我们的窗口本来就低于键盘层，
+    // 拆掉之后系统自己的界面就露出来了）。
     // 不要把 App 重新 open 一遍 —— 那是跨进程同步调用，日志实证会卡 10 秒。
     SPLog(@"stop: window torn down, main=%@", main);
     // 让 App 自己重新走一遍全屏布局（scene 尺寸已恢复，但内部排版要它自己重算）
@@ -507,6 +413,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
         });
     }
     if (completion) completion();
+
 }
 
 @end
