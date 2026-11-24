@@ -241,6 +241,8 @@ static void SPOnActivateShortcut_Mgr4(id self, SEL _cmd, id item, id bid, id ico
 
 void SPInstallIconMenuHook(void) {
     SPLog(@"icon menu: 开始安装");
+    extern void SPDumpIconEntryPoints(void);
+    SPDumpIconEntryPoints();
 
     SPHookMsgExFn hook = (SPHookMsgExFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
     if (!hook) { SPLog(@"icon menu: MSHookMessageEx 不可用"); return; }
@@ -255,22 +257,45 @@ void SPInstallIconMenuHook(void) {
         SPLog(@"icon menu: ⚠️ SBIconView 没有 applicationShortcutItems");
     }
 
-    // 2) 点击拦截 —— 三个类 × 两个签名
+    // 2) 点击拦截 —— 不猜名字，按特征扫描：方法名同时含 shortcut/activate，
+    //    且不是「取数据」的（不是 applicationShortcutItems），且参数里有 bundleIdentifier。
     int n = 0;
-    n += SPTryHook(@"SBIconView",
-                   @"activateShortcut:withBundleIdentifier:forIconView:",
-                   (IMP)SPOnActivateShortcut_IconView, NULL);
-    n += SPTryHook(@"SBIconController",
-                   @"appIconView:activateShortcut:withBundleIdentifier:",
-                   (IMP)SPOnActivateShortcut_Ctrl3, NULL);
-    n += SPTryHook(@"SBIconController",
-                   @"activateShortcut:withBundleIdentifier:forIconView:",
-                   (IMP)SPOnActivateShortcut_Ctrl4, NULL);
-    n += SPTryHook(@"SBHIconManager",
-                   @"iconView:activateShortcut:withBundleIdentifier:",
-                   (IMP)SPOnActivateShortcut_Mgr3, NULL);
-    n += SPTryHook(@"SBHIconManager",
-                   @"activateShortcut:withBundleIdentifier:forIconView:",
-                   (IMP)SPOnActivateShortcut_Mgr4, NULL);
-    SPLog(@"icon menu: activate 入口 hooked %d/5", n);
+    NSArray *classes = @[@"SBIconView", @"SBIconController", @"SBHIconManager",
+                         @"SBIconListModel", @"SBHomeScreenViewController"];
+    for (NSString *cn in classes) {
+        Class cls = NSClassFromString(cn);
+        if (!cls) { SPLog(@"icon menu: %@ 不存在", cn); continue; }
+        unsigned int mcount = 0;
+        Method *ms = class_copyMethodList(cls, &mcount);
+        for (unsigned int i = 0; i < mcount; i++) {
+            const char *raw = sel_getName(method_getName(ms[i]));
+            if (!raw) continue;
+            NSString *sel = @(raw);
+            BOOL hasKey = [sel rangeOfString:@"hortcut"].location != NSNotFound ||
+                          [sel rangeOfString:@"ctivate"].location != NSNotFound;
+            if (!hasKey) continue;
+            if ([sel rangeOfString:@"applicationShortcutItems"].location != NSNotFound) continue;
+            if (sel.length > 120) continue;
+            // 参数里必须带 bundleIdentifier，否则不是「点了某一项」
+            if ([sel rangeOfString:@"BundleIdentifier"].location == NSNotFound &&
+                [sel rangeOfString:@"bundleIdentifier"].location == NSNotFound) {
+                SPLog(@"icon menu: 跳过（无 bundleID 参数）%@", sel);
+                continue;
+            }
+            SEL s2 = NSSelectorFromString(sel);
+            IMP fake = nil;
+            // 按签名选拦截函数
+            NSInteger colons = 0; for (NSUInteger k = 0; k < sel.length; k++) if ([sel characterAtIndex:k] == ':') colons++;
+            if (colons == 4) fake = (IMP)SPOnActivateShortcut_Ctrl4;
+            else if (colons == 3) fake = (IMP)SPOnActivateShortcut_Mgr3;
+            else { SPLog(@"icon menu: 跳过（参数数=%ld）%@", (long)colons, sel); continue; }
+            if (class_getInstanceMethod(cls, s2)) {
+                hook(cls, s2, fake, NULL);
+                SPLog(@"icon menu: ✓ hooked %@ %@", cn, sel);
+                n++;
+            }
+        }
+        free(ms);
+    }
+    SPLog(@"icon menu: activate 入口 hooked %d", n);
 }

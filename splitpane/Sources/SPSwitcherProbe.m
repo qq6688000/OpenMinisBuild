@@ -91,3 +91,33 @@ void SPProbeForegroundAPI(void) {
     }
     SPLog(@"foreground probe: %@", [rows componentsJoinedByString:@" | "]);
 }
+
+// 0.5.4：真正的入口方法全量 dump —— 关键字匹配 shortcut / activate / launch / Menu / Tap
+static void SPDumpIconMethods(Class cls, NSString *tag) {
+    if (!cls) return;
+    NSMutableArray *hits = [NSMutableArray array];
+    unsigned int n = 0;
+    Method *ms = class_copyMethodList(cls, &n);
+    for (unsigned int i = 0; i < n; i++) {
+        const char *nm = sel_getName(method_getName(ms[i]));
+        if (!nm) continue;
+        NSString *s = @(nm);
+        for (NSString *k in @[@"hortcut", @"ctivate", @"aunch", @"Menu", @"Tap", @"Press"]) {
+            if ([s rangeOfString:k].location != NSNotFound) { [hits addObject:s]; break; }
+        }
+    }
+    free(ms);
+    NSMutableArray *uniq = [NSMutableArray array];
+    for (NSString *s in hits) if (![uniq containsObject:s]) [uniq addObject:s];
+    SPLog(@"%@ methods(%lu): %@", tag, (unsigned long)uniq.count,
+          [uniq componentsJoinedByString:@" | "]);
+}
+
+void SPDumpIconEntryPoints(void) {
+    @try {
+        SPDumpIconMethods(NSClassFromString(@"SBIconView"), @"SBIconView");
+        SPDumpIconMethods(NSClassFromString(@"SBIconController"), @"SBIconController");
+        SPDumpIconMethods(NSClassFromString(@"SBHIconManager"), @"SBHIconManager");
+        SPDumpIconMethods(NSClassFromString(@"SBApplication"), @"SBApplication");
+    } @catch (NSException *e) { SPLog(@"dump ex %@", e.reason); }
+}
