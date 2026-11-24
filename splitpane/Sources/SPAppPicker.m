@@ -2,6 +2,7 @@
 #import "SPCompat.h"
 #import "SPHost.h"
 #import "SPWindowRegistry.h"
+#import "SPLog.h"
 #import <objc/runtime.h>
 
 typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } SBIconImageInfo;
@@ -165,6 +166,24 @@ static SPAppPicker *gPicker = nil;
     hint.alpha = 0;
     [vc.view addSubview:hint];
 
+    // 明确的退出按钮：右上角 ×。没有它就只能点背景关，
+    // 一旦某条路径漏掉，面板就一直卡在桌面上（真实发生过）。
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    [close setTitle:@"×" forState:UIControlStateNormal];
+    close.titleLabel.font = [UIFont systemFontOfSize:26 weight:UIFontWeightLight];
+    [close setTitleColor:[UIColor colorWithWhite:1 alpha:0.9] forState:UIControlStateNormal];
+    close.backgroundColor = [UIColor colorWithWhite:1 alpha:0.16];
+    close.layer.cornerRadius = 17;
+    close.frame = CGRectMake(vc.view.bounds.size.width - 50, 52, 34, 34);
+    close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [close addTarget:self action:@selector(cancel:) forControlEvents:UIControlEventTouchUpInside];
+    [vc.view addSubview:close];
+
+    // 下滑也能关
+    UISwipeGestureRecognizer *down = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(cancel:)];
+    down.direction = UISwipeGestureRecognizerDirectionDown;
+    [vc.view addGestureRecognizer:down];
+
     [_grid setTranslatesAutoresizingMaskIntoConstraints:NO];
     [NSLayoutConstraint activateConstraints:@[
         [hint.topAnchor constraintEqualToAnchor:vc.view.safeAreaLayoutGuide.topAnchor constant:24],
@@ -182,6 +201,15 @@ static SPAppPicker *gPicker = nil;
         hint.alpha = 1;
     }];
     _hintLabel = hint;
+
+    // 兜底：面板 45 秒没人管就自己关掉，绝不留在桌面上
+    __weak typeof(self) wself = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(wself) self = wself;
+        if (!self || !self->_window) return;
+        SPLog(@"picker auto-closed (timeout)");
+        [self finishWithBundleID:nil];
+    });
 }
 
 - (void)cancel:(id)sender {
@@ -198,6 +226,8 @@ static SPAppPicker *gPicker = nil;
         self.grid.alpha = 0;
     } completion:^(BOOL finished) {
         [SPWindowRegistry releaseWindow:w];
+        // 面板关掉时顺手清掉任何残留窗口（卡片/浮条），不留垃圾在桌面
+        [SPWindowRegistry killAll];
     }];
     if (bundleID && self.pickBlock) self.pickBlock(bundleID);
     else if (self.cancelBlock) self.cancelBlock();

@@ -1,9 +1,12 @@
 #import "SPWindowRegistry.h"
 #import "SPLog.h"
 
-static NSHashTable *gWindows(void) {
-    static NSHashTable *t; static dispatch_once_t once;
-    dispatch_once(&once, ^{ t = [NSHashTable weakObjectsHashTable]; });
+// ⚠️ 必须强引用登记。
+// 之前用弱引用表：一旦外部强引用断开，对象被回收，但窗口仍挂在屏幕上，
+// 而 killAll 只看到 0 个 —— 日志实证 `window killAll: 0` 却还有窗口没关。
+static NSMutableArray *gWindows(void) {
+    static NSMutableArray *t; static dispatch_once_t once;
+    dispatch_once(&once, ^{ t = [NSMutableArray array]; });
     return t;
 }
 
@@ -18,7 +21,7 @@ static NSHashTable *gWindows(void) {
         Class passthrough = NSClassFromString(@"SPPassthroughWindow");
         (void)passthrough;
     }
-    [gWindows() addObject:w];
+    if (![gWindows() containsObject:w]) [gWindows() addObject:w];
     SPLog(@"window +1 (%@ level=%.0f total=%lu)", NSStringFromClass(w.class), level,
           (unsigned long)[gWindows() count]);
     return w;
@@ -33,12 +36,13 @@ static NSHashTable *gWindows(void) {
         [w removeFromSuperview];
         [w resignKeyWindow];
     } @catch (NSException *e) { SPLog(@"window release ex %@", e.reason); }
-    [gWindows() removeObject:w];
+    [gWindows() removeObjectIdenticalTo:w];
 }
 
 + (void)killAll {
     NSUInteger n = [gWindows() count];
-    for (UIWindow *w in [gWindows() allObjects]) [self releaseWindow:w];
+    for (UIWindow *w in [gWindows() copy]) [self releaseWindow:w];
+    [gWindows() removeAllObjects];
     SPLog(@"window killAll: %lu", (unsigned long)n);
 }
 
