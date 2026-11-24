@@ -608,14 +608,28 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
         if (!self || !whost || whost.superview == nil) return;
-        BOOL hasContent = whost.subviews.count > 0 || whost.layer.sublayers.count > 0;
-        SPLog(@"content check %@: subviews=%lu layers=%lu -> %@", self->_bundleID,
-              (unsigned long)whost.subviews.count, (unsigned long)whost.layer.sublayers.count,
-              hasContent ? @"live" : @"fallback-to-snapshot");
+        // ⚠️ 不能用 subviews/layers 数量判断：建出来的空 sceneView 也有 1 个图层，
+        // 日志里「subviews=1 layers=1 -> live」但屏幕是黑的，就是这个原因。
+        // 真正的依据是 scene 的内容状态：contentState == 2 且 scene 有效。
+        BOOL hasContent = NO;
+        @try {
+            id sc = self->_scene;
+            NSInteger cs = -1;
+            SEL csSel = NSSelectorFromString(@"contentState");
+            if (sc && [sc respondsToSelector:csSel])
+                cs = ((NSInteger (*)(id, SEL))objc_msgSend)(sc, csSel);
+            BOOL valid = sc ? SPBool0(sc, @"isValid") : NO;
+            hasContent = valid && (cs == 2 || cs == 1);
+            SPLog(@"content check %@: contentState=%ld valid=%d subviews=%lu -> %@", self->_bundleID,
+                  (long)cs, (int)valid, (unsigned long)whost.subviews.count,
+                  hasContent ? @"live" : @"not-ready");
+        } @catch (NSException *e) { SPLog(@"content check ex %@", e.reason); }
         if (!hasContent && self->_snapshotView) {
+            // 没就绪：先用快照垫住，别露黑；同时轮询等它真正出画面
             whost.hidden = YES;
             self->_snapshotView.hidden = NO;
             self->_snapshotActive = YES;
+            [self waitForContentReady:8];
         }
     });
     return YES;
@@ -649,6 +663,33 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     NSString *sub = nil;
     // 调尺寸时绝不改前台状态：把 App 反复推前台会导致画面闪黑
     SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
+}
+
+// 等 scene 真正渲染出内容再换上活画面（首次分屏时下面那个 App 常还在启动）
+- (void)waitForContentReady:(int)tries {
+    if (tries <= 0) { SPLog(@"content never ready: %@", _bundleID); return; }
+    __weak typeof(self) wself = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(wself) self = wself;
+        if (!self || !self->_hostView) return;
+        BOOL ready = NO;
+        @try {
+            id sc = self->_scene;
+            NSInteger cs = -1;
+            SEL csSel = NSSelectorFromString(@"contentState");
+            if (sc && [sc respondsToSelector:csSel])
+                cs = ((NSInteger (*)(id, SEL))objc_msgSend)(sc, csSel);
+            ready = sc && SPBool0(sc, @"isValid") && (cs == 2 || cs == 1);
+        } @catch (__unused NSException *e) {}
+        if (ready) {
+            self->_hostView.hidden = NO;
+            self->_snapshotView.hidden = YES;
+            self->_snapshotActive = NO;
+            SPLog(@"content ready: %@", self->_bundleID);
+        } else {
+            [self waitForContentReady:tries - 1];
+        }
+    });
 }
 
 - (BOOL)refreshLiveness {
