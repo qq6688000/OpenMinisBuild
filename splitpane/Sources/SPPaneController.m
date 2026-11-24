@@ -334,19 +334,10 @@ static const CGFloat kMaxPaneRatio = 0.90;
     [_split layoutIfNeeded];
     // 布局立刻改（本地、便宜），但推给远端 scene 要节流：
     // updateSettings 是往 FrontBoard 发的跨进程事务，拖动时每秒 60 次会把整机拖死。
-    _pendingResize = YES;
-    if (_resizeCoalescing) return;
-    _resizeCoalescing = YES;
-    __weak typeof(self) wself = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong typeof(wself) self = wself;
-        if (!self) return;
-        self->_resizeCoalescing = NO;
-        if (!self->_pendingResize) return;
-        self->_pendingResize = NO;
-        [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
-        [self->_bottomHost setFrameSize:self->_split.bottomContainer.bounds.size];
-    });
+    // 拖动是纯本地重排（改 hostView 的 transform），不涉及任何跨进程调用，
+    // 所以每帧直接做，不需要节流，也不会卡。
+    [_topHost setFrameSize:_split.topContainer.bounds.size];
+    [_bottomHost setFrameSize:_split.bottomContainer.bounds.size];
 }
 
 - (void)flushResize {

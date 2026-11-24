@@ -528,21 +528,19 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 // 之前用 MIN（contain）导致画面只占 60% 宽、四周大片留白 —— 用户明确要求铺满。
 static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (!host || !container || reference.width < 2 || reference.height < 2) return;
-    CGSize c = container.bounds.size;
-    if (c.width < 2 || c.height < 2) {
-        // 容器还没 layout（bounds 为 0）时不要裸 return，否则画面不显示 = 整块黑。
-        // 退回按参考尺寸原样放置，等 layout 完成后再由 setFrameSize 纠正。
-        c = reference;
-    }
-    CGFloat sx = c.width / reference.width;
-    CGFloat sy = c.height / reference.height;
-    // 参考尺寸就是容器尺寸时 s≈1.0（精确铺满）；有微小偏差时用 MAX 补齐，避免露边
-    CGFloat s = MAX(sx, sy);
+    CGSize target = container.bounds.size;
+    if (target.width < 2 || target.height < 2) target = reference;
+
+    // 照抄 Duo 的写法（DPSceneHost.m layoutHostView）：
+    // bounds 固定为 scene 原尺寸（全屏），center 对齐容器中心，
+    // 再用 transform 做 cover 缩放，溢出由容器 clipsToBounds 裁掉。
+    // 关键点：全程不改 scene 尺寸，纯视觉变换 —— 拖动零延迟、不黑屏。
     host.transform = CGAffineTransformIdentity;
-    host.frame = CGRectMake(0, 0, reference.width, reference.height);
-    host.transform = CGAffineTransformMakeScale(s, s);
-    // 居中：超出容器的部分两边对称裁掉
-    host.center = CGPointMake(c.width / 2.0, c.height / 2.0);
+    host.bounds = CGRectMake(0, 0, reference.width, reference.height);
+    host.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    CGFloat scale = MAX(target.width / reference.width, target.height / reference.height);
+    container.clipsToBounds = YES;
+    host.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene {
@@ -555,10 +553,13 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 又会在容器被替换时留下挂在死容器上的宿主（日志里的 "container gone"）。
     [self detach];
 
-    // 按容器真实尺寸推 scene：App 会按「半屏正方形」重新排版，内容自然铺满，不裁剪不失真。
-    // （用户选定方案。之前固定全屏 + MIN 缩放会留下大片留白，MAX 缩放会裁掉左右。）
-    CGSize ref = container.bounds.size;
-    if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
+    // ⚠️ scene 的参考尺寸永远是「全屏」，绝不推半屏。
+    // 参考 InteractivePiP Duo 的实测结论（DPSceneHost.m:1786 注释）：
+    //   "a half-screen setFrame is invalid on iOS 16 and kills the hosted pid"
+    // 推半屏尺寸 = 系统判定非法帧 → 杀掉托管进程 → 拖动时黑屏 + 卡顿。
+    // 正确做法：scene 保持全屏渲染，拖动时只改 hostView 的 scale/center。
+    CGSize ref = [UIScreen mainScreen].bounds.size;
+    if (ref.width < 2 || ref.height < 2) ref = container.bounds.size;
     _referenceSize = ref;
     _lastSize = ref;
     NSInteger orient = (ref.width > ref.height) ? 4 : 1;
@@ -722,19 +723,13 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (r.width < 2 || r.height < 2) return;
     if (CGSizeEqualToSize(r, _lastSize)) return;
     _lastSize = r;
-    _referenceSize = r;
-    // 不能用 _hostView.frame = r 硬拉：那会把画面拉伸变形。
-    // 统一走 SPFitHostView 等比处理（先按新尺寸排版，再 cover 铺进容器）。
+    // ⚠️ 这里不再向 scene 推任何 settings。
+    // 拖动时只需要把 hostView 重新等比缩放贴进容器（纯本地变换，零跨进程开销）。
+    // 推半屏 settings 会被系统判为非法帧并杀掉 App 进程，这就是之前拖动黑屏的根因。
     if (_hostView && _containerView) {
-        SPFitHostView(_hostView, _containerView, r);
-    } else {
-        _hostView.frame = (CGRect){CGPointZero, r};
+        SPFitHostView(_hostView, _containerView, _referenceSize);
     }
-    _snapshotView.frame = (CGRect){CGPointZero, r};
-    NSInteger orient = (r.width > r.height) ? 4 : 1;
-    NSString *sub = nil;
-    // 调尺寸时绝不改前台状态：把 App 反复推前台会导致画面闪黑
-    SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
+    _snapshotView.frame = _containerView.bounds;
 }
 
 // 等 scene 真正渲染出内容再换上活画面（首次分屏时下面那个 App 常还在启动）
