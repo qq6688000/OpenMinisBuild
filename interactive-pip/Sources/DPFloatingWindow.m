@@ -770,11 +770,14 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         objc_setAssociatedObject(self, @selector(parkedSnapshotImage), iv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     iv.image = image;
-    if (snap.superview != self) {
-        snap.frame = self.bounds;
-        [self addSubview:snap];
+    // 0.7.225: 照 PV _parkedSnapshot 的真实用法 —— 快照常驻垫底，不是过渡动画。
+    // 挂着的 App 被系统冻结后渲染层被收走，活层变空 → 底下这张快照兜底，抽屉不黑。
+    // 放进 contentContainer 最底层：scene host 的活层盖在它上面，冻结后露出来。
+    if (snap.superview != self.contentContainer) {
+        [snap removeFromSuperview];
+        snap.frame = self.contentContainer.bounds;
+        [self.contentContainer insertSubview:snap atIndex:0];
     }
-    [self bringSubviewToFront:snap];
     NSLog(@"[InteractivePiP] parkedSnapshot set %.0fx%.0f",
           image.size.width, image.size.height);
 }

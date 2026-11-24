@@ -71,6 +71,8 @@
 @property (nonatomic) BOOL pvSplitGestureArmed; // 上滑手势是否已就绪（前台是我们的App）
 @property (nonatomic, copy) NSString *parkPendingBundleID;  // 0.7.224: 挂起中、还没挂活的 App
 @property (nonatomic, assign) BOOL parkHomeRescueFired;     // 0.7.224: 弹回补救已触发
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *parkLiveStates; // 0.7.225: isLive 心跳
+@property (nonatomic, strong) id parkHeartbeat;              // 0.7.225: dispatch_source_t
 @property (nonatomic, strong, nullable) NSTimer *floatingHomeTimer;
 - (void)hideFloatingOnHome;
 @property (nonatomic, strong, nullable) id activeSwitcherCard;
@@ -1685,7 +1687,8 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
             if (isNew) {
                 id captured = item;
                 NSString *capturedBid = [bid copy];
-                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                // 0.7.225: REAL ITEM DUMP 刷屏已定案撤掉（一次 30+ 行把日志吃光）
+                if (NO) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                     [self logSplitResult:[NSString stringWithFormat:@"===== REAL ITEM DUMP %@ BEGIN =====", capturedBid]];
                     DPDumpObj(captured, 0, 2, [NSMutableSet set], ^(NSString *line) {
                         [self logSplitResult:line];
@@ -2226,6 +2229,7 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
     // 正确取到 —— split_20 实证）。挂上活画面后把快照撤掉（PV updateNativeWindow: 语义）。
     self.parkPendingBundleID = bundleID;   // 0.7.224: 弹回补救用
     self.parkHomeRescueFired = NO;
+    [self startParkHeartbeat];    // 0.7.225: 监控活层，丢了就露快照
     __weak typeof(self) weakSelf = self;
     // 0.7.224: 1.2→1.6s —— 弹回补救（补按 home）发生在 ~+1.0s，按下去后 App 需要
     // ~0.35s 退后台，1.6s 后 scene 已空闲，避开"前台强抓"崩溃窗口（0.7.218 教训）。
@@ -2263,7 +2267,7 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
                 [win layoutIfNeeded];
                 [win commitSceneLayout];      // 把 frame 真正推给远端 scene（S_MR 排版）
                 [host setSuspended:NO];       // 不让挂起画面冻结
-                [win setParkedSnapshot:nil];  // 活画面顶掉快照
+                // 0.7.225: 不清快照 —— 它垫在活层底下，App 被系统冻结时兜底（PV 语义）
             }
         }];
     });
@@ -2381,6 +2385,38 @@ static void DPDumpObj(id obj, NSInteger depth, NSInteger maxDepth,
 // Keep floating hosts alive while Home is visible; only hide our overlay.
 // A single low-frequency timer exists only during this hidden state, does no
 // rendering or scene mutation, and stops after resume/close/split transition.
+/// 0.7.225: 挂起抽屉心跳（照 PV 的冻结面兜底）——
+/// PV 把活画面冻结成 IOSurface 钉住（IOSurfaceIncrementUseCount），
+/// 挂着的 App 被系统冻结后渲染层被收走，冻结面永远在。
+/// Duo 的活层（scene host layer）被收走时 isLive 会掉 0 —— 检测到就把活层
+/// 隐藏、露出垫底的常驻快照（setParkedSnapshot 已垫在 contentContainer 底层）。
+- (void)startParkHeartbeat {
+    if (self.parkHeartbeat) return;
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                  dispatch_get_main_queue());
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                              (uint64_t)(3.0 * NSEC_PER_SEC), (uint64_t)(0.5 * NSEC_PER_SEC));
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(t, ^{
+        typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        if (s.floatingWindows.count == 0) return;
+        if (!s.parkLiveStates) s.parkLiveStates = [NSMutableDictionary dictionary];
+        for (DPFloatingWindow *w in s.floatingWindows) {
+            BOOL live = w.sceneHost.isLive;
+            NSNumber *prev = s.parkLiveStates[w.bundleID];
+            if (prev && prev.boolValue && !live) {
+                // 活层被系统收走 —— 露出垫底快照，抽屉不黑
+                w.sceneHost.view.hidden = YES;
+                [s logSplitResult:[NSString stringWithFormat:@"drawer %@ live lost -> snapshot fallback", w.bundleID]];
+            }
+            s.parkLiveStates[w.bundleID] = @(live);
+        }
+    });
+    dispatch_resume(t);
+    self.parkHeartbeat = t;
+}
+
 /// 0.7.224: 程序化按一次 home —— 用于"滑到一半松手、App 弹回"时把挂起意图做完。
 - (void)dpProgrammaticHomePress {
     Class c = NSClassFromString(@"SBUIController");
