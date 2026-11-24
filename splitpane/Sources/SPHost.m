@@ -42,6 +42,7 @@
 @property (nonatomic, assign, readwrite) BOOL live;
 @property (nonatomic, assign) BOOL attached;
 @property (nonatomic, assign) CGSize lastSize;
+@property (nonatomic, assign) CGSize referenceSize;
 @property (nonatomic, strong) NSDictionary *originalSettings;   // frame/orientation 原值
 @property (nonatomic, assign) BOOL touchedSettings;
 @end
@@ -476,6 +477,7 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
     CGSize ref = container.bounds.size;
     if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
     _lastSize = ref;
+    _referenceSize = ref;
     NSInteger orient = (ref.width > ref.height) ? 4 : 1;
 
     // 1) 真 FBScene
@@ -610,16 +612,36 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 }
 
 - (void)setFrameSize:(CGSize)size {
-    if (!_containerView) return;
+    if (!_containerView || !_hostView) return;
     CGSize r = CGSizeMake(round(size.width), round(size.height));
     if (r.width < 2 || r.height < 2) return;
     if (CGSizeEqualToSize(r, _lastSize)) return;
     _lastSize = r;
+
+    // ⚠️ 不再每次都改 scene 的 frame。
+    // 两块面板共用同一个 scene manager 的 settings 推送语义，
+    // 每次拖动都推会让后推的那块把先推的顶掉（视频里两块交替缩成小块就是这个）。
+    // 正确做法：scene 只在建立时按「面板参考尺寸」定一次，
+    // 之后容器尺寸变化由 hostView 的 bounds 缩放承接，画面等比跟随。
     _hostView.frame = (CGRect){CGPointZero, r};
     _snapshotView.frame = (CGRect){CGPointZero, r};
-    NSInteger orient = (r.width > r.height) ? 4 : 1;
-    NSString *sub = nil;
-    SPSubmitSceneSettings(_scene, r, orient, &sub);
+    _containerView.bounds = (CGRect){CGPointZero, r};
+    [self layoutHostToFill];
+}
+
+// hostView 拿到的参考尺寸是建视图那一刻定的，这里按容器尺寸等比缩放内容，
+// 保证画面填满面板、且两块互不影响。
+- (void)layoutHostToFill {
+    if (!_hostView || !_containerView) return;
+    CGSize ref = _referenceSize;
+    CGSize box = _containerView.bounds.size;
+    if (ref.width < 2 || ref.height < 2 || box.width < 2 || box.height < 2) return;
+    CGFloat sx = box.width / ref.width;
+    CGFloat sy = box.height / ref.height;
+    // 等比 + 居中（允许留边，不拉伸变形）
+    CGFloat s = MIN(sx, sy);
+    _hostView.transform = CGAffineTransformMakeScale(s, s);
+    _hostView.center = CGPointMake(box.width / 2.0, box.height / 2.0);
 }
 
 - (BOOL)refreshLiveness {

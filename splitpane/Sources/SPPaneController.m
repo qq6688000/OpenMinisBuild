@@ -209,7 +209,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!scene) return NO;
 
     SPOverlayWindow *w = (SPOverlayWindow *)[SPWindowRegistry makeWindowWithScene:scene
-                                                                            level:UIWindowLevelNormal + 1   // 必须低于键盘
+                                                                            level:UIWindowLevelStatusBar + 10   // 必须高于状态栏；键盘另作处理
                                                                           keyable:YES];
     w.backgroundColor = [UIColor blackColor];
     w.frame = scene.coordinateSpace.bounds;
@@ -236,6 +236,12 @@ static const CGFloat kMaxPaneRatio = 0.78;
     split.onSeamEnded = ^{ [wself flushResize]; };
     [vc.view addSubview:split];
     [vc.view bringSubviewToFront:chrome];
+
+    // 键盘联动：弹出时让位，收起后回到状态栏之上
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillShow:)
+                                                 name:UIKeyboardWillShowNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillHide:)
+                                                 name:UIKeyboardWillHideNotification object:nil];
 
     // 出口 0：从底部往上滑 = 回桌面。
     // 系统的 home 手势会被我们的窗口挡住（日志实证：从底部起手只能拿到 70~126pt），
@@ -321,6 +327,16 @@ static const CGFloat kMaxPaneRatio = 0.78;
         return p.y >= g.view.bounds.size.height - 110.0;
     }
     return YES;
+}
+
+// 键盘可见时把分屏窗口降到键盘层以下，否则键盘被盖住；收起后恢复。
+- (void)keyboardWillShow:(NSNotification *)note {
+    if (!_window) return;
+    _window.windowLevel = UIWindowLevelNormal + 1;
+}
+- (void)keyboardWillHide:(NSNotification *)note {
+    if (!_window) return;
+    _window.windowLevel = UIWindowLevelStatusBar + 10;
 }
 
 - (void)startHeartbeat {
@@ -452,6 +468,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
         SPLog(@"repair report: %@", [SPRepair lastReport]);
     } @catch (NSException *e) { SPLog(@"restore ex %@", e.reason); }
 
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_heartbeat invalidate];
     _heartbeat = nil;
     [_topHost detach];

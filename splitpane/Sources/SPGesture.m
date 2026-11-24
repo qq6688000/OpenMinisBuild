@@ -312,7 +312,12 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
 
-    if (SPPaneController.shared.active) { [self presentPickerForSwap]; return YES; }
+    if (SPPaneController.shared.active) {
+        // 分屏中上滑 = 回桌面（日志实证：之前这里弹 picker，导致面板一闪一闪）
+        SPLog(@"pan in split -> stop (back to home)");
+        [SPPaneController.shared stopWithCompletion:nil];
+        return YES;
+    }
     if (self.card) { [self.card dismissAnimated:nil]; self.card = nil; }
     [self parkForegroundApp:front];
     return YES;
