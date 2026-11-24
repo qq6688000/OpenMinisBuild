@@ -345,6 +345,30 @@ static NSMutableSet *gHomeTried = nil;
     return NO;
 }
 
+// 让一个「有 scene 但不出画面」的 App 重新渲染：
+// 切到后台再切回前台。contentState=0 说明它释放了渲染，只有重新激活才会重建。
++ (void)forceRecycleApp:(NSString *)bundleID {
+    if (!bundleID.length) return;
+    SPLog(@"recycle %@ (scene contentState stuck)", bundleID);
+    @try {
+        // 1) 先让它退到后台
+        Class uic = NSClassFromString(@"SBUIController");
+        id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
+        for (NSString *sn in @[@"handleHomeButtonSinglePressUp", @"clickedMenuButton"]) {
+            SEL sel = NSSelectorFromString(sn);
+            if (ui && [ui respondsToSelector:sel]) {
+                ((void (*)(id, SEL))objc_msgSend)(ui, sel);
+                break;
+            }
+        }
+        // 2) 隔 0.35s 再拉回前台，触发 scene 重建
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self reactivateApp:bundleID];
+            SPLog(@"recycle %@ reactivated", bundleID);
+        });
+    } @catch (NSException *e) { SPLog(@"recycle ex %@", e.reason); }
+}
+
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL))completion {
     id app = [self applicationProxyForBundleID:bundleID];
     if (!app) return NO;

@@ -22,6 +22,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 @property (nonatomic, strong) UIImage *parkedSnapshot;
 @property (nonatomic, copy) NSString *parkedBundleID;
 @property (nonatomic, assign) BOOL busy;
+@property (nonatomic, assign) double lastExitAt;   // 上次退出分屏的时间
 @property (nonatomic, weak) UIWindowScene *scene;
 @property (nonatomic, assign) CGFloat dragStartY;
 @property (nonatomic, assign) CGFloat dragPeakY;
@@ -175,7 +176,14 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 - (void)_statusDoubleTapped {
     NSString *front = [self frontmostBundleID];
     SPLog(@"status double tap, front=%@ active=%d", front, (int)SPPaneController.shared.active);
-    if (SPPaneController.shared.active) { [self presentPickerForSwap]; return; }
+    if (SPPaneController.shared.active) {
+        // 分屏中上滑 = 回桌面（用户明确要求）。
+        // 之前这里弹「换 App」面板，导致退出后又立刻进分屏，看起来像退不出去。
+        SPLog(@"pan in split -> stop (back to home)");
+        _lastExitAt = CFAbsoluteTimeGetCurrent();
+        [SPPaneController.shared stopWithCompletion:nil];
+        return;
+    }
     if (!front.length) return;
     [self presentPickerForSplitWithParked:front needPark:NO];
 }
@@ -305,6 +313,11 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
     if (!fromBottom) return NO;
     if (up < need) return NO;
+    // 刚退出分屏 1.2 秒内的上滑忽略：用户是想回桌面，不是想再开一个
+    if (_lastExitAt > 0 && CFAbsoluteTimeGetCurrent() - _lastExitAt < 1.2) {
+        SPLog(@"ignored: %.2fs since last exit", CFAbsoluteTimeGetCurrent() - _lastExitAt);
+        return NO;
+    }
 
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }

@@ -35,6 +35,7 @@
 + (BOOL)homePress;
 // 只做激活（毫秒级，不启动进程），用来让 App 自己重排成全屏
 + (void)reactivateApp:(NSString *)bundleID;
++ (void)forceRecycleApp:(NSString *)bundleID;
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL ok))completion;
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL ok))completion;
 + (BOOL)homePress;

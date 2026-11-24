@@ -192,7 +192,7 @@ static const CGFloat kMaxPaneRatio = 0.78;
     if (!scene) return NO;
 
     SPOverlayWindow *w = (SPOverlayWindow *)[SPWindowRegistry makeWindowWithScene:scene
-                                                                            level:UIWindowLevelNormal + 1];
+                                                                            level:UIWindowLevelStatusBar + 10];
     w.backgroundColor = [UIColor blackColor];
     w.frame = scene.coordinateSpace.bounds;
     UIViewController *vc = [UIViewController new];
@@ -271,6 +271,20 @@ static const CGFloat kMaxPaneRatio = 0.78;
         [self resizePanes];
         self->_active = YES;
         [self startHeartbeat];
+
+        // 容器布局稳定后再推一次真实尺寸。建视图那刻 split 还没 layout，
+        // 拿到的是错的参考尺寸 —— 结果就是「整张桌面缩放」或「缩成一小块」。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            __strong typeof(wself) self2 = wself;
+            if (!self2 || !self2->_split) return;
+            [self2->_split setNeedsLayout];
+            [self2->_split layoutIfNeeded];
+            [self2 resizePanes];
+            [self2 flushResize];
+            SPLog(@"relayout top=%@ bottom=%@",
+                  NSStringFromCGSize(self2->_split.topContainer.bounds.size),
+                  NSStringFromCGSize(self2->_split.bottomContainer.bounds.size));
+        });
     });
     return YES;
 }
@@ -316,6 +330,13 @@ static const CGFloat kMaxPaneRatio = 0.78;
 }
 
 #pragma mark 操作
+
+- (void)spKeyboardShow:(NSNotification *)n {
+    if (_window) _window.windowLevel = UIWindowLevelNormal + 1;
+}
+- (void)spKeyboardHide:(NSNotification *)n {
+    if (_window) _window.windowLevel = UIWindowLevelStatusBar + 10;
+}
 
 - (void)escapeSwipe:(UIGestureRecognizer *)g {
     SPLog(@"escape swipe -> stop");
@@ -381,7 +402,14 @@ static const CGFloat kMaxPaneRatio = 0.78;
         // 先把尺寸恢复成全屏，再交回前台：顺序反了系统会按半屏建呈现
         [_topHost restoreOriginalSceneSettings];
         [_bottomHost restoreOriginalSceneSettings];
-        if (keep.length) [SPHost reactivateApp:keep];
+        if (keep.length) {
+            [SPHost reactivateApp:keep];
+            // 它的 scene 可能停在 contentState=0（日志实证），交回前台也不会自己画，
+            // 必须切后台再切回来才会重建渲染
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                @try { [SPHost forceRecycleApp:keep]; } @catch (__unused NSException *e) {}
+            });
+        }
         // 兜底：把「被压小」的 scene 全扫一遍恢复（漏掉某个 host 也不会留下残废 App）
         [SPRepair restoreAllScenes];
         SPLog(@"repair report: %@", [SPRepair lastReport]);

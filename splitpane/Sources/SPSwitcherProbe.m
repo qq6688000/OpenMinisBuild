@@ -44,3 +44,25 @@ void SPProbeSwitcherAPI(void) {
 
     SPLog(@"switcher probe: %@", [rows componentsJoinedByString:@" | "]);
 }
+
+// 主屏图标长按菜单探针：拿到真实接口再写功能，不猜。
+void SPProbeIconMenu(void) {
+    NSMutableArray *rows = [NSMutableArray array];
+    Class iv = NSClassFromString(@"SBIconView");
+    if (!iv) { SPLog(@"icon menu probe: SBIconView=n"); return; }
+    // 是否是 UIContextMenuInteraction 的 delegate
+    for (NSString *sel in @[@"contextMenuInteraction:configurationForMenuAtLocation:",
+                            @"contextMenuInteraction:configuration:highlightPreviewForItemWithIdentifier:",
+                            @"_contextMenuInteraction:styleForMenuWithConfiguration:",
+                            @"iconView:contextMenuConfigurationForIcon:",
+                            @"providerForIconView:"]) {
+        [rows addObject:[NSString stringWithFormat:@"%@=%@", sel,
+                         [iv instancesRespondToSelector:NSSelectorFromString(sel)] ? @"Y" : @"n"]];
+    }
+    // 相关类
+    for (NSString *cls in @[@"SBIconViewConfigurationOption", @"SBHIconManager",
+                            @"SBIconViewContextMenuElement", @"SBIconViewAction"]) {
+        [rows addObject:[NSString stringWithFormat:@"%@=%@", cls, NSClassFromString(cls) ? @"Y" : @"n"]];
+    }
+    SPLog(@"icon menu probe: %@", [rows componentsJoinedByString:@" | "]);
+}
