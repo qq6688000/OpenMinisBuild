@@ -308,15 +308,24 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
     if (!fromBottom) return NO;
     if (up < need) return NO;
+    // 轻点不该触发挂起：要求明确向上（速度 <= -200）
+    if (velocity.y > -200.0 && up < 200.0) { SPLog(@"too soft, ignore"); return NO; }
 
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
 
     if (SPPaneController.shared.active) {
-        // 分屏中上滑 = 回桌面（日志实证：之前这里弹 picker，导致面板一闪一闪）
-        SPLog(@"pan in split -> stop (back to home)");
-        [SPPaneController.shared stopWithCompletion:nil];
-        return YES;
+        // 分屏中「回桌面」必须和普通点击/滚动手势明显区分，否则一点面板就掉回桌面
+        // （0.5.6 日志：pan up=226 就把分屏关了）
+        // 要求：底部起手 + 位移 >= 300pt + 明确的向上速度
+        BOOL strong = (up >= 300.0) && (velocity.y <= -600.0);
+        SPLog(@"pan in split up=%.0f v=%.0f strong=%d", up, velocity.y, (int)strong);
+        if (strong) {
+            SPLog(@"pan in split -> stop (back to home)");
+            [SPPaneController.shared stopWithCompletion:nil];
+            return YES;
+        }
+        return NO;   // 不够强就交给面板自己处理
     }
     if (self.card) { [self.card dismissAnimated:nil]; self.card = nil; }
     [self parkForegroundApp:front];

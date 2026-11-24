@@ -399,8 +399,10 @@ static const CGFloat kMaxPaneRatio = 0.78;
 
     _homeSwipeArmed = NO;
     CGFloat up = _homeSwipeStartY - p.y;
-    SPLog(@"homeSwipe: startY=%.0f endY=%.0f up=%.0f (need 80)", _homeSwipeStartY, p.y, up);
-    if (up >= 80) {
+    CGPoint v = [g velocityInView:g.view];
+    SPLog(@"homeSwipe: startY=%.0f up=%.0f v=%.0f (need 300 & v<=-600)", _homeSwipeStartY, up, v.y);
+    // 阈值和 SPGesture 保持一致：普通点击/滚动不会误触
+    if (up >= 300.0 && v.y <= -600.0) {
         SPLog(@"homeSwipe -> stop (back to home)");
         [self stopWithCompletion:nil];
     }
