@@ -1,6 +1,7 @@
 #import "SPHost.h"
 #import "SPSettings.h"
 #import <objc/runtime.h>
+#import "SPLog.h"
 
 // 一个 App 的画面 = 从 scene handle 新建的 SBSceneView（参考尺寸 = 容器尺寸），
 // 底下永远垫一张冻结快照。系统一旦把后台 scene 收回去，活层空了就露出快照，
@@ -48,20 +49,53 @@
     return app;
 }
 
+static BOOL SPHandleBelongsTo(id handle, NSString *bundleID) {
+    if (!handle) return NO;
+    id app = SPMsg0(handle, @"application");
+    id bidObj = SPMsg0(app, @"bundleIdentifier");
+    if (![bidObj isKindOfClass:[NSString class]]) return YES;   // 拿不到就信它
+    NSString *bid = (NSString *)bidObj;
+    if (!bid.length) return YES;
+    return [bid isEqualToString:bundleID];
+}
+
 + (id)sceneHandleForBundleID:(NSString *)bundleID {
     if (!bundleID.length) return nil;
     id mgr = [self mainDisplaySceneManager];
+    // 1) 管理器直接按 bundleID 拿句柄（不同版本命名不一样，挨个试）
     if (mgr) {
-        id h = SPMsg1(mgr, @"sceneHandleForBundleID:", bundleID);
-        if (!h) h = SPMsg1(mgr, @"externalApplicationSceneHandleForBundleID:", bundleID);
-        if (h) return h;
+        for (NSString *sel in @[@"sceneHandleForBundleID:", @"externalApplicationSceneHandleForBundleID:",
+                                @"sceneHandleForApplication:", @"sceneHandleForDisplayItem:"]) {
+            if (![mgr respondsToSelector:NSSelectorFromString(sel)]) continue;
+            id h = nil;
+            if ([sel hasSuffix:@"DisplayItem:"]) continue;
+            h = SPMsg1(mgr, sel, bundleID);
+            if (SPHandleBelongsTo(h, bundleID)) { SPLog(@"handle via %@", sel); return h; }
+        }
+        // 2) 退而求其次：枚举所有 scene，比 bundleID
+        NSArray *scenes = SPMsg0(mgr, @"allScenes");
+        if ([scenes isKindOfClass:[NSArray class]]) {
+            id fallback = nil;
+            for (id sc in scenes) {
+                id h = SPMsg0(sc, @"handle");
+                if (!SPHandleBelongsTo(h, bundleID)) continue;
+                if (SPBool0(h, @"isMainDisplayScene")) return h;
+                if (!fallback) fallback = h;
+            }
+            if (fallback) { SPLog(@"handle via allScenes"); return fallback; }
+        }
     }
+    // 3) App 自己身上的句柄
     id app = [self applicationProxyForBundleID:bundleID];
-    if (!app) return nil;
+    if (!app) { SPLog(@"no app proxy for %@", bundleID); return nil; }
+    id main = SPMsg0(app, @"mainSceneHandle");
+    if (SPHandleBelongsTo(main, bundleID)) return main;
     NSArray *handles = SPMsg0(app, @"sceneHandles");
-    if (![handles isKindOfClass:[NSArray class]] || !handles.count) return nil;
-    for (id h in handles) if (SPBool0(h, @"isMainDisplayScene")) return h;
-    return handles.firstObject;
+    if ([handles isKindOfClass:[NSArray class]]) {
+        for (id h in handles) if (SPBool0(h, @"isMainDisplayScene")) return h;
+        if (handles.count) return handles.firstObject;
+    }
+    return nil;
 }
 
 #pragma mark - 打开 / 激活
@@ -192,6 +226,20 @@
     // 防冻结：让 scene 自认还在「被展示」
     SPVoid1B(handle, @"setSuspended:", NO);
     return YES;
+}
+
+- (void)attachWhenReady:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
+                attempts:(NSInteger)attempts interval:(NSTimeInterval)interval {
+    if ([self attachToContainer:container inWindowScene:windowScene]) return;
+    if (attempts <= 0) { SPLog(@"attach gave up %@", self.bundleID); return; }
+    __weak typeof(self) wself = self;
+    __weak UIView *wc = container;
+    __weak UIWindowScene *ws = windowScene;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(wself) self = wself;
+        if (!self || self->_attached) return;
+        [self attachWhenReady:wc inWindowScene:ws attempts:attempts - 1 interval:interval];
+    });
 }
 
 - (void)setFrameSize:(CGSize)size {

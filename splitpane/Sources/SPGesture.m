@@ -1,31 +1,13 @@
 #import "SPGesture.h"
 #import "SPCompat.h"
+#import "SPHost.h"
 #import "SPSettings.h"
 #import "SPHost.h"
 #import "SPParkCard.h"
 #import "SPAppPicker.h"
 #import "SPPaneController.h"
 
-static NSString *const SPDiagPath = @"/var/mobile/Library/Logs/SplitPane.log";
-
-static void SPLog(NSString *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    NSLog(@"[SplitPane] %@", msg);
-    // 真机抓日志：/var/mobile/Library/Logs/SplitPane.log（RootHide 下也常见）
-    static NSDateFormatter *df; static dispatch_once_t o; dispatch_once(&o, ^{
-        df = [NSDateFormatter new]; df.dateFormat = @"HH:mm:ss.SSS";
-    });
-    static NSMutableString *buf; static double lastAt;
-    if (!buf) buf = [NSMutableString new];
-    [buf appendFormat:@"%@ %@\n", [df stringFromDate:[NSDate date]], msg];
-    double now = CFAbsoluteTimeGetCurrent();
-    if (now - lastAt < 1.0) return;
-    lastAt = now;
-    [buf writeToFile:SPDiagPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-    [buf setString:@""];
-}
+#import "SPLog.h"
 
 @interface SPGesture () <SPParkCardDelegate>
 @property (nonatomic, strong) SPParkCard *card;

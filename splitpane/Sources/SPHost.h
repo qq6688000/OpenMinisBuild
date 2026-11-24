@@ -13,6 +13,9 @@
 
 // 把 scene 接进容器。失败返回 NO
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene;
+// 分屏刚建立时 App 可能还没起来：轮询续命，最多 attempts 次，每次间隔 interval
+- (void)attachWhenReady:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
+                attempts:(NSInteger)attempts interval:(NSTimeInterval)interval;
 
 // 用一张已经冻结的画面垫底（系统收走后台 scene 时顶上，防黑屏）
 - (void)installSnapshot:(UIImage *)snapshot;
