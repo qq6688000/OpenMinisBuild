@@ -416,11 +416,29 @@ static CGRect SPCurrentScreenBounds(void) {
 }
 
 - (void)xferTapped {
-    // 目标 = 当前不在焦点的那一半
+    // ⚠️ 弹 sheet 在 SpringBoard 里会直接卡死（0.9.9 实测，连日志都没打出来）。
+    // 改成一步直达：截当前上半屏画面 → 放进剪贴板 → 把另一半 App 提到前台。
+    // 用户在那边粘贴即可。全程零窗口创建，绝无卡死可能。
     NSString *target = SPPaneController.shared.bottomBundleID;
     SPLog(@"xferTapped target=%@", target);
     if (!target.length) return;
-    [SPXfer presentSenderForBundleID:target fromWindow:_window inScene:_window.windowScene];
+
+    UIImage *shot = nil;
+    @try {
+        UIView *v = _split.topContainer;
+        UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:v.bounds.size];
+        shot = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            [v drawViewHierarchyInRect:v.bounds afterScreenUpdates:NO];
+        }];
+    } @catch (NSException *e) { SPLog(@"xfer shot ex %@", e.reason); }
+
+    if (shot) {
+        [UIPasteboard generalPasteboard].image = shot;
+        SPLog(@"xfer: 截图 %.0fx%.0f 已进剪贴板", shot.size.width, shot.size.height);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @try { [SPHost reactivateApp:target]; } @catch (__unused NSException *e) {}
+    });
 }
 
 - (void)homeBarTapped {
