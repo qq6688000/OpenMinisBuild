@@ -19,9 +19,11 @@
 
 static const CGFloat kChromeHeight = 0.0;
 static const CGFloat kSeamHeight = 26.0;  // 用户要求改回原来的宽度
-// 用户要求：分屏比例可以拉到 5/95
-static const CGFloat kMinPaneRatio = 0.05;
-static const CGFloat kMaxPaneRatio = 0.95;
+// 用户要求：比例固定 10/90，不再允许拖动改变
+static const CGFloat kMinPaneRatio = 0.10;
+static const CGFloat kMaxPaneRatio = 0.90;
+static const CGFloat kFixedPaneRatio = 0.10;   // 上半屏占 10%，下半屏 90%
+static const BOOL kRatioLocked = YES;           // 固定比例，禁止拖动
 
 // ---------------------------------------------------------------- 接缝视图
 
@@ -60,9 +62,12 @@ static const CGFloat kMaxPaneRatio = 0.95;
         [_seam addSubview:_grabber];
         [self addSubview:_seam];
 
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
-        [_seam addGestureRecognizer:pan];
-        _splitRatio = 0.5;
+        // 固定 10/90 时不挂拖动（否则拖完弹回，反而卡手）
+        if (!kRatioLocked) {
+            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
+            [_seam addGestureRecognizer:pan];
+        }
+        _splitRatio = kFixedPaneRatio;
     }
     return self;
 }
@@ -96,7 +101,12 @@ static const CGFloat kMaxPaneRatio = 0.95;
     CGPoint p = [g locationInView:self];
     CGFloat usable = MAX(self.bounds.size.height - kSeamHeight, 1);
     CGFloat r = p.y / usable;
-    self.splitRatio = MIN(MAX(r, kMinPaneRatio), kMaxPaneRatio);
+    if (kRatioLocked) {
+        // 固定 10/90：拖动分隔条不改比例
+        self.splitRatio = kFixedPaneRatio;
+    } else {
+        self.splitRatio = MIN(MAX(r, kMinPaneRatio), kMaxPaneRatio);
+    }
     [self setNeedsLayout];
     if (self.onSeamMoved) self.onSeamMoved();
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
