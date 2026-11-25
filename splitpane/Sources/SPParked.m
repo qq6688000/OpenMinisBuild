@@ -3,6 +3,7 @@
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPGesture.h"
+#import "SPHost.h"
 #import "SPPaneController.h"
 
 // ============================================================================
@@ -36,6 +37,34 @@ static id gObserver = nil;
 @end
 
 @implementation SPParked
+
+static BOOL gPolling = NO;
+
++ (void)startPolling {
+    if (gPolling) return;
+    gPolling = YES;
+    __weak typeof(self) wself = self;
+    [self pollOnce: wself count:0];
+}
+
++ (void)pollOnce: (id)unused count: (NSInteger)n {
+    (void)unused;
+    if (!gArmed || !gParked || n > 40) { gPolling = NO; return; }
+    @try {
+        NSString *front = [[SPGesture shared] frontmostBundleID];
+        if (front.length &&
+            ![front isEqualToString:gParked.bundleID] &&
+            ![front isEqualToString:@"com.apple.springboard"] &&
+            ![front containsString:@"Spotlight"]) {
+            SPLog(@"parked: poll 发现新前台 %@", front);
+            [self triggerSplitWith:front];
+            gPolling = NO;
+            return;
+        }
+    } @catch (__unused NSException *e) {}
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self pollOnce:nil count:n + 1]; });
+}
 
 + (void)install {
     if (gObserver) return;
@@ -72,8 +101,12 @@ static id gObserver = nil;
     if ([bid isEqualToString:gParked.bundleID]) return;         // 挂起的那个回来了，忽略
     if ([bid isEqualToString:@"com.apple.springboard"]) return;
 
-    // 用户手动打开了另一个 App → 组建分屏
     SPLog(@"parked: 检测到新前台 %@ -> 与 %@ 组建分屏", bid, gParked.bundleID);
+    [self triggerSplitWith:bid];
+}
+
++ (void)triggerSplitWith:(NSString *)bid {
+    if (!gArmed || !gParked) return;
     gArmed = NO;
 
     NSString *top = gParked.bundleID;
@@ -115,15 +148,26 @@ static id gObserver = nil;
     gArmed = YES;
     SPLog(@"parked: %@ 已挂起，等待用户打开第二个 App", ps.bundleID);
 
-    // 把 App 交回系统：它自己会退到后台并显示桌面。
-    // 这里用真正的 Scene 后台化，不用那个不存在的 homePress。
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+    // 让 App 真正退到后台（桌面随之出现）。
+    // sendHomePress 在这台机器上调用返回成功但不转场（日志实证），
+    // 唯一可靠的是直接把它的 FBScene 推成 backgrounded。
+    NSString *target = ps.bundleID;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [[SPGesture shared] sendHomePress];
+        BOOL bg = NO;
+        @try { bg = [SPHost pushSceneToBackground:target]; }
+        @catch (__unused NSException *e) {}
+        SPLog(@"parked: pushSceneToBackground(%@)=%d", target, (int)bg);
+        // 再补一次 homePress 冲一下转场（失败也无所谓）
+        @try { [[SPGesture shared] sendHomePress]; } @catch (__unused NSException *e) {}
     });
 
-    // 12 秒没开新 App 就自动放弃
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)),
+    // 轮询兜底：通知有时收不到（SpringBoard 里 post 的时机不确定），
+    // 每 0.4s 查一次前台 App，发现新的就组建分屏。
+    [self startPolling];
+
+    // 15 秒没开新 App 就自动放弃
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (gArmed && gParked == ps) {
             gArmed = NO;
