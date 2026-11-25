@@ -146,6 +146,8 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, strong) SPSplitView *split;
 @property (nonatomic, strong) UIView *chrome;
 @property (nonatomic, assign) BOOL suspended;
+@property (nonatomic, assign) BOOL homePanArmed;
+@property (nonatomic, assign) CGFloat homePanStartY;
 @property (nonatomic, strong) UITapGestureRecognizer *cardTap;
 @property (nonatomic, strong) SPHost *topHost;
 @property (nonatomic, strong) SPHost *bottomHost;
@@ -281,9 +283,14 @@ void SPHostClearHostedBundleIDs(void);
     // 单指从底部上划 → 挂起成任务卡片（不退出分屏）
     // ⚠️ 不能依赖系统 SBHomeGesturePanGestureRecognizer：我们全屏窗口 eats 了触摸，
     //    那个 hook 根本收不到（0.5.19 日志实证：一次 pan 都没有）。
-    UISwipeGestureRecognizer *homeUp = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(homeSwipeUp:)];
-    homeUp.numberOfTouchesRequired = 1;
-    homeUp.direction = UISwipeGestureRecognizerDirectionUp;
+    // 用 pan 而不是 swipe：swipe 要等 App 的 sceneView 放行才收得到，
+    // 实测（0.5.20 日志）一次都没触发。pan + cancelsTouchesInView=NO 能先抓到手指。
+    UIPanGestureRecognizer *homeUp = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(homePanned:)];
+    homeUp.minimumNumberOfTouches = 1;
+    homeUp.maximumNumberOfTouches = 1;
+    homeUp.cancelsTouchesInView = NO;
+    homeUp.delaysTouchesBegan = NO;
+    homeUp.delaysTouchesEnded = NO;
     homeUp.delegate = (id<UIGestureRecognizerDelegate>)self;
     [vc.view addGestureRecognizer:homeUp];
 
@@ -504,9 +511,40 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 - (void)spKeyboardShow:(NSNotification *)n { (void)n; }
 - (void)spKeyboardHide:(NSNotification *)n { (void)n; }
 
-- (void)homeSwipeUp:(UISwipeGestureRecognizer *)g {
-    SPLog(@"homeSwipeUp -> suspend to card");
-    [self suspendToCardWithCompletion:nil];
+- (void)homePanned:(UIPanGestureRecognizer *)g {
+    // 只认「从底部区域起手 + 明显往上」的那一下，避免和 App 内滚动打架
+    UIWindow *win = _window;
+    if (!win) return;
+    CGPoint p0 = [g locationInView:win];
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan: {
+            _homePanStartY = p0.y;
+            _homePanArmed = (p0.y >= win.bounds.size.height - 120);
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            if (!_homePanArmed) return;
+            CGFloat dy = _homePanStartY - p0.y;   // 往上为正值
+            if (dy > 90) {
+                _homePanArmed = NO;
+                SPLog(@"homePan -> suspend to card (dy=%.0f)", dy);
+                [self suspendToCardWithCompletion:nil];
+            }
+            break;
+        }
+        default:
+            _homePanArmed = NO;
+            break;
+    }
+}
+
+// 手势共存：不抢 App 自己的 pan / tap
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    return NO;
 }
 
 - (void)escapeSwipe:(UIGestureRecognizer *)g {
@@ -645,10 +683,15 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     [self teardown];          // 内部先摘视图、再恢复 scene 尺寸、最后释放窗口
     SPLog(@"stop: window torn down, main=%@", main);
 
-    // 这台机器 homePress 不可用（日志实证 `homePress: none available`），
-    // 所以不指望「回桌面」这个动作。改为：把主 App 交回系统正常全屏渲染，
-    // 用户看到的是 App 本身而不是黑屏，随后自己上滑就能回桌面。
-    if (main.length) {
+    // ⚠️ 先真回桌面。之前只 reactivateApp，窗口已经拆了但系统还没建好全屏呈现，
+    // 中间那 2~3 秒就是用户看到的黑屏（0.5.20 日志实证）。
+    // SPHost homePress 有多条兜底链，比 SBUIController 单点可靠。
+    BOOL wentHome = NO;
+    @try { wentHome = [SPHost homePress]; } @catch (__unused NSException *e) {}
+    SPLog(@"stop: homePress=%d (diag=%@)", (int)wentHome, [SPHost homePressDiag]);
+
+    // 兜底：homePress 失败才去 reactivate 主 App，至少不是全黑
+    if (!wentHome && main.length) {
         [SPHost reactivateApp:main];
         // 再补一次 settings 恢复：activate 之后系统会重新计算全屏布局
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
