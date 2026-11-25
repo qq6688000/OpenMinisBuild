@@ -1115,7 +1115,8 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     NSInteger orient = SPDeviceOrientation();
     NSString *sub = nil;
     SPSubmitSceneSettingsEx(_scene, ref, orient, NO, &sub);
-    SPLog(@"resize %@ -> %@ (ref=%@ %@)", _bundleID, NSStringFromCGSize(r), NSStringFromCGSize(ref), sub ?: @"-");
+    SPLog(@"resize %@ -> %@ (ref=%@ orient=%ld %@)", _bundleID, NSStringFromCGSize(r),
+          NSStringFromCGSize(ref), (long)orient, sub ?: @"-");
 
     if (_hostView && _containerView) {
         SPFitHostView(_hostView, _containerView, ref);
