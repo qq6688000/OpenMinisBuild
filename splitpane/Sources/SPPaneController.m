@@ -83,6 +83,20 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
         _grabber.frame = CGRectZero;
         return;
     }
+    BOOL landscape = (b.size.width > b.size.height);
+    if (landscape) {
+        // 横屏：改成左右分屏。竖着切 10/90 会得到 {932,40} 这种一条——
+        // 横屏下高度只有 430，上下切毫无意义。
+        CGFloat seam = kSeamHeight;
+        CGFloat usableW = b.size.width - seam;
+        CGFloat topW = round(usableW * _splitRatio);
+        _topContainer.frame = CGRectMake(0, 0, topW, b.size.height);
+        _seam.frame = CGRectMake(topW, 0, seam, b.size.height);
+        _bottomContainer.frame = CGRectMake(topW + seam, 0, usableW - topW, b.size.height);
+        // 抓手改成竖向
+        _grabber.frame = CGRectMake((seam - 5) / 2.0, (b.size.height - 64) / 2.0, 5, 64);
+        return;
+    }
     CGFloat topH = round((usable - kSeamHeight) * _splitRatio);
     // 容器必须铺满整个屏幕宽度，不留左右内边距（用户要求：容器也铺满全屏）
     CGFloat w = b.size.width;
