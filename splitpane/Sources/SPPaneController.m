@@ -4,6 +4,8 @@
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPWindowRegistry.h"
+#import "SPXfer.h"
+#import "SPXferDrag.h"
 #import "SPRepair.h"
 #import "SPParkCard.h"
 #import <objc/runtime.h>
@@ -165,6 +167,11 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
     return hit;
 }
 
+// 拖拽会话期间，系统需要我们的窗口配合触摸分发，这里不做任何拦截
+- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+}
+
 - (BOOL)canBecomeKeyWindow { return YES; }
 
 // 触摸一开始就把自己提到最前，别等系统把窗口栈重排完再补
@@ -200,6 +207,7 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 @property (nonatomic, assign) BOOL lastPhysicalHorizontal;
 @property (nonatomic, assign) CFTimeInterval lastOrientationChangeAt;
 @property (nonatomic, strong) NSTimer *orientTimer;
+@property (nonatomic, strong) UIButton *xferButton;
 @property (nonatomic, assign) CGFloat supersededWindowLevel;
 @property (nonatomic, assign) CGAffineTransform supersededRootTransform;
 @property (nonatomic, assign) CGRect supersededRootFrame;
@@ -343,6 +351,32 @@ static CGRect SPCurrentScreenBounds(void) {
     _homeBar.frame = CGRectMake(0, b.size.height - 60, b.size.width, 60);
 }
 
+
+// 接缝中央的「传送」按钮：把当前窗口的内容发到另一半
+- (void)addXferButtonToView:(UIView *)host {
+    CGFloat d = 34;
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = CGRectMake(host.bounds.size.width - d - 8, 0, d, d);
+    b.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
+    b.layer.cornerRadius = d / 2.0;
+    [b setImage:[UIImage systemImageNamed:@"arrow.up.forward.app.fill"] forState:UIControlStateNormal];
+    b.tintColor = [UIColor whiteColor];
+    b.layer.zPosition = 2600;
+    b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [b addTarget:self action:@selector(xferTapped) forControlEvents:UIControlEventTouchUpInside];
+    [host addSubview:b];
+    _xferButton = b;
+    SPLog(@"xfer button added");
+}
+
+- (void)xferTapped {
+    // 目标 = 当前不在焦点的那一半
+    NSString *target = SPPaneController.shared.bottomBundleID;
+    SPLog(@"xferTapped target=%@", target);
+    if (!target.length) return;
+    [SPXfer presentSenderForBundleID:target fromWindow:_window inScene:_window.windowScene];
+}
+
 - (void)homeBarTapped {
     // 用户决定：上划 Home / 点 Home 条 = 直接拆窗回桌面，不做挂起。
     SPLog(@"homeBarTapped -> 直接拆窗回桌面");
@@ -473,6 +507,11 @@ static CGRect SPCurrentScreenBounds(void) {
     [vc.view bringSubviewToFront:chrome];
     [self addFloatingButtonsToView:vc.view width:w.bounds.size.width];
     [self addHomeBarToView:vc.view width:w.bounds.size.width height:w.bounds.size.height];
+    [self addXferButtonToView:vc.view];
+    // 两个 pane 容器都装拖放：PV 的做法 —— 数据由系统 UIDragSession 承载，
+    // 我们只保证两个容器处在同一拖拽空间里
+    [SPXferDrag attachToContainer:split.topContainer label:@"top"];
+    [SPXferDrag attachToContainer:split.bottomContainer label:@"bottom"];
 
     // 兜底出口：双击画面任意处也能缩成桌面小窗（不依赖点中底部热区）
     UITapGestureRecognizer *dbl = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(homeBarTapped)];
