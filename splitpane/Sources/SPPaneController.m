@@ -427,20 +427,19 @@ void SPHostClearHostedBundleIDs(void);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
         if (!self || !self->_window) return;
-        // ===== 0.7.1：纯快照模式（用户要求"不实时画面"）=====
-        // 不抓 scene、不推 settings、不托管活画面 —— 只往容器里贴一张冻结图。
-        // 好处：SpringBoard 里最稳，不会有 contentState 变化、不会拖死主线程、不会黑屏。
+        // 实时画面（0.5.2 的做法）：抓真 scene、推容器尺寸让 App 自己重排版
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
-        UIImage *topImg = snap ?: [self snapshotForBundleID:top];
-        [topHost attachSnapshot:topImg cropHalf:0 toContainer:split.topContainer];
-        SPLog(@"top snapshot attach %@", topImg ? NSStringFromCGSize(topImg.size) : @"nil");
+        // 实时画面：抓真 scene、推容器尺寸让 App 自己重排版（0.5.2 的做法）
+        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:12 interval:1.5];
+        if (snap) [topHost installSnapshot:snap];
+        SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
-        UIImage *bottomImg = [self snapshotForBundleID:bottom];
-        [bottomHost attachSnapshot:bottomImg cropHalf:1 toContainer:split.bottomContainer];
-        SPLog(@"bottom snapshot attach %@", bottomImg ? NSStringFromCGSize(bottomImg.size) : @"nil");
+        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:8 interval:1.5];
+        if (snap) [bottomHost installSnapshot:snap];
+        SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
 
         [self resizePanes];
         self->_active = YES;
