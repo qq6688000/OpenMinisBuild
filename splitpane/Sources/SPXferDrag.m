@@ -38,25 +38,11 @@ static BOOL gDragging = NO;
     return @[item];
 }
 
-- (UITargetedDragPreview *)dragInteraction:(UIDragInteraction *)interaction previewForLiftingItem:(UIDragItem *)item session:(id<UIDragSession>)session {
-    // 崩溃教训（SpringBoard-2026-11-25-201339.ips）：
-    // 自建的 UIImageView 不在窗口层级里，UITargetedDragPreview initWithView: 会抛异常。
-    // target 必须是视图层级里的真实视图。最稳的是返回 nil，让系统用默认预览。
-    UIView *src = self.snapshotFrom ?: self.container;
-    if (!src || !src.window) return nil;
-    @try {
-        UIPreviewParameters *params = [UIPreviewParameters new];
-        params.backgroundColor = [UIColor clearColor];
-        params.visiblePath = [UIBezierPath bezierPathWithRoundedRect:src.bounds cornerRadius:16];
-        UITargetedDragPreview *p = [[UITargetedDragPreview alloc] initWithView:src
-                                                                    parameters:params
-                                                                        target:src];   // target = 真实视图
-        return p;
-    } @catch (NSException *e) {
-        SPLog(@"preview ex %@ -> 返回 nil 用系统默认", e.reason);
-        return nil;
-    }
-}
+// ⚠️ 绝对不要实现 previewForLiftingItem:（两次安全模式换来的教训）：
+//   第一次：自建 UIImageView 不在窗口层级 → initWithView: 抛异常
+//   第二次：即使传真实视图，系统在 lift 效果阶段还会再访问这个 view，
+//           那时它可能已被释放（doesNotRecognizeSelector → SIGABRT）
+// 不实现 = 系统用默认预览，绝对安全。
 
 - (void)dragInteraction:(UIDragInteraction *)interaction sessionWillBegin:(id<UIDragSession>)session {
     gDragging = YES;
