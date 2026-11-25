@@ -8,4 +8,6 @@
                         onPick:(void (^)(NSString *bundleID))onPick
                       onCancel:(void (^)(void))onCancel;
 + (BOOL)isPresenting;
+// 同步强制取消（不等待动画），先回收旧窗/清回调，再至多调用一次 onCancel。
++ (void)dismissIfPresent;
 @end

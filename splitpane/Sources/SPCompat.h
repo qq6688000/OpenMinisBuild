@@ -62,6 +62,12 @@ static inline id SPMsg0(id obj, NSString *name) {
     if (!SPABI(obj, name, "@", 0)) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(obj, NSSelectorFromString(name));
 }
+// copy family 返回 +1：先校验 ABI，再让编译器按原生消息的 ARC 所有权规则接管。
+// 不可用 SPMsg0 的普通 id 函数指针调用 copy / mutableCopy（它被视为 +0）。
+static inline id SPCopy0(id obj, BOOL mutableCopy) {
+    if (!SPABI(obj, mutableCopy ? @"mutableCopy" : @"copy", "@", 0)) return nil;
+    return mutableCopy ? [obj mutableCopy] : [obj copy];
+}
 static inline id SPMsg1(id obj, NSString *name, id a) {
     if (!SPABI(obj, name, "@", 1, "@")) return nil;
     return ((id (*)(id, SEL, id))objc_msgSend)(obj, NSSelectorFromString(name), a);

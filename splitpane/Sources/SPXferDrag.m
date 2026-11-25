@@ -1,10 +1,86 @@
 #import "SPXferDrag.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static BOOL gDragging = NO;
+// 整个进程共用；仅主队列递增/读取，跨容器的新 drop 同样淘汰旧结果。
+static NSUInteger gDropGeneration = 0;
+
+typedef NS_ENUM(NSUInteger, SPXferDragContentKind) {
+    SPXferDragContentNone,
+    SPXferDragContentFileURL,
+    SPXferDragContentImageObject,
+    SPXferDragContentImageData,
+    SPXferDragContentPlainText,
+};
+
+static SPXferDragContentKind SPXferDragKindForProvider(NSItemProvider *provider) {
+    if ([provider hasItemConformingToTypeIdentifier:@"public.file-url"]) return SPXferDragContentFileURL;
+    if ([provider canLoadObjectOfClass:UIImage.class]) return SPXferDragContentImageObject;
+    if ([provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier]) return SPXferDragContentImageData;
+    if ([provider hasItemConformingToTypeIdentifier:UTTypePlainText.identifier]) return SPXferDragContentPlainText;
+    return SPXferDragContentNone;
+}
+
+static BOOL SPXferDragSessionIsSupported(id<UIDropSession> session) {
+    if (!session.items.count) return NO;
+    // 不吞掉只有其它能力的会话，也不悄悄丢掉混合会话中的不支持项。
+    for (UIDragItem *item in session.items) {
+        if (SPXferDragKindForProvider(item.itemProvider) == SPXferDragContentNone) return NO;
+    }
+    return YES;
+}
+
+static void SPXferDragLoadImageData(NSItemProvider *provider, void (^completion)(id)) {
+    [provider loadDataRepresentationForTypeIdentifier:UTTypeImage.identifier
+                                  completionHandler:^(NSData *data, NSError *error) {
+        UIImage *image = (!error && [data isKindOfClass:NSData.class]) ? [UIImage imageWithData:data] : nil;
+        completion(image);
+    }];
+}
+
+static void SPXferDragLoadProvider(NSItemProvider *provider, void (^completion)(id)) {
+    switch (SPXferDragKindForProvider(provider)) {
+        case SPXferDragContentFileURL: {
+            // 参数必须显式 NSURL，不能让 Foundation 按 id 猜测/强制转换类型。
+            // 仅转交 URL；跨进程文件访问权限及 URL 有效期仍需真机验证。
+            [provider loadItemForTypeIdentifier:@"public.file-url" options:nil
+                             completionHandler:^(NSURL *url, NSError *error) {
+                completion(!error && [url isKindOfClass:NSURL.class] && url.isFileURL ? url : nil);
+            }];
+            break;
+        }
+        case SPXferDragContentImageObject: {
+            [provider loadObjectOfClass:UIImage.class
+                      completionHandler:^(id<NSItemProviderReading> object, NSError *error) {
+                if (!error && [object isKindOfClass:UIImage.class]) {
+                    completion(object);
+                } else if ([provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier]) {
+                    SPXferDragLoadImageData(provider, completion);
+                } else {
+                    completion(nil);
+                }
+            }];
+            break;
+        }
+        case SPXferDragContentImageData: {
+            SPXferDragLoadImageData(provider, completion);
+            break;
+        }
+        case SPXferDragContentPlainText: {
+            [provider loadItemForTypeIdentifier:UTTypePlainText.identifier options:nil
+                             completionHandler:^(NSString *text, NSError *error) {
+                completion(!error && [text isKindOfClass:NSString.class] ? text : nil);
+            }];
+            break;
+        }
+        default: {
+            completion(nil);
+            break;
+        }
+    }
+}
 
 @interface SPXferDrag_DragSource : NSObject <UIDragInteractionDelegate>
 @property (nonatomic, weak) UIView *container;
@@ -15,7 +91,7 @@ static BOOL gDragging = NO;
 @interface SPXferDrag ()
 @property (nonatomic, weak) UIView *container;
 @property (nonatomic, copy) NSString *label;
-@property (nonatomic, strong) NSMutableArray *sessions;
+- (BOOL)canAcceptSession:(id<UIDropSession>)session;
 @end
 
 
@@ -139,7 +215,6 @@ static const void *kDragSrcKey = &kDragSrcKey;
     d = [SPXferDrag new];
     d.container = container;
     d.label = label;
-    d.sessions = [NSMutableArray array];
     objc_setAssociatedObject(container, kKey, d, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // PV 的 _interactions 是 NSHashTable（多个），说明它不只是给顶层容器装，
@@ -165,9 +240,13 @@ static const void *kDragSrcKey = &kDragSrcKey;
 
 #pragma mark - UIDropInteractionDelegate
 
+- (BOOL)canAcceptSession:(id<UIDropSession>)session {
+    UIWindow *window = self.container.window;
+    return window && !window.isHidden && window.windowScene && SPXferDragSessionIsSupported(session);
+}
+
 - (BOOL)dropInteraction:(UIDropInteraction *)interaction canHandleSession:(id<UIDropSession>)session {
-    // 任何能提供 item 的会话都接，具体能不能用由内部 App 判断
-    BOOL ok = (session.items.count > 0);
+    BOOL ok = [self canAcceptSession:session];
     SPLog(@"xfer-drag[%@]: canHandle=%d items=%lu", _label, (int)ok,
           (unsigned long)session.items.count);
     return ok;
@@ -179,11 +258,11 @@ static const void *kDragSrcKey = &kDragSrcKey;
 }
 
 - (UIDropProposal *)dropInteraction:(UIDropInteraction *)interaction sessionDidUpdate:(id<UIDropSession>)session {
-    // 关键：把落点转给容器里的 App（sceneView），让 App 自己决定接不接、怎么接。
-    // 我们不消费数据，只做转发 —— 数据本身由系统 UIDragSession 承载。
-    UIDropProposal *p = [[UIDropProposal alloc] initWithDropOperation:UIDropOperationCopy];
-    p.precise = YES;
-    return p;
+    BOOL supported = [self canAcceptSession:session];
+    UIDropProposal *proposal = [[UIDropProposal alloc] initWithDropOperation:
+                               supported ? UIDropOperationCopy : UIDropOperationCancel];
+    proposal.precise = supported;
+    return proposal;
 }
 
 - (void)dropInteraction:(UIDropInteraction *)interaction sessionDidExit:(id<UIDropSession>)session {
@@ -191,53 +270,61 @@ static const void *kDragSrcKey = &kDragSrcKey;
 }
 
 - (void)dropInteraction:(UIDropInteraction *)interaction performDrop:(id<UIDropSession>)session {
-    gDragging = NO;
-    SPLog(@"xfer-drag[%@]: 落下 items=%lu", _label, (unsigned long)session.items.count);
-
-    // ===== 全 App 通用落地 =====
-    // 1) 把 session 里的每个 item 读出来，全部转成「文件 URL / 图片 / 文本」
-    //    存进剪贴板 —— 任何 App 都能通过粘贴拿到，不依赖目标 App 实现 drop。
-    UIPasteboard *pb = [UIPasteboard generalPasteboard];
-    NSMutableArray *imgs = [NSMutableArray array];
-    NSMutableArray *strs = [NSMutableArray array];
-    NSMutableArray *urls = [NSMutableArray array];
-    for (UIDragItem *item in session.items) {
-        NSItemProvider *p = item.itemProvider;
-        if (!p) continue;
-        // 文件 URL（最高优先级，Filza/文件 App 拖出的是这个）
-        if ([p hasItemConformingToTypeIdentifier:@"public.file-url"]) {
-            [p loadItemForTypeIdentifier:@"public.file-url" options:nil
-                       completionHandler:^(id url, NSError *err) {
-                if ([url isKindOfClass:[NSURL class]]) {
-                    SPLog(@"xfer-drag: 拿到文件 %@", url);
-                    [urls addObject:url];
-                }
-            }];
-            continue;
-        }
-        if ([p hasItemConformingToTypeIdentifier:(NSString *)UTTypeImage.identifier]) {
-            [p loadItemForTypeIdentifier:(NSString *)UTTypeImage.identifier options:nil
-                       completionHandler:^(id img, NSError *err) {
-                if (img) [imgs addObject:img];
-            }];
-            continue;
-        }
-        if ([p hasItemConformingToTypeIdentifier:(NSString *)UTTypePlainText.identifier]) {
-            [p loadItemForTypeIdentifier:(NSString *)UTTypePlainText.identifier options:nil
-                       completionHandler:^(id txt, NSError *err) {
-                if ([txt isKindOfClass:[NSString class]] && [(NSString *)txt length]) [strs addObject:txt];
-            }];
-        }
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self dropInteraction:interaction performDrop:session]; });
+        return;
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (imgs.count) pb.images = imgs;
-        else if (strs.count) pb.strings = strs;
-        else if (urls.count) pb.URLs = urls;
-        else { SPLog(@"xfer-drag: 没解析出可落地内容"); return; }
-        SPLog(@"xfer-drag: 已落地 剪贴板 imgs=%lu strs=%lu urls=%lu", (unsigned long)imgs.count,
-              (unsigned long)strs.count, (unsigned long)urls.count);
-        // 2) 目标 App 已经能「粘贴」拿到文件。对支持 drop 的 App（QQ 等），
-        //    用户也可以直接在源 App 里继续系统拖拽 —— 两条路都通。
+    gDragging = NO;
+    NSUInteger generation = ++gDropGeneration;
+    if (![self canAcceptSession:session]) return;
+    SPLog(@"xfer-drag[%@]: 落下 items=%lu generation=%lu", _label,
+          (unsigned long)session.items.count, (unsigned long)generation);
+
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    NSInteger changeCount = pasteboard.changeCount;
+    __weak UIView *dropContainer = self.container;
+    __weak UIWindow *dropWindow = self.container.window;
+    NSString *label = [self.label copy];
+    NSArray<UIDragItem *> *sourceItems = [session.items copy];
+    dispatch_group_t group = dispatch_group_create();
+    // 每个源 item 占一个固定位置，异步完成顺序不影响粘贴顺序。
+    // slots 和最终 items 的创建/修改均只在主队列。
+    NSMutableArray *slots = [NSMutableArray arrayWithCapacity:sourceItems.count];
+    for (NSUInteger index = 0; index < sourceItems.count; index++) [slots addObject:NSNull.null];
+    [sourceItems enumerateObjectsUsingBlock:^(UIDragItem *item, NSUInteger index, BOOL *stop) {
+        dispatch_group_enter(group);
+        __block BOOL completed = NO;
+        SPXferDragLoadProvider(item.itemProvider, ^(id value) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completed) return;
+                completed = YES;
+                if (value) slots[index] = @{ UIPasteboardTypeAutomatic: value };
+                else SPLog(@"xfer-drag[%@]: item %lu 解析失败", label, (unsigned long)index);
+                // 必须先写槽位再 leave，notify 才能看到完整结果。
+                dispatch_group_leave(group);
+            });
+        });
+    }];
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        UIView *container = dropContainer;
+        UIWindow *window = dropWindow;
+        if (generation != gDropGeneration || pasteboard.changeCount != changeCount ||
+            !container || !window || container.window != window || window.isHidden || !window.windowScene) {
+            SPLog(@"xfer-drag[%@]: 丢弃过期结果 generation=%lu", label, (unsigned long)generation);
+            return;
+        }
+        NSMutableArray<NSDictionary<NSString *, id> *> *items = [NSMutableArray array];
+        for (id value in slots) {
+            if ([value isKindOfClass:NSDictionary.class]) [items addObject:value];
+        }
+        if (!items.count) {
+            SPLog(@"xfer-drag[%@]: 没解析出可落地内容", label);
+            return;
+        }
+        // SDK 16.5: Automatic 支持 UIImage/NSString/NSURL，混合内容逐项写入，不三选一。
+        pasteboard.items = items;
+        SPLog(@"xfer-drag[%@]: 已写剪贴板 items=%lu，需用户在目标 App 粘贴", label,
+              (unsigned long)items.count);
     });
 }
 
@@ -249,41 +336,6 @@ static const void *kDragSrcKey = &kDragSrcKey;
 - (void)dropInteraction:(UIDropInteraction *)interaction sessionDidEnd:(id<UIDropSession>)session {
     gDragging = NO;
     SPLog(@"xfer-drag[%@]: 会话结束", _label);
-}
-
-#pragma mark - 转发
-
-- (UIView *)deepestViewInContainerAtPoint:(CGPoint)p {
-    UIView *v = self.container;
-    while (v) {
-        UIView *next = nil;
-        for (UIView *sub in v.subviews.reverseObjectEnumerator) {
-            if (!sub.hidden && sub.alpha > 0.01 && CGRectContainsPoint(sub.frame, [sub convertPoint:p fromView:v])) {
-                next = sub; break;
-            }
-        }
-        if (!next) break;
-        v = next;
-    }
-    return v;
-}
-
-- (void)forwardDropToView:(UIView *)view session:(id<UIDropSession>)session {
-    // sceneView（SBDeviceApplicationSceneView）内部有系统的 drop 处理，
-    // 我们把它自己的 UIDropInteraction 找出来，直接调 dropInteraction:performDrop:
-    @try {
-        for (id inter in view.interactions) {
-            if (![inter isKindOfClass:[UIDropInteraction class]]) continue;
-            id del = ((UIDropInteraction *)inter).delegate;
-            SEL sel = NSSelectorFromString(@"dropInteraction:performDrop:");
-            if (del && [del respondsToSelector:sel]) {
-                ((void (*)(id, SEL, id, id))objc_msgSend)(del, sel, inter, session);
-                SPLog(@"xfer-drag: 已转发给 %@", NSStringFromClass([del class]));
-                return;
-            }
-        }
-    } @catch (NSException *e) { SPLog(@"xfer-drag 转发异常 %@", e.reason); }
-    SPLog(@"xfer-drag: 目标视图没有 drop 处理，忽略");
 }
 
 @end

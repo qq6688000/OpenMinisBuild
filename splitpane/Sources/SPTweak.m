@@ -8,6 +8,7 @@
 #import "SPSettings.h"
 #import "SPRepair.h"
 #import "SPPaneController.h"
+#import "SPWindowRegistry.h"
 
 // 版本号从 dylib 所在包的 control 里读不到，这里直接把编译期版本写进常量，
 // 由 build 脚本替换 __SP_VERSION__。找不到就退回 @"dev"。
@@ -50,7 +51,7 @@ static BOOL SPPointInOurPaneWindow(CGPoint p) {
         NSUInteger n = ((NSUInteger (*)(id, SEL))objc_msgSend)(reg, NSSelectorFromString(@"count"));
         if (n == 0) return NO;
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            if (w.isHidden || w.alpha < 0.01) continue;
+            if (![SPWindowRegistry containsWindow:w] || w.isHidden || w.alpha < 0.01) continue;
             CGPoint lp = [w convertPoint:p fromWindow:nil];
             if (!CGRectContainsPoint(w.bounds, lp)) continue;
             // 命中测试：这个点上有我们窗口的视图吗

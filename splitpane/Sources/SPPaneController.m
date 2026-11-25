@@ -1,4 +1,5 @@
 #import "SPPaneController.h"
+#import "SPLayoutMath.h"
 #import "SPHost.h"
 #import "SPSettings.h"
 #import "SPCompat.h"
@@ -117,8 +118,8 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
         [h impactOccurred];
     }
     CGPoint p = [g locationInView:self];
-    CGFloat usable = MAX(self.bounds.size.height - kSeamHeight, 1);
-    CGFloat r = p.y / usable;
+    CGFloat r = SPSeamRatio(self.bounds.size.width, self.bounds.size.height,
+                            p.x, p.y, kSeamHeight);
     if (kRatioSnap && !_snapping) {
         // 拖动过程中实时跟手（限制在 10%~90% 之间），松手时再吸附
         self.splitRatio = MIN(MAX(r, kMinPaneRatio), kMaxPaneRatio);
@@ -134,10 +135,19 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
             SPLog(@"seam snap: %.2f -> %.2f", _splitRatio, mid);
             _snapping = YES;
             [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut
-                             animations:^{ self.splitRatio = mid; }
-                             completion:^(BOOL f) { self->_snapping = NO; }];
+                             animations:^{
+                                 self.splitRatio = mid;
+                                 [self setNeedsLayout];
+                                 [self layoutIfNeeded];
+                                 if (self.onSeamMoved) self.onSeamMoved();
+                             }
+                             completion:^(BOOL f) {
+                                 self->_snapping = NO;
+                                 if (self.onSeamEnded) self.onSeamEnded();
+                             }];
+        } else if (self.onSeamEnded) {
+            self.onSeamEnded();
         }
-        if (self.onSeamEnded) self.onSeamEnded();
     }
     if (g.state == UIGestureRecognizerStateEnded && [SPSettings haptics]) {
         UIImpactFeedbackGenerator *h = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleRigid];
@@ -217,6 +227,7 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 @property (nonatomic, copy, readwrite) NSString *topBundleID;
 @property (nonatomic, copy, readwrite) NSString *bottomBundleID;
 @property (nonatomic, assign, readwrite) BOOL active;
+@property (nonatomic, assign) NSUInteger sessionGeneration;
 @property (nonatomic, strong) NSTimer *heartbeat;
 @property (nonatomic, strong) UIImage *topSnapshot;
 @property (nonatomic, assign) BOOL resizeCoalescing;
@@ -319,7 +330,7 @@ static CGRect SPCurrentScreenBounds(void) {
 }
 
 - (void)spPollOrientation {
-    if (!_window || !_active) return;
+    if (!_window || !_active || _suspended) return;
     BOOL h = [self spIsPhysicallyHorizontal];
     if (h == _lastPhysicalHorizontal) return;
     // 防抖：方向刚变过 1.5 秒内不再处理，否则重排会反过来影响判定，形成抖动
@@ -365,12 +376,12 @@ static CGRect SPCurrentScreenBounds(void) {
     b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [b addTarget:self action:@selector(xferTapped) forControlEvents:UIControlEventTouchUpInside];
     // 直接给按钮装 drag：按住按钮就能拖出一张当前画面，不用和 App 抢手势
-    [SPXferDrag attachDragToView:b label:@"xferBtn" snapshotFrom:_split];
+    [SPXferDrag attachDragToView:b label:@"xferBtn" snapshotFrom:_split.topContainer];
     // 长按兜底挂在窗口上，整块画面都能触发（按钮太小不好按）
     UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self
                                                                                      action:@selector(xferLongPressed:)];
     lp.minimumPressDuration = 0.9;
-    lp.numberOfTouchesRequired = 1;
+    lp.numberOfTouchesRequired = 2;
     lp.cancelsTouchesInView = NO;
     lp.delegate = (id<UIGestureRecognizerDelegate>)self;
     [host.window addGestureRecognizer:lp];
@@ -419,9 +430,10 @@ static CGRect SPCurrentScreenBounds(void) {
     // ⚠️ 弹 sheet 在 SpringBoard 里会直接卡死（0.9.9 实测，连日志都没打出来）。
     // 改成一步直达：截当前上半屏画面 → 放进剪贴板 → 把另一半 App 提到前台。
     // 用户在那边粘贴即可。全程零窗口创建，绝无卡死可能。
-    NSString *target = SPPaneController.shared.bottomBundleID;
+    NSString *target = self.bottomBundleID;
+    UIWindow *senderWindow = _window;
     SPLog(@"xferTapped target=%@", target);
-    if (!target.length) return;
+    if (!_active || !senderWindow || !target.length) return;
 
     UIImage *shot = nil;
     @try {
@@ -437,6 +449,7 @@ static CGRect SPCurrentScreenBounds(void) {
         SPLog(@"xfer: 截图 %.0fx%.0f 已进剪贴板", shot.size.width, shot.size.height);
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!self->_active || self->_window != senderWindow) return;
         @try { [SPHost reactivateApp:target]; } @catch (__unused NSException *e) {}
     });
 }
@@ -528,16 +541,17 @@ static CGRect SPCurrentScreenBounds(void) {
 #pragma mark 启动
 
 - (BOOL)startWithTop:(NSString *)top bottom:(NSString *)bottom windowScene:(UIWindowScene *)scene topSnapshot:(UIImage *)snap {
-    if (_active || !top.length || !bottom.length) return NO;
+    if (![SPSettings enabled] || _active || _window || !top.length || !bottom.length || [top isEqualToString:bottom]) return NO;
     // 分屏一旦建立，挂起卡片就没有存在的意义了；它的独立窗口必须立刻销毁
     [SPParkCard dismissAll];
     if (!scene) scene = self.foregroundWindowScene;
     if (!scene) return NO;
 
     SPOverlayWindow *w = (SPOverlayWindow *)[SPWindowRegistry makeWindowWithScene:scene
-                                                                            level:UIWindowLevelStatusBar + 10];
+                                                                            level:UIWindowLevelStatusBar + 10
+                                                                      windowClass:SPOverlayWindow.class];
     w.backgroundColor = [UIColor blackColor];
-    w.frame = scene.coordinateSpace.bounds;
+    w.frame = SPCurrentScreenBounds();
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = [UIColor blackColor];
     w.rootViewController = vc;
@@ -569,6 +583,19 @@ static CGRect SPCurrentScreenBounds(void) {
     split.onSeamEnded = ^{ [wself flushResize]; };
     [vc.view addSubview:split];
     [vc.view bringSubviewToFront:chrome];
+    // 发布本次会话后再安装依赖 _split 的控件；启动延迟期间也必须允许退出。
+    _window = w;
+    _chrome = chrome;
+    _split = split;
+    _active = YES;
+    ++_sessionGeneration;
+    _suspended = NO;
+    _cardTap = nil;
+    _goingHome = NO;
+    _topBundleID = [top copy];
+    _bottomBundleID = [bottom copy];
+    [split setNeedsLayout];
+    [split layoutIfNeeded];
     [self addFloatingButtonsToView:vc.view width:w.bounds.size.width];
     [self addHomeBarToView:vc.view width:w.bounds.size.width height:w.bounds.size.height];
     [self addXferButtonToView:vc.view];
@@ -589,7 +616,11 @@ static CGRect SPCurrentScreenBounds(void) {
     // 旋转：这台机器系统不发旋转通知（且方向 API 全失效），
     // 改用 0.5s 轮询物理方向，变了就重排。
     _lastPhysicalHorizontal = [self spIsPhysicallyHorizontal];
+    [_orientTimer invalidate];
+    _lastOrientationChangeAt = 0;
     _orientTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+        __strong typeof(wself) self = wself;
+        if (!self || !self->_active || self->_window != w) { [t invalidate]; return; }
         [self spPollOrientation];
     }];
 
@@ -635,13 +666,6 @@ static CGRect SPCurrentScreenBounds(void) {
     corner.cancelsTouchesInView = NO;
     [self.chrome addGestureRecognizer:corner];
 
-    _window = w;
-    _chrome = chrome;
-    _split = split;
-    _goingHome = NO;   // 新开分屏时复位
-    _topBundleID = [top copy];
-    _bottomBundleID = [bottom copy];
-
     // 关键：这里绝不等待 open 完成。
     // LSApplicationWorkspace.openApplicationWithBundleID: 实测阻塞 10 秒（日志实证），
     // 所以扔后台、立刻把两块面板搭起来，哪边有 scene 就先挂哪边，
@@ -652,7 +676,7 @@ static CGRect SPCurrentScreenBounds(void) {
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
-        if (!self || !self->_window) return;
+        if (!self || !self->_active || self->_window != w) return;
         // 实时画面（0.5.2 的做法）：抓真 scene、推容器尺寸让 App 自己重排版
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
@@ -675,7 +699,7 @@ static CGRect SPCurrentScreenBounds(void) {
         // 拿到的是错的参考尺寸 —— 结果就是「整张桌面缩放」或「缩成一小块」。
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             __strong typeof(wself) self2 = wself;
-            if (!self2 || !self2->_split) return;
+            if (!self2 || !self2->_active || self2->_window != w || self2->_split != split) return;
             [self2->_split setNeedsLayout];
             [self2->_split layoutIfNeeded];
             [self2 resizePanes];
@@ -736,14 +760,14 @@ static CGRect SPCurrentScreenBounds(void) {
     if (_suspended) { if (completion) completion(); return; }
     _suspended = YES;
 
-    CGRect screen = _window.windowScene ? _window.windowScene.coordinateSpace.bounds
-                                        : [UIScreen mainScreen].bounds;
+    CGRect screen = SPCurrentScreenBounds();
     CGFloat cw = screen.size.width * 0.42;
     CGFloat ch = screen.size.height * 0.40;
     CGRect f = CGRectMake(screen.size.width - cw - 18, screen.size.height - ch - 130, cw, ch);
     SPLog(@"float: 缩成悬浮小窗 %@", NSStringFromCGRect(f));
 
-    UIView *v = _window.rootViewController.view;
+    UIWindow *sessionWindow = _window;
+    UIView *v = sessionWindow.rootViewController.view;
     [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
         self->_window.frame = f;
         v.frame = self->_window.bounds;
@@ -756,6 +780,7 @@ static CGRect SPCurrentScreenBounds(void) {
         [self->_split setNeedsLayout];
         [self->_split layoutIfNeeded];
     } completion:^(BOOL finished) {
+        if (self->_window != sessionWindow || !self->_active) return;
         if (!self->_cardTap) {
             self->_cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
             [v addGestureRecognizer:self->_cardTap];
@@ -793,11 +818,12 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 
 - (void)resumeFromCardWithCompletion:(void (^)(void))completion {
     if (!_suspended || !_window) { if (completion) completion(); return; }
-    UIView *v = _window.rootViewController.view;
+    UIWindow *sessionWindow = _window;
+    UIView *v = sessionWindow.rootViewController.view;
     if (!v) { if (completion) completion(); return; }
 
-    CGRect full = _window.windowScene ? _window.windowScene.coordinateSpace.bounds
-                                      : [UIScreen mainScreen].bounds;
+    CGRect full = SPCurrentScreenBounds();
+    _lastPhysicalHorizontal = full.size.width > full.size.height;
     SPLog(@"resume: 小窗展开回全屏");
 
     // 窗口层级固定，不动（之前随状态改层级导致闪屏）
@@ -813,6 +839,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         [self->_split setNeedsLayout];
         [self->_split layoutIfNeeded];
     } completion:^(BOOL finished) {
+        if (self->_window != sessionWindow || !self->_active) return;
         self->_suspended = NO;
         self->_cardTap.enabled = NO;
         [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
@@ -925,7 +952,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 }
 
 - (void)swapTapped {
-    if (!_bottomBundleID.length || !_topBundleID.length) return;
+    if (!_active || !_topHost || !_bottomHost || !_bottomBundleID.length || !_topBundleID.length) return;
     SPLog(@"swapTapped: 原地交换（不拆窗口）");
 
     // ⚠️ 绝不能 stop → 重建。那样窗口会消失 0.45 秒，屏幕必然闪一下
@@ -947,9 +974,9 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     [_split setNeedsLayout];
     [_split layoutIfNeeded];
 
-    @try { [_topHost attachToContainer:_split.topContainer inWindowScene:_window.windowScene]; }
+    @try { [_topHost attachWhenReady:_split.topContainer inWindowScene:_window.windowScene attempts:8 interval:1.5]; }
     @catch (NSException *e) { SPLog(@"swap top attach ex %@", e.reason); }
-    @try { [_bottomHost attachToContainer:_split.bottomContainer inWindowScene:_window.windowScene]; }
+    @try { [_bottomHost attachWhenReady:_split.bottomContainer inWindowScene:_window.windowScene attempts:8 interval:1.5]; }
     @catch (NSException *e) { SPLog(@"swap bottom attach ex %@", e.reason); }
 
     [_topHost setFrameSize:_split.topContainer.bounds.size];
@@ -963,10 +990,12 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 }
 
 - (void)replaceTopWithBundleID:(NSString *)bundleID {
-    if (!_active || !bundleID.length) return;
+    if (![SPSettings enabled] || !_active || !_topHost || !bundleID.length) return;
     if ([bundleID isEqualToString:_topBundleID]) return;
+    if ([bundleID isEqualToString:_bottomBundleID]) { [self swapTapped]; return; }
     SPHost *fresh = [[SPHost alloc] initWithBundleID:bundleID];
     if (![fresh attachToContainer:_split.topContainer inWindowScene:_window.windowScene]) return;
+    [_topHost restoreOriginalSceneSettings];
     [_topHost detach];
     _topHost = fresh;
     _topBundleID = [bundleID copy];
@@ -984,6 +1013,17 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 #pragma mark 收工
 
 - (void)teardown {
+    ++_sessionGeneration;
+    [_orientTimer invalidate];
+    _orientTimer = nil;
+    _suspended = NO;
+    _homePanArmed = NO;
+    if (_cardTap) [_cardTap.view removeGestureRecognizer:_cardTap];
+    _cardTap = nil;
+    _doubleTapExit = nil;
+    _homeBar = nil;
+    _homeBarPill = nil;
+    _xferButton = nil;
     // 卡片窗口层级很高，不清理会一直挡在桌面上（也会挡点击）
     [SPParkCard dismissAll];
 
@@ -1033,6 +1073,8 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     _heartbeat = nil;
     _topHost = nil;
     _bottomHost = nil;
+    _topBundleID = nil;
+    _bottomBundleID = nil;
     _split = nil;
     _chrome = nil;
     UIWindow *w = _window;
@@ -1081,6 +1123,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     } @catch (__unused NSException *e) {}
 
     [self teardown];          // 内部先摘视图、再恢复 scene 尺寸、最后释放窗口
+    const NSUInteger exitGeneration = _sessionGeneration;
     SPLog(@"stop: window torn down, main=%@", main);
 
     // ⚠️ 先真回桌面。之前只 reactivateApp，窗口已经拆了但系统还没建好全屏呈现，
@@ -1096,6 +1139,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // homePress 返回 YES 但系统不一定真转场（日志实证），再补一条强制路径。
     // 稍等 0.15s：让窗口真正从窗口栈消失后再让系统转场，否则转场会被我们的窗口挡住。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self->_sessionGeneration != exitGeneration || self->_window) return;
         @try {
             BOOL f = [SPHost forceHomeScreen];
             SPLog(@"stop: forceHomeScreen=%d", (int)f);
@@ -1122,6 +1166,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         [SPHost reactivateApp:main];
         // 再补一次 settings 恢复：activate 之后系统会重新计算全屏布局
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self->_sessionGeneration != exitGeneration || self->_window) return;
             @try { [SPRepair restoreAllScenes]; } @catch (__unused NSException *e) {}
         });
     }

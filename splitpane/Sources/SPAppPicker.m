@@ -93,16 +93,42 @@ static NSArray<NSString *> *SPInstalledAppBundleIDs(void) {
 @property (nonatomic, strong) UIVisualEffectView *blur;
 @property (nonatomic, strong) UIView *card;
 @property (nonatomic, strong) UILabel *hintLabel;
+@property (nonatomic, assign) BOOL finishing;
+@property (nonatomic, assign) BOOL completed;
+- (void)completeWithBundleID:(NSString *)bundleID window:(UIWindow *)window;
 @end
 
 @implementation SPAppPicker
 
 static SPAppPicker *gPicker = nil;
 
-+ (BOOL)isPresenting { return gPicker != nil; }
++ (BOOL)isPresenting {
+    if (![NSThread isMainThread]) {
+        __block BOOL presenting = NO;
+        dispatch_sync(dispatch_get_main_queue(), ^{ presenting = [self isPresenting]; });
+        return presenting;
+    }
+    return gPicker != nil;
+}
+
++ (void)dismissIfPresent {
+    if (![NSThread isMainThread]) {
+        dispatch_sync(dispatch_get_main_queue(), ^{ [self dismissIfPresent]; });
+        return;
+    }
+    SPAppPicker *picker = gPicker;
+    // 即使处于选择后的退场动画中，强制回收也立即取消；旧 completion 会失效。
+    if (picker) [picker completeWithBundleID:nil window:picker.window];
+}
 
 + (void)presentFromWindowScene:(UIWindowScene *)scene bundleIDs:(NSArray *)extra
                         onPick:(void (^)(NSString *))onPick onCancel:(void (^)(void))onCancel {
+    if (![NSThread isMainThread]) {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            [self presentFromWindowScene:scene bundleIDs:extra onPick:onPick onCancel:onCancel];
+        });
+        return;
+    }
     if (gPicker) return;
     if (!scene) {
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
@@ -127,6 +153,13 @@ static SPAppPicker *gPicker = nil;
 
 - (void)buildInScene:(UIWindowScene *)scene {
     UIWindow *w = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelNormal + 3];
+    if (!w) {
+        [self completeWithBundleID:nil window:nil];
+        return;
+    }
+    _window = w;
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(registryDidReleaseWindow:)
+                                                 name:SPWindowRegistryDidReleaseWindowNotification object:w];
     w.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;
@@ -203,20 +236,62 @@ static SPAppPicker *gPicker = nil;
 }
 
 - (void)finishWithBundleID:(NSString *)bundleID {
-    if (!_window) return;
-    UIWindow *w = _window;
-    _window = nil;
-    gPicker = nil;
+    if (_completed || _finishing || !_window) return;
+    _finishing = YES;
+    UIWindow *window = _window;
+    window.rootViewController.view.userInteractionEnabled = NO;
     [UIView animateWithDuration:0.2 animations:^{
         self.blur.alpha = 0;
         self.grid.alpha = 0;
+        self.hintLabel.alpha = 0;
     } completion:^(BOOL finished) {
-        [SPWindowRegistry releaseWindow:w];
+        // 只允许此实例/此窗口提交终态，强制取消后不再碰 gPicker 或任何新窗。
+        if (!self.completed && self.window == window) {
+            [self completeWithBundleID:bundleID window:window];
+        }
     }];
-    if (bundleID && self.pickBlock) self.pickBlock(bundleID);
-    else if (self.cancelBlock) self.cancelBlock();
-    self.pickBlock = nil;
-    self.cancelBlock = nil;
+}
+
+- (void)registryDidReleaseWindow:(NSNotification *)notification {
+    if (_completed || notification.object != _window) return;
+    [self completeWithBundleID:nil window:_window];
+}
+
+- (void)completeWithBundleID:(NSString *)bundleID window:(UIWindow *)window {
+    if (_completed || _window != window) return;
+    _completed = YES;
+    _finishing = YES;
+    void (^pick)(NSString *) = [_pickBlock copy];
+    void (^cancel)(void) = [_cancelBlock copy];
+    _pickBlock = nil;
+    _cancelBlock = nil;
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                  name:SPWindowRegistryDidReleaseWindowNotification object:window];
+    _window = nil;
+    if (gPicker == self) gPicker = nil;
+    // 先置终态，再停止动画（停止可能同步触发旧 completion）。
+    [_blur.layer removeAllAnimations];
+    [_grid.layer removeAllAnimations];
+    [_hintLabel.layer removeAllAnimations];
+    _grid.dataSource = nil;
+    _grid.delegate = nil;
+    _grid = nil;
+    _blur = nil;
+    _card = nil;
+    _hintLabel = nil;
+    _items = nil;
+    // Registry 通知到这里时旧窗已摘除，不递归释放。
+    if ([SPWindowRegistry containsWindow:window]) [SPWindowRegistry releaseWindow:window];
+    // 业务回调放在最后，绝不能再以 killAll/旧动画清理回调中新建的分屏窗口。
+    if (bundleID) {
+        if (pick) pick(bundleID);
+    } else if (cancel) {
+        cancel();
+    }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 #pragma mark - 网格

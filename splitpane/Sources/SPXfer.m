@@ -1,35 +1,32 @@
 #import "SPXfer.h"
 #import <UIKit/UIKit.h>
 #import "SPHost.h"
-
-@interface SPXfer (Helper)
-+ (UIWindow *)topWindowInScene:(UIWindowScene *)scene;
-@end
+#import "SPWindowRegistry.h"
 
 @interface SPXferSheet : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, copy) NSString *targetBundleID;
 @property (nonatomic, strong) UIWindowScene *scene;
+@property (nonatomic, assign) NSUInteger presentationGeneration;
 @end
 
 @implementation SPXferSheet
 
 - (void)dismiss {
-    if (_window) {
-        _window.hidden = YES;
-        _window.rootViewController = nil;
-        _window.windowScene = nil;
-        _window = nil;
-    }
+    UIWindow *window = _window;
+    _window = nil;
+    _presentationGeneration++;
+    if (window && [SPWindowRegistry containsWindow:window]) [SPWindowRegistry releaseWindow:window];
 }
 
 - (void)presentInScene:(UIWindowScene *)scene target:(NSString *)bid {
     [self dismiss];
     _targetBundleID = [bid copy];
     _scene = scene;
+    _presentationGeneration++;
 
-    UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-    w.windowLevel = UIWindowLevelStatusBar + 200;
+    UIWindow *w = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelStatusBar + 200];
+    if (!w) return;
     w.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
     w.frame = scene.coordinateSpace.bounds;
     UIViewController *vc = [UIViewController new];
@@ -57,7 +54,7 @@
     sub.textColor = [UIColor colorWithWhite:1 alpha:0.45];
     [card addSubview:sub];
 
-    NSArray *opts = @[@"当前剪贴板", @"最近截图", @"选一个文件…"];
+    NSArray *opts = @[@"当前剪贴板", @"最近截图", @"交接当前剪贴板"];
     CGFloat y = 84;
     for (NSString *t in opts) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -109,21 +106,12 @@
             break;
         }
         default: {
-            // 选文件：走系统 document picker 或直接共享剪贴板内容
-            [self dismiss];
-            NSArray *items = nil;
-            if (pb.image) items = @[pb.image];
-            else if (pb.string.length) items = @[pb.string];
-            else if (pb.URL) items = @[pb.URL];
-            if (!items.count) { [self toastFromWindow:@"没东西可发"]; break; }
-            dispatch_async(dispatch_get_main_queue(), ^{
-                UIActivityViewController *avc =
-                    [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
-                UIWindow *host = [SPXfer topWindowInScene:_scene];
-                if (host && host.rootViewController) {
-                    [host.rootViewController presentViewController:avc animated:YES completion:nil];
-                }
-            });
+            // SpringBoard 内不弹系统分享控制器；保留内容并交接目标 App。
+            if (!(pb.hasStrings || pb.hasImages || pb.hasURLs)) {
+                [self toast:@"没东西可发"];
+                break;
+            }
+            [self handoff:@"当前剪贴板"];
             break;
         }
     }

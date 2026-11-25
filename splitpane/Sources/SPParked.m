@@ -3,6 +3,7 @@
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPGesture.h"
+#import "SPSettings.h"
 #import "SPHost.h"
 #import "SPPaneController.h"
 
@@ -39,16 +40,24 @@ static id gObserver = nil;
 @implementation SPParked
 
 static BOOL gPolling = NO;
+static NSUInteger gGeneration = 0;
+
++ (void)cancel {
+    ++gGeneration;
+    gArmed = NO;
+    gParked = nil;
+    gPolling = NO;
+}
 
 + (void)startPolling {
     if (gPolling) return;
     gPolling = YES;
-    __weak typeof(self) wself = self;
-    [self pollOnce: wself count:0];
+    [self pollOnce:@(gGeneration) count:0];
 }
 
-+ (void)pollOnce: (id)unused count: (NSInteger)n {
-    (void)unused;
++ (void)pollOnce:(NSNumber *)ticket count:(NSInteger)n {
+    if (ticket.unsignedIntegerValue != gGeneration) return;
+    if (![SPSettings enabled]) { [self cancel]; return; }
     if (!gArmed || !gParked || n > 40) { gPolling = NO; return; }
     @try {
         NSString *front = [[SPGesture shared] frontmostBundleID];
@@ -63,7 +72,7 @@ static BOOL gPolling = NO;
         }
     } @catch (__unused NSException *e) {}
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ [self pollOnce:nil count:n + 1]; });
+                   dispatch_get_main_queue(), ^{ [self pollOnce:ticket count:n + 1]; });
 }
 
 + (void)install {
@@ -95,6 +104,7 @@ static BOOL gPolling = NO;
 }
 
 + (void)handleBecameActive:(NSNotification *)n {
+    if (![SPSettings enabled]) { [self cancel]; return; }
     if (!gArmed || !gParked) return;
     NSString *bid = [self bundleIDFromNotification:n];
     if (!bid.length) return;
@@ -106,7 +116,9 @@ static BOOL gPolling = NO;
 }
 
 + (void)triggerSplitWith:(NSString *)bid {
+    if (![SPSettings enabled]) { [self cancel]; return; }
     if (!gArmed || !gParked) return;
+    const NSUInteger ticket = gGeneration;
     gArmed = NO;
 
     NSString *top = gParked.bundleID;
@@ -125,6 +137,7 @@ static BOOL gPolling = NO;
     // 稍等一下，让用户刚打开的 App 完成启动
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        if (ticket != gGeneration || ![SPSettings enabled] || SPPaneController.shared.active) return;
         SPLog(@"parked: start split top=%@ bottom=%@", top, bid);
         [SPPaneController.shared startWithTop:top bottom:bid windowScene:ws topSnapshot:snap];
     });
@@ -132,10 +145,13 @@ static BOOL gPolling = NO;
 
 // 上划到灵动岛高度松手 → 调用这里
 + (void)parkFrontmostApp {
+    if (![SPSettings enabled]) { [self cancel]; return; }
     if (SPPaneController.shared.active) {
         SPLog(@"parked: 已在分屏中，忽略");
         return;
     }
+    [self cancel];
+    const NSUInteger ticket = gGeneration;
     SPParkedSession *ps = [SPParkedSession new];
     ps.bundleID = [[SPGesture shared] frontmostBundleID];
     ps.at = CACurrentMediaTime();
@@ -154,6 +170,7 @@ static BOOL gPolling = NO;
     NSString *target = ps.bundleID;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        if (ticket != gGeneration || gParked != ps || ![SPSettings enabled]) return;
         BOOL bg = NO;
         @try { bg = [SPHost pushSceneToBackground:target]; }
         @catch (__unused NSException *e) {}
@@ -169,9 +186,8 @@ static BOOL gPolling = NO;
     // 15 秒没开新 App 就自动放弃
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (gArmed && gParked == ps) {
-            gArmed = NO;
-            gParked = nil;
+        if (ticket == gGeneration && gArmed && gParked == ps) {
+            [self cancel];
             SPLog(@"parked: 超时放弃");
         }
     });

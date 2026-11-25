@@ -5,6 +5,7 @@
 #import "SPCompat.h"
 #import "SPLog.h"
 #import "SPGesture.h"
+#import "SPSettings.h"
 #import "SPWindowRegistry.h"
 
 // ============================================================================
@@ -120,6 +121,8 @@ static NSString *SPTypeOf(id item) {
 static BOOL SPHandleShortcut(id item, NSString *bundleID, id iconView) {
     NSString *type = SPTypeOf(item);
     if (!SPIsOurType(type)) return NO;
+    // 已展示的旧菜单仍可能被点击：吞掉自有项，但停用后绝不启动。
+    if (![SPSettings enabled]) return YES;
 
     NSString *bid = bundleID.length ? bundleID : SPBundleIDForIconView(iconView);
     if (!bid.length) bid = SPBundleIDFromIcon(iconView);
@@ -130,7 +133,7 @@ static BOOL SPHandleShortcut(id item, NSString *bundleID, id iconView) {
     SPLog(@"icon menu -> split %@", bid);
     @try {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [[SPGesture shared] startSplitFromIconForBundleID:bid];
+            if ([SPSettings enabled]) [[SPGesture shared] startSplitFromIconForBundleID:bid];
         });
     } @catch (NSException *e) {
         SPLog(@"icon menu: start split ex %@", e.reason);
@@ -147,7 +150,18 @@ static BOOL SPTryHook(NSString *clsName, NSString *selName, IMP imp, IMP *orig) 
     Class cls = NSClassFromString(clsName);
     if (!cls) return NO;
     SEL sel = NSSelectorFromString(selName);
-    if (![cls instancesRespondToSelector:sel]) return NO;
+    if (![cls instancesRespondToSelector:sel] || !orig) return NO;
+    Method method = class_getInstanceMethod(cls, sel);
+    if (!method) return NO;
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    NSArray<NSString *> *parts = [selName componentsSeparatedByString:@":"];
+    NSUInteger count = parts.count - 1;
+    const char *ret = [selName containsString:@"shouldActivate"] ? @encode(BOOL) : "v";
+    if (sig.numberOfArguments != count + 2 || !SPType(sig.methodReturnType, ret)) return NO;
+    for (NSUInteger i = 0; i < count; ++i) {
+        const char *expected = [parts[i] isEqualToString:@"atIndex"] ? @encode(NSUInteger) : "@";
+        if (!SPType([sig getArgumentTypeAtIndex:i + 2], expected)) return NO;
+    }
     SPHookMsgExFn hook = (SPHookMsgExFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
     if (!hook) return NO;
     hook(cls, sel, imp, orig);
@@ -161,6 +175,7 @@ static SPShortcutItemsFn gOrigShortcutItems = NULL;
 
 static id SPHookedShortcutItems(id self, SEL _cmd) {
     id items = gOrigShortcutItems ? gOrigShortcutItems(self, _cmd) : nil;
+    if (![SPSettings enabled]) return items;
     @try {
         NSString *bid = SPBundleIDForIconView(self);
         if (!bid.length) return items;      // 文件夹 / 组件 之类，不注入
@@ -327,9 +342,9 @@ void SPInstallIconMenuHook(void) {
     // 兜底：老的 activate 系列（不同系统版本可能存在）
     n += SPTryHook(@"SBIconView",
                    @"activateShortcut:withBundleIdentifier:forIconView:",
-                   (IMP)SPOnActivateShortcut_IconView, NULL);
+                   (IMP)SPOnActivateShortcut_IconView, (IMP *)&gOrig_Act_IconView);
     n += SPTryHook(@"SBIconController",
                    @"activateShortcut:withBundleIdentifier:forIconView:",
-                   (IMP)SPOnActivateShortcut_Ctrl4, NULL);
+                   (IMP)SPOnActivateShortcut_Ctrl4, (IMP *)&gOrig_Act_Ctrl4);
     SPLog(@"icon menu: 入口 hooked %d", n);
 }

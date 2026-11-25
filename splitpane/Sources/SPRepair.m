@@ -30,40 +30,33 @@ static NSString *gReport = nil;
                 if (!scene) return;
                 id settings = SPMsg0(scene, @"settings");
                 if (!settings) return;
-                SEL fGet = NSSelectorFromString(@"frame");
-                if (![settings respondsToSelector:fGet]) return;
-                CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
+                if (!SPABI(settings, @"frame", @encode(CGRect), 0)) return;
+                CGRect f = SPRect0(settings, @"frame");
                 // 特征匹配：宽度≈屏幕宽，高度只有屏幕的 25%~60%（半屏分屏的痕迹）
                 if (f.size.width < 2) return;
                 if (fabs(f.size.width - screen.size.width) > 40) return;
                 CGFloat ratio = f.size.height / screen.size.height;
                 if (ratio >= 0.75 || ratio < 0.20) return;
-                id desired = SPMsg0(settings, @"mutableCopy");
-                if (!desired) return;
-                SEL setF = NSSelectorFromString(@"setFrame:");
-                if (![desired respondsToSelector:setF]) return;
-                ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setF,
-                    CGRectMake(0, 0, screen.size.width, screen.size.height));
-                SEL ioGet = NSSelectorFromString(@"interfaceOrientation");
-                if ([settings respondsToSelector:ioGet]) {
-                    NSInteger ori = ((NSInteger (*)(id, SEL))objc_msgSend)(settings, ioGet);
-                    SEL setIO = NSSelectorFromString(@"setInterfaceOrientation:");
-                    if ([desired respondsToSelector:setIO])
-                        ((void (*)(id, SEL, NSInteger))objc_msgSend)(desired, setIO, ori);
-                }
-                // 同样不动前台状态：修复只修尺寸
-                id imm = SPMsg0(desired, @"copy");
+                id desired = SPCopy0(settings, YES);
+                if (!desired || !SPABI(desired, @"setFrame:", "v", 1, @encode(CGRect))) return;
+                SPVoidRect1(desired, @"setFrame:", screen);
+                // 只修尺寸：方向和前后台状态一律沿用原 settings，不回写方向 setter。
+                id imm = SPCopy0(desired, NO);
                 SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
                 SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
-                if (imm && [scene respondsToSelector:upd]) {
+                BOOL sent = NO;
+                if (imm && SPABI(scene, @"updateSettings:withTransitionContext:completion:", "v", 3, "@", "@", "@")) {
                     ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, imm, nil, nil);
-                    fixed++;
-                } else if (imm && [scene respondsToSelector:upd2]) {
+                    sent = YES;
+                } else if (imm && SPABI(scene, @"updateSettings:withTransitionContext:", "v", 2, "@", "@")) {
                     ((void (*)(id, SEL, id, id))objc_msgSend)(scene, upd2, imm, nil);
-                    fixed++;
+                    sent = YES;
                 }
-                [r appendFormat:@"%@ %.0fx%.0f→full ", NSStringFromClass([scene class]),
-                 f.size.width, f.size.height];
+                if (sent) {
+                    fixed++;
+                    [r appendFormat:@"%@ %.0fx%.0f→full ", NSStringFromClass([scene class]),
+                     f.size.width, f.size.height];
+                }
             } @catch (__unused NSException *e) {}
         };
         ((void (*)(id, SEL, id))objc_msgSend)(mgr, enumSel, block);
