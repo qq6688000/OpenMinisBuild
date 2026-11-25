@@ -2,6 +2,10 @@
 #import <UIKit/UIKit.h>
 #import "SPHost.h"
 
+@interface SPXfer (Helper)
++ (UIWindow *)topWindowInScene:(UIWindowScene *)scene;
+@end
+
 @interface SPXferSheet : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, copy) NSString *targetBundleID;
