@@ -1,6 +1,6 @@
 Package: com.seagull.splitpane
 Name: SplitPane
-Version: 0.5.30
+Version: 0.6.0
 Architecture: iphoneos-arm64e
 Description: PV-style vertical split pane for iOS 16. Swipe up from the bottom home-bar strip to park the foreground app, pick a second app, and get a live top/bottom split with a draggable seam. True arm64e, springboard injected.
 Maintainer: Seagull

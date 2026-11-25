@@ -33,6 +33,7 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, assign) CGFloat splitRatio;
 @property (nonatomic, copy) void (^onSeamMoved)(void);
 @property (nonatomic, copy) void (^onSeamEnded)(void);
+@property (nonatomic, assign) BOOL singlePaneMode;   // 小窗态：只显示上半屏
 @end
 
 @implementation SPSplitView
@@ -70,6 +71,14 @@ static const CGFloat kMaxPaneRatio = 0.95;
     [super layoutSubviews];
     CGRect b = self.bounds;
     CGFloat usable = b.size.height;
+    if (_singlePaneMode) {
+        // 小窗态：上半屏铺满，下半屏和缝隙都不显示
+        _topContainer.frame = CGRectMake(0, 0, b.size.width, usable);
+        _seam.frame = CGRectZero;
+        _bottomContainer.frame = CGRectZero;
+        _grabber.frame = CGRectZero;
+        return;
+    }
     CGFloat topH = round((usable - kSeamHeight) * _splitRatio);
     // 容器必须铺满整个屏幕宽度，不留左右内边距（用户要求：容器也铺满全屏）
     CGFloat w = b.size.width;
@@ -215,7 +224,15 @@ void SPHostClearHostedBundleIDs(void);
 }
 
 - (void)homeBarTapped {
-    SPLog(@"homeBarTapped -> stop (back to home)");
+    // 新架构：点 Home 条 = 把分屏缩成桌面小窗，不拆窗口、不惊动系统。
+    // 这样桌面立刻可见（窗口本身变小了），而且分屏会话完整保留，点小窗就能回来。
+    SPLog(@"homeBarTapped -> suspend to floating card");
+    [self suspendToCardWithCompletion:nil];
+}
+
+- (void)closePaneTapped {
+    // 真正退出分屏（释放全部资源）：只有 × 按钮走这条路
+    SPLog(@"closePaneTapped -> stop (真正退出)");
     [self stopWithCompletion:nil];
 }
 
@@ -240,7 +257,7 @@ void SPHostClearHostedBundleIDs(void);
     close.layer.cornerRadius = d / 2.0;
     close.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
     close.autoresizingMask = UIViewAutoresizingFlexibleRightMargin;
-    [close addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
+    [close addTarget:self action:@selector(closePaneTapped) forControlEvents:UIControlEventTouchUpInside];
     close.layer.zPosition = 2000;
     [host addSubview:close];
 
@@ -483,43 +500,57 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 - (BOOL)suspendToCardWithCompletion:(void (^)(void))completion {
     if (!_active || !_window) return NO;
     if (_suspended) { if (completion) completion(); return YES; }
-    UIView *v = _window.rootViewController.view;
-    if (!v) return NO;
+
+    // ===== 新架构：把整个分屏窗口缩成一个桌面悬浮小窗 =====
+    // 关键点：
+    //   1) 不拆窗口、不摘 scene —— scene 一直在里面实时渲染
+    //   2) 完全不调用任何系统「回桌面」API —— 桌面自然会露出来
+    //      （窗口本身变小了，桌面上除了这一小块之外都是可见的）
+    //   3) 层级从 StatusBar+10 降到 StatusBar+100，让它浮在桌面之上但低于系统弹窗
+    //
+    // 旧方案是「先让系统回桌面，再想办法把 App 压下去」，这台机器上
+    // homePress 全链路不可靠（30 个方法名只有一个存在且转场无效），
+    // 所以彻底反过来做：我们不动系统，只动自己的窗口。
+
+    CGRect screen = _window.windowScene.coordinateSpace.bounds;
+    CGFloat cw = screen.size.width * 0.30;
+    CGFloat ch = screen.size.height * 0.30;
+    CGRect cardFrame = CGRectMake(screen.size.width - cw - 16,
+                                  screen.size.height - ch - 100,
+                                  cw, ch);
 
     _suspended = YES;
-    SPLog(@"suspend: 分屏缩成卡片");
+    SPLog(@"suspend: 缩成桌面悬浮小窗 frame=%@", NSStringFromCGRect(cardFrame));
 
-    CGRect target = [self cardRectInWindow];
-    CGFloat scale = kCardScale;
+    UIView *v = _window.rootViewController.view;
 
-    [UIView animateWithDuration:0.32 delay:0
+    [UIView animateWithDuration:0.30 delay:0
                         options:UIViewAnimationOptionCurveEaseInOut
                      animations:^{
-        v.transform = CGAffineTransformIdentity;
+        self->_window.frame = cardFrame;
         v.frame = self->_window.bounds;
-        v.transform = CGAffineTransformMakeScale(scale, scale);
-        v.center = CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target));
-        v.layer.cornerRadius = 26;
+        v.transform = CGAffineTransformIdentity;
+        v.layer.cornerRadius = 22;
         v.layer.cornerCurve = kCACornerCurveContinuous;
         v.clipsToBounds = YES;
-        v.layer.borderWidth = 2.0;
-        v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
+        v.layer.borderWidth = 1.5;
+        v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.22].CGColor;
+        self->_homeBar.hidden = YES;
+        // 小窗只有 129x280，两块半屏内容挤进去完全看不清。
+        // 改成：小窗里只留上半屏（缩比后正好是一张 App 卡片的样子），
+        // 下半屏暂时隐藏，展开时恢复。
+        [self->_split setNeedsLayout];
+        [self->_split layoutIfNeeded];
+        self->_split.singlePaneMode = YES;
+        [self->_split setNeedsLayout];
+        [self->_split layoutIfNeeded];
     } completion:^(BOOL finished) {
-        SPLog(@"suspend done rect=%@", NSStringFromCGRect(target));
-        // 把窗口本身也收成卡片大小：窗口还是全屏的话会一直盖着桌面，
-        // 用户既看不到图标也点不到（0.5.19 黑屏实证）。
-        // 这里只改窗口 frame，scene 仍在里面实时渲染。
-        self->_window.frame = target;
-        v.frame = self->_window.bounds;
-        v.transform = CGAffineTransformIdentity;
-        v.layer.cornerRadius = 26;
-        // 卡片态：点一下回到分屏
+        SPLog(@"suspend done 小窗已就位");
         if (!self->_cardTap) {
             self->_cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
             [v addGestureRecognizer:self->_cardTap];
         }
         self->_cardTap.enabled = YES;
-        self->_homeBar.hidden = YES;   // 卡片态不需要 home 条
         if (completion) completion();
     }];
     return YES;
@@ -530,27 +561,25 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     UIView *v = _window.rootViewController.view;
     if (!v) { if (completion) completion(); return; }
 
-    SPLog(@"resume: 卡片展开回分屏");
-    CGRect full = _window.windowScene ? _window.windowScene.coordinateSpace.bounds : [UIScreen mainScreen].bounds;
-    _window.frame = full;
-    CGRect b = _window.bounds;
+    CGRect full = _window.windowScene ? _window.windowScene.coordinateSpace.bounds
+                                      : [UIScreen mainScreen].bounds;
+    SPLog(@"resume: 小窗展开回全屏分屏");
 
-    [UIView animateWithDuration:0.30 delay:0
+    [UIView animateWithDuration:0.28 delay:0
                         options:UIViewAnimationOptionCurveEaseOut
                      animations:^{
+        self->_window.frame = full;
+        v.frame = self->_window.bounds;
         v.transform = CGAffineTransformIdentity;
-        v.frame = b;
-        v.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
         v.layer.cornerRadius = 0;
         v.layer.borderWidth = 0;
-    } completion:^(BOOL finished) {
-        v.transform = CGAffineTransformIdentity;
-        v.frame = b;
-        self->_suspended = NO;
-        self->_cardTap.enabled = NO;
         self->_homeBar.hidden = NO;
+        self->_split.singlePaneMode = NO;
         [self->_split setNeedsLayout];
         [self->_split layoutIfNeeded];
+    } completion:^(BOOL finished) {
+        self->_suspended = NO;
+        self->_cardTap.enabled = NO;
         [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
         [self->_bottomHost setFrameSize:self->_split.bottomContainer.bounds.size];
         SPLog(@"resume done");
