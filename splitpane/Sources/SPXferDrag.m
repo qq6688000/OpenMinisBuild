@@ -5,21 +5,23 @@
 
 static BOOL gDragging = NO;
 
+@interface SPXferDrag_DragSource : NSObject <UIDragInteractionDelegate>
+@property (nonatomic, weak) UIView *container;
+@property (nonatomic, weak) UIView *snapshotFrom;
+@property (nonatomic, copy) NSString *label;
+@end
+
 @interface SPXferDrag ()
 @property (nonatomic, weak) UIView *container;
 @property (nonatomic, copy) NSString *label;
 @property (nonatomic, strong) NSMutableArray *sessions;
 @end
 
-@interface SPXferDrag_DragSource : NSObject <UIDragInteractionDelegate>
-@property (nonatomic, weak) UIView *container;
-@property (nonatomic, copy) NSString *label;
-@end
 
 @implementation SPXferDrag_DragSource
 
 - (NSArray<UIDragItem *> *)dragInteraction:(UIDragInteraction *)interaction itemsForBeginningSession:(id<UIDragSession>)session {
-    UIView *src = self.container;
+    UIView *src = self.snapshotFrom ?: self.container;
     if (!src) return @[];
     UIImage *shot = nil;
     @try {
@@ -87,6 +89,19 @@ static const void *kDragSrcKey = &kDragSrcKey;
 }
 
 // 递归给整棵子树装 drop：容器 → split → pane → sceneView → 内部视图
++ (void)attachDragToView:(UIView *)view label:(NSString *)label snapshotFrom:(UIView *)snapshotFrom {
+    if (!view) return;
+    SPXferDrag_DragSource *ds = [SPXferDrag_DragSource new];
+    ds.container = view;
+    ds.snapshotFrom = snapshotFrom ?: view;
+    ds.label = label;
+    UIDragInteraction *drag = [[UIDragInteraction alloc] initWithDelegate:ds];
+    drag.enabled = YES;
+    [view addInteraction:drag];
+    objc_setAssociatedObject(view, &kDragSrcKey, ds, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    SPLog(@"xfer-drag: %@ 已装 drag 源（截图自 %@）", label, NSStringFromClass([ds.snapshotFrom class]));
+}
+
 + (void)installRecursivelyIn:(UIView *)view delegate:(id)del label:(NSString *)label depth:(NSInteger)depth {
     if (!view || depth > 8) return;
     if (!objc_getAssociatedObject(view, kDragInstalledKey)) {
