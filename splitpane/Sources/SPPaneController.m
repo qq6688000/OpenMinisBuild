@@ -149,6 +149,8 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, assign) BOOL homePanArmed;
 @property (nonatomic, assign) CGFloat homePanStartY;
 @property (nonatomic, strong) UITapGestureRecognizer *cardTap;
+@property (nonatomic, strong) UIView *homeBar;
+@property (nonatomic, strong) UIView *homeBarPill;
 @property (nonatomic, strong) SPHost *topHost;
 @property (nonatomic, strong) SPHost *bottomHost;
 @property (nonatomic, copy, readwrite) NSString *topBundleID;
@@ -175,6 +177,57 @@ void SPHostClearHostedBundleIDs(void);
 
 
 // 两侧悬浮按钮：× 贴左上、交换贴右上，压在上半屏画面之上（用户标记的位置）
+
+// 底部 Home 条：和系统那条长得一样，点一下 / 上划都回桌面。
+// 比劫持系统手势可靠得多 —— 系统 Home 手势在我们全屏窗口下面根本收不到，
+// 自建一条自己的，用户操作意图明确，也不和 App 内滚动打架。
+- (void)addHomeBarToView:(UIView *)host width:(CGFloat)width height:(CGFloat)height {
+    UIView *bar = [UIView new];
+    bar.frame = CGRectMake(0, height - 34, width, 34);
+    bar.backgroundColor = [UIColor clearColor];
+    bar.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    bar.layer.zPosition = 2500;
+    bar.userInteractionEnabled = YES;
+
+    // 视觉上仿系统 home 指示条
+    UIView *pill = [UIView new];
+    CGFloat pw = 140, ph = 5;
+    pill.frame = CGRectMake((width - pw) / 2.0, (34 - ph) / 2.0, pw, ph);
+    pill.backgroundColor = [UIColor colorWithWhite:1 alpha:0.55];
+    pill.layer.cornerRadius = ph / 2.0;
+    pill.userInteractionEnabled = NO;
+    [bar addSubview:pill];
+
+    // 点：回桌面
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(homeBarTapped)];
+    [bar addGestureRecognizer:tap];
+
+    // 上划：挂起成卡片
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(homeBarPanned:)];
+    pan.maximumNumberOfTouches = 1;
+    [bar addGestureRecognizer:pan];
+
+    [host addSubview:bar];
+    _homeBar = bar;
+    _homeBarPill = pill;
+    SPLog(@"home bar added y=%.0f w=%.0f", height - 34, width);
+}
+
+- (void)homeBarTapped {
+    SPLog(@"homeBarTapped -> stop (back to home)");
+    [self stopWithCompletion:nil];
+}
+
+- (void)homeBarPanned:(UIPanGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateEnded &&
+        g.state != UIGestureRecognizerStateChanged) return;
+    CGFloat dy = -[g translationInView:_window].y;
+    if (dy > 60) {
+        SPLog(@"homeBarPanned dy=%.0f -> suspend to card", dy);
+        [self suspendToCardWithCompletion:nil];
+    }
+}
+
 - (void)addFloatingButtonsToView:(UIView *)host width:(CGFloat)width {
     CGFloat d = 34.0;
 
@@ -278,6 +331,7 @@ void SPHostClearHostedBundleIDs(void);
     [vc.view addSubview:split];
     [vc.view bringSubviewToFront:chrome];
     [self addFloatingButtonsToView:vc.view width:w.bounds.size.width];
+    [self addHomeBarToView:vc.view width:w.bounds.size.width height:w.bounds.size.height];
 
     // 出口 1：三指下滑
     // 单指从底部上划 → 挂起成任务卡片（不退出分屏）
@@ -463,6 +517,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
             [v addGestureRecognizer:self->_cardTap];
         }
         self->_cardTap.enabled = YES;
+        self->_homeBar.hidden = YES;   // 卡片态不需要 home 条
         if (completion) completion();
     }];
     return YES;
@@ -491,6 +546,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         v.frame = b;
         self->_suspended = NO;
         self->_cardTap.enabled = NO;
+        self->_homeBar.hidden = NO;
         [self->_split setNeedsLayout];
         [self->_split layoutIfNeeded];
         [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
