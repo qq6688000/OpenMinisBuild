@@ -249,9 +249,23 @@ void SPHostClearHostedBundleIDs(void);
     SPLog(@"home bar added y=%.0f h=%.0f w=%.0f", height - barH, barH, width);
 }
 
+
+// 取当前方向的屏幕框：设备横屏时把 430x932 换成 932x430。
+// windowScene.coordinateSpace.bounds 不随旋转更新，必须自己换算。
+static CGRect SPCurrentScreenBounds(void) {
+    CGSize s = [UIScreen mainScreen].bounds.size;
+    UIDeviceOrientation o = [[UIDevice currentDevice] orientation];
+    if (o == UIDeviceOrientationLandscapeLeft || o == UIDeviceOrientationLandscapeRight) {
+        if (s.height > s.width) { CGFloat t = s.width; s.width = s.height; s.height = t; }
+    }
+    return CGRectMake(0, 0, s.width, s.height);
+}
+
 - (void)spOrientationChanged:(NSNotification *)n {
     if (!_window) return;
-    CGRect b = _window.windowScene ? _window.windowScene.coordinateSpace.bounds : [UIScreen mainScreen].bounds;
+    // ⚠️ windowScene.coordinateSpace.bounds 在旋转后仍然是竖屏尺寸（日志实证：横屏时读到 430x932），
+    // 不能用它判断方向。用设备方向 + 屏幕尺寸换算出真实屏幕框。
+    CGRect b = SPCurrentScreenBounds();
     SPLog(@"orientation changed -> window %@", NSStringFromCGRect(b));
     _window.frame = b;
     _window.rootViewController.view.frame = b;

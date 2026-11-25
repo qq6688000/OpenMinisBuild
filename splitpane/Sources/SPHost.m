@@ -590,16 +590,13 @@ static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
 // 之前固定竖屏 → 横屏下画面被压扁；按容器宽高比 → 竖屏下被误判横屏。
 // 唯一可靠的是「整个窗口场景的坐标空间尺寸」。
 static NSInteger SPDeviceOrientation(void) {
-    CGSize s = CGSizeZero;
-    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-        if ([NSStringFromClass([sc class]) containsString:@"Aperture"]) continue;
-        s = ((UIWindowScene *)sc).coordinateSpace.bounds.size;
-        break;
-    }
-    if (s.width < 2) s = [UIScreen mainScreen].bounds.size;
-    // UIInterfaceOrientation: 1=Portrait 4=PortraitUpsideDown 3=LandscapeRight 2=LandscapeLeft
-    return (s.width > s.height) ? 3 : 1;
+    // ⚠️ 不能用 windowScene.coordinateSpace.bounds —— 旋转后它仍是竖屏尺寸（日志实证）。
+    // UIDevice.orientation 才是真实方向。
+    UIDeviceOrientation o = [[UIDevice currentDevice] orientation];
+    if (o == UIDeviceOrientationLandscapeLeft)  return 3;   // UIInterfaceOrientationLandscapeRight
+    if (o == UIDeviceOrientationLandscapeRight) return 4;   // 注意与 UIKit 命名相反
+    if (o == UIDeviceOrientationPortraitUpsideDown) return 2;
+    return 1;   // Portrait（含 Unknown/FaceUp 兜底）
 }
 
 static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOOL touchForeground, NSString **diag) {
