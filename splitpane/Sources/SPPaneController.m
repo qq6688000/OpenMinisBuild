@@ -20,10 +20,10 @@
 static const CGFloat kChromeHeight = 0.0;
 static const CGFloat kSeamHeight = 26.0;  // 用户要求改回原来的宽度
 // 用户要求：分隔条可拖，但只有两个停靠位 —— 10/90 或 90/10
-static const CGFloat kMinPaneRatio = 0.10;
-static const CGFloat kMaxPaneRatio = 0.90;
-static const CGFloat kSnapLow = 0.10;    // 上半屏 10% / 下半屏 90%
-static const CGFloat kSnapHigh = 0.90;   // 上半屏 90% / 下半屏 10%
+static const CGFloat kMinPaneRatio = 0.05;
+static const CGFloat kMaxPaneRatio = 0.95;
+static const CGFloat kSnapLow = 0.05;    // 5% / 95%
+static const CGFloat kSnapHigh = 0.95;   // 95% / 5%
 static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 
 // ---------------------------------------------------------------- 接缝视图
@@ -89,7 +89,10 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
         // 横屏下高度只有 430，上下切毫无意义。
         CGFloat seam = kSeamHeight;
         CGFloat usableW = b.size.width - seam;
-        CGFloat topW = round(usableW * _splitRatio);
+        // 用户要求：横屏也用 5/95
+        CGFloat r = MAX(_splitRatio, 0.05);
+        r = MIN(r, 0.95);
+        CGFloat topW = round(usableW * r);
         _topContainer.frame = CGRectMake(0, 0, topW, b.size.height);
         _seam.frame = CGRectMake(topW, 0, seam, b.size.height);
         _bottomContainer.frame = CGRectMake(topW + seam, 0, usableW - topW, b.size.height);
@@ -195,6 +198,7 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 @property (nonatomic, strong) UIView *homeBarPill;
 @property (nonatomic, strong) UIView *cardBlur;
 @property (nonatomic, assign) BOOL lastPhysicalHorizontal;
+@property (nonatomic, assign) CFTimeInterval lastOrientationChangeAt;
 @property (nonatomic, strong) NSTimer *orientTimer;
 @property (nonatomic, assign) CGFloat supersededWindowLevel;
 @property (nonatomic, assign) CGAffineTransform supersededRootTransform;
@@ -310,6 +314,10 @@ static CGRect SPCurrentScreenBounds(void) {
     if (!_window || !_active) return;
     BOOL h = [self spIsPhysicallyHorizontal];
     if (h == _lastPhysicalHorizontal) return;
+    // 防抖：方向刚变过 1.5 秒内不再处理，否则重排会反过来影响判定，形成抖动
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - _lastOrientationChangeAt < 1.5) return;
+    _lastOrientationChangeAt = now;
     _lastPhysicalHorizontal = h;
     SPLog(@"physical orientation changed horizontal=%d", (int)h);
     [self spOrientationChanged:nil];
