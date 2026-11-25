@@ -1,4 +1,5 @@
 #import "SPHost.h"
+#import "SPXferDrag.h"
 #import <CoreMotion/CoreMotion.h>
 #import <math.h>
 #import "SPSettings.h"
@@ -1039,6 +1040,8 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     SPFitHostView(host, container, _referenceSize);
     _hostView = host;
     _attached = YES;
+    // sceneView 是 attach 时才建出来的，必须在此时补装 drop（PV 递归装到每层）
+    @try { [SPXferDrag attachToContainer:container label:_bundleID]; } @catch (__unused NSException *e) {}
     // 登记托管：SPScenePin 靠它判定哪些 scene 要保持前台（防闪回桌面）
     SPHostRegisterHostedBundleID(_bundleID);
     _live = YES;
