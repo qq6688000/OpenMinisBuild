@@ -517,19 +517,15 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // 只认「从底部区域起手 + 明显往上」的那一下，避免和 App 内滚动打架
     UIWindow *win = _window;
     if (!win) return;
-    // 统一用屏幕坐标，window 自己的 bounds 在缩小态下会变
-    CGSize screen = [UIScreen mainScreen].bounds.size;
+    // 手势挂在 window 上，locationInView:win 就是 window 坐标，直接用。
+    // 之前多转了一次 convertPoint:fromWindow:nil，结果永远得到 y=0（日志实证）。
     CGPoint p0 = [g locationInView:win];
-    if (win.windowScene) {
-        p0 = [g locationInView:nil];
-        CGPoint inWin = [win convertPoint:p0 fromWindow:nil];
-        p0 = inWin;
-    }
     switch (g.state) {
         case UIGestureRecognizerStateBegan: {
             _homePanStartY = p0.y;
             // 从屏幕底部 140pt 内起手才算「上划回桌面」
-            _homePanArmed = (p0.y >= win.bounds.size.height - 140);
+            // 起手在底部 200pt 内，或者干脆不限位置（用户可能从任意处上划）
+            _homePanArmed = (p0.y >= win.bounds.size.height - 200);
             SPLog(@"homePan began y=%.0f h=%.0f armed=%d", p0.y, win.bounds.size.height, (int)_homePanArmed);
             break;
         }
@@ -537,6 +533,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
             if (!_homePanArmed) return;
             CGFloat dy = _homePanStartY - p0.y;   // 往上为正值
             if (dy > 90) {
+                SPLog(@"homePan dy=%.0f 触发挂起", dy);
                 _homePanArmed = NO;
                 SPLog(@"homePan -> suspend to card (dy=%.0f)", dy);
                 [self suspendToCardWithCompletion:nil];
