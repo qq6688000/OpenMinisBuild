@@ -285,8 +285,11 @@ void SPHostClearHostedBundleIDs(void);
     //    那个 hook 根本收不到（0.5.19 日志实证：一次 pan 都没有）。
     // 用 pan 而不是 swipe：swipe 要等 App 的 sceneView 放行才收得到，
     // 实测（0.5.20 日志）一次都没触发。pan + cancelsTouchesInView=NO 能先抓到手指。
-    UIPanGestureRecognizer *homeUp = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(homePanned:)];
-    homeUp.minimumNumberOfTouches = 1;
+    // 用屏幕边缘手势：从底边 40pt 内起手才算，正是系统 Home 手势的原始区域。
+    // 这样不会和 App 内的列表滚动打架（普通 pan 从画面中间滑会误触）。
+    UIScreenEdgePanGestureRecognizer *homeUp =
+        [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(homePanned:)];
+    homeUp.edges = UIRectEdgeBottom;
     homeUp.maximumNumberOfTouches = 1;
     homeUp.cancelsTouchesInView = NO;
     homeUp.delaysTouchesBegan = NO;
@@ -513,7 +516,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 - (void)spKeyboardShow:(NSNotification *)n { (void)n; }
 - (void)spKeyboardHide:(NSNotification *)n { (void)n; }
 
-- (void)homePanned:(UIPanGestureRecognizer *)g {
+- (void)homePanned:(UIScreenEdgePanGestureRecognizer *)g {
     // 只认「从底部区域起手 + 明显往上」的那一下，避免和 App 内滚动打架
     UIWindow *win = _window;
     if (!win) return;
@@ -524,15 +527,16 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         case UIGestureRecognizerStateBegan: {
             _homePanStartY = p0.y;
             // 从屏幕底部 140pt 内起手才算「上划回桌面」
-            // 起手在底部 200pt 内，或者干脆不限位置（用户可能从任意处上划）
-            _homePanArmed = (p0.y >= win.bounds.size.height - 200);
+            // 不再限制起手位置：用户从画面中间往上划也应该能挂起。
+            // （0.5.26 日志实证：起手 y=458，被 200pt 的底部判定挡掉了）
+            _homePanArmed = YES;
             SPLog(@"homePan began y=%.0f h=%.0f armed=%d", p0.y, win.bounds.size.height, (int)_homePanArmed);
             break;
         }
         case UIGestureRecognizerStateChanged: {
             if (!_homePanArmed) return;
             CGFloat dy = _homePanStartY - p0.y;   // 往上为正值
-            if (dy > 90) {
+            if (dy > 140) {   // 位移阈值，避免和 App 内滚动混淆
                 SPLog(@"homePan dy=%.0f 触发挂起", dy);
                 _homePanArmed = NO;
                 SPLog(@"homePan -> suspend to card (dy=%.0f)", dy);
@@ -691,6 +695,21 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     NSString *savedTop = _topBundleID;
     NSString *savedBottom = _bottomBundleID;
     UIWindowScene *savedWindowScene = _window.windowScene;   // 拆窗前存下来
+    // windowScene 可能是 Aperture（灵动岛），换成分屏窗口所在的那个正常场景
+    if (savedWindowScene) {
+        NSString *cn = NSStringFromClass([savedWindowScene class]);
+        if ([cn containsString:@"Aperture"]) savedWindowScene = nil;
+    }
+    if (!savedWindowScene) {
+        // 兜底：任一非 Aperture 的 UIWindowScene
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            NSString *cn = NSStringFromClass([sc class]);
+            if ([cn containsString:@"Aperture"]) continue;
+            savedWindowScene = (UIWindowScene *)sc;
+            break;
+        }
+    }
     _active = NO;
 
     // ⚠️ 先立刻 hidden，让屏幕立刻露出底下的东西。
