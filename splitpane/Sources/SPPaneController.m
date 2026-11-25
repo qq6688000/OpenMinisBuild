@@ -162,6 +162,9 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, strong) UIView *homeBar;
 @property (nonatomic, strong) UIView *homeBarPill;
 @property (nonatomic, strong) UIView *cardBlur;
+@property (nonatomic, assign) CGFloat supersededWindowLevel;
+@property (nonatomic, assign) CGAffineTransform supersededRootTransform;
+@property (nonatomic, assign) CGRect supersededRootFrame;
 @property (nonatomic, strong) UITapGestureRecognizer *doubleTapExit;
 @property (nonatomic, strong) SPHost *topHost;
 @property (nonatomic, strong) SPHost *bottomHost;
@@ -515,80 +518,47 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     if (!_active || !_window) return NO;
     if (_suspended) { if (completion) completion(); return YES; }
 
-    // ===== 新架构：把整个分屏窗口缩成一个桌面悬浮小窗 =====
-    // 关键点：
-    //   1) 不拆窗口、不摘 scene —— scene 一直在里面实时渲染
-    //   2) 完全不调用任何系统「回桌面」API —— 桌面自然会露出来
-    //      （窗口本身变小了，桌面上除了这一小块之外都是可见的）
-    //   3) 层级从 StatusBar+10 降到 StatusBar+100，让它浮在桌面之上但低于系统弹窗
+    // ===== 照 InteractivePiP Duo 的 parkSessionInAppSwitcher 做 =====
+    // Duo 源码注释（DPWindowManager.m）：
+    //   "Hide the overlay completely. Lowering the level and keeping it visible
+    //    left a solid black rectangle ... sitting on top of the home screen.
+    //    The session itself stays alive in memory, so nothing has to be rebuilt."
     //
-    // 旧方案是「先让系统回桌面，再想办法把 App 压下去」，这台机器上
-    // homePress 全链路不可靠（30 个方法名只有一个存在且转场无效），
-    // 所以彻底反过来做：我们不动系统，只动自己的窗口。
-
-    CGRect screen = _window.windowScene.coordinateSpace.bounds;
-    // 参照系统 App 切换器的任务卡片形态（用户截图）：
-    //   占满全屏高度，宽度约 76%，居中略偏右，顶部留出状态栏，底部留出 Dock。
-    CGFloat cw = screen.size.width * 0.76;
-    CGFloat ch = screen.size.height * 0.88;
-    CGRect cardFrame = CGRectMake(screen.size.width - cw - 26,   // 右侧留一点，露出上一张卡片
-                                  (screen.size.height - ch) / 2.0,
-                                  cw, ch);
+    // 也就是说：真正要做的不是「做一张好看的卡片挂上去」（那永远挡视野），
+    // 而是把整个 overlay 窗口 hidden 掉 —— 屏幕完全交还给系统桌面/切换器。
+    // 分屏里那两块 App 的 scene 仍然活着（宿主视图只置 alpha=0），
+    // 用户下次打开系统 App 切换器时，看到的就是这两个真实运行的 App 卡片。
 
     _suspended = YES;
-    SPLog(@"suspend: 缩成任务卡片 frame=%@", NSStringFromCGRect(cardFrame));
+    SPLog(@"suspend: 分屏停靠到后台（窗口完全隐藏）");
 
-    // 卡片态铺一层毛玻璃背景：系统 App 切换器是这个观感
-    if (!_cardBlur) {
-        UIBlurEffect *eff = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:eff];
-        blur.frame = _window.bounds;
-        blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        blur.userInteractionEnabled = NO;
-        blur.alpha = 0;
-        [_window insertSubview:blur atIndex:0];
-        _cardBlur = blur;
-    }
-    _cardBlur.hidden = NO;
-    _cardBlur.alpha = 0;
+    _supersededWindowLevel = _window.windowLevel;
+    _supersededRootTransform = _window.rootViewController.view.transform;
+    _supersededRootFrame = _window.rootViewController.view.frame;
 
     UIView *v = _window.rootViewController.view;
 
-    [UIView animateWithDuration:0.30 delay:0
-                        options:UIViewAnimationOptionCurveEaseInOut
+    [UIView animateWithDuration:0.18 delay:0
+                        options:UIViewAnimationOptionCurveEaseIn
                      animations:^{
-        self->_window.frame = cardFrame;
-        v.frame = self->_window.bounds;
-        v.transform = CGAffineTransformIdentity;
-        v.layer.cornerRadius = 44;
-        v.layer.cornerCurve = kCACornerCurveContinuous;
-        v.clipsToBounds = YES;
-        v.layer.borderWidth = 0;
-        // 系统卡片有明显的投影，加一个看起来才像
-        v.layer.shadowColor = [UIColor blackColor].CGColor;
-        v.layer.shadowOpacity = 0.45;
-        v.layer.shadowRadius = 30;
-        v.layer.shadowOffset = CGSizeMake(0, 12);
-        self->_window.layer.shadowColor = [UIColor blackColor].CGColor;
-        self->_window.layer.shadowOpacity = 0.5;
-        self->_window.layer.shadowRadius = 34;
-        self->_window.layer.shadowOffset = CGSizeMake(0, 14);
-        self->_homeBar.hidden = YES;
-        // 小窗只有 129x280，两块半屏内容挤进去完全看不清。
-        // 改成：小窗里只留上半屏（缩比后正好是一张 App 卡片的样子），
-        // 下半屏暂时隐藏，展开时恢复。
-        [self->_split setNeedsLayout];
-        [self->_split layoutIfNeeded];
-        self->_split.singlePaneMode = YES;
-        [self->_split setNeedsLayout];
-        [self->_split layoutIfNeeded];
+        v.alpha = 0.0;
     } completion:^(BOOL finished) {
-        SPLog(@"suspend done 小窗已就位");
-        if (!self->_cardTap) {
-            self->_cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
-            [v addGestureRecognizer:self->_cardTap];
-        }
-        self->_cardTap.enabled = YES;
+        // 会话保持活着，只是不在屏幕上：窗口 hidden + 层级降到 Normal
+        self->_window.hidden = YES;
+        self->_window.windowLevel = UIWindowLevelNormal;
+        v.transform = CGAffineTransformIdentity;
+        v.frame = self->_window.bounds;
+        v.layer.cornerRadius = 0;
+        v.layer.shadowOpacity = 0;
+        self->_window.layer.shadowOpacity = 0;
+        self->_cardBlur.hidden = YES;
+        self->_cardBlur.alpha = 0;
+        // 窗口没了，但两个 App 的 scene 可能还被认为是前台，
+        // 那样桌面仍然不出现。把它们推成后台，SpringBoard 才会显示桌面/切换器。
+        NSString *t = self->_topBundleID, *b = self->_bottomBundleID;
+        if (t.length) @try { [SPHost pushSceneToBackground:t]; } @catch (__unused NSException *e) {}
+        if (b.length) @try { [SPHost pushSceneToBackground:b]; } @catch (__unused NSException *e) {}
+        SPLog(@"suspend done: 桌面完全交还给系统 (bg top=%@ bottom=%@)", t, b);
         if (completion) completion();
     }];
     return YES;
@@ -601,26 +571,25 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 
     CGRect full = _window.windowScene ? _window.windowScene.coordinateSpace.bounds
                                       : [UIScreen mainScreen].bounds;
-    SPLog(@"resume: 小窗展开回全屏分屏");
+    SPLog(@"resume: 从后台恢复分屏");
 
-    [UIView animateWithDuration:0.28 delay:0
+    _window.frame = full;
+    v.frame = _window.bounds;
+    v.transform = CGAffineTransformIdentity;
+    v.layer.cornerRadius = 0;
+    v.alpha = 0.0;
+    _window.windowLevel = _supersededWindowLevel ?: (UIWindowLevelStatusBar + 10);
+    _window.hidden = NO;
+    _homeBar.hidden = NO;
+    _split.singlePaneMode = NO;
+    [_split setNeedsLayout];
+    [_split layoutIfNeeded];
+
+    [UIView animateWithDuration:0.22 delay:0
                         options:UIViewAnimationOptionCurveEaseOut
-                     animations:^{
-        self->_window.frame = full;
-        v.frame = self->_window.bounds;
-        v.transform = CGAffineTransformIdentity;
-        v.layer.cornerRadius = 0;
-        v.layer.borderWidth = 0;
-        v.layer.shadowOpacity = 0;
-        self->_window.layer.shadowOpacity = 0;
-        self->_cardBlur.alpha = 0;
-        self->_homeBar.hidden = NO;
-        self->_split.singlePaneMode = NO;
-        [self->_split setNeedsLayout];
-        [self->_split layoutIfNeeded];
-    } completion:^(BOOL finished) {
+                     animations:^{ v.alpha = 1.0; }
+                     completion:^(BOOL finished) {
         self->_suspended = NO;
-        self->_cardTap.enabled = NO;
         [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
         [self->_bottomHost setFrameSize:self->_split.bottomContainer.bounds.size];
         SPLog(@"resume done");
