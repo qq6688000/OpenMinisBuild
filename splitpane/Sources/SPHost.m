@@ -597,9 +597,11 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
         if (![desired respondsToSelector:setFrameSel]) { if (diag) *diag = @"no-setFrame"; return NO; }
         ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setFrameSel,
             CGRectMake(0, 0, pane.width, pane.height));
-        SPSetI(desired, @"setInterfaceOrientation:", orient);
-        NSInteger dev = SPInt0(settings, @"deviceOrientation");
-        SPSetI(desired, @"setDeviceOrientation:", dev);
+        // ⚠️ 这里绝不能设 interfaceOrientation / deviceOrientation！
+        // 每次推尺寸都写一次方向字段，系统会判定为「发生转屏」，
+        // 于是把整个界面转 90 度，并把我们容器的 bounds 交换成 932x309
+        // （0.7.6 日志实证：attach 时 430x453，拖动后 resize 变成 932x309）。
+        // 方向保持系统原值即可，分屏容器只是屏幕的一部分，不构成转屏。
         // 前台化，否则后台 scene 停渲染。恢复时绝不做 ——
         // 退出后把 App 推进前台会把桌面挡在后面，表现就是「桌面点不了」。
         SEL fgGet = NSSelectorFromString(@"isForeground");
@@ -686,13 +688,18 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 用户要求：App 的底栏（任务/消息那些 tab）必须完整可见。
     // 所以用 fit（MIN 缩放）：整个 App 界面缩进容器，上下都不裁。
     // 之前用 MAX（cover）会把底部 tab 栏切掉 —— 这是用户截图里看不到底栏的原因。
+    // host 的 bounds 用 reference（推给 scene 的尺寸），容器实际尺寸可能已变，
+    // 所以按实际比例缩放（fit：完整显示、不裁切、不变形）。
+    // 注意顺序：先设 identity + bounds，再设 transform，最后设 center，否则居中会算错。
+    CGFloat sx = target.width / reference.width;
+    CGFloat sy = target.height / reference.height;
+    CGFloat scale = MIN(sx, sy);
+
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0, 0, reference.width, reference.height);
-    host.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    // scene 已经按容器尺寸排版了，这里 1:1 放置即可（不缩放、不裁切、不留边）
-    CGFloat scale = 1.0;
-    container.clipsToBounds = YES;
     host.transform = CGAffineTransformMakeScale(scale, scale);
+    host.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    container.clipsToBounds = YES;
 }
 
 
