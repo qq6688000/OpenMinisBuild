@@ -11,9 +11,60 @@ static BOOL gDragging = NO;
 @property (nonatomic, strong) NSMutableArray *sessions;
 @end
 
+@interface SPXferDrag_DragSource : NSObject <UIDragInteractionDelegate>
+@property (nonatomic, weak) UIView *container;
+@property (nonatomic, copy) NSString *label;
+@end
+
+@implementation SPXferDrag_DragSource
+
+- (NSArray<UIDragItem *> *)dragInteraction:(UIDragInteraction *)interaction itemsForBeginningSession:(id<UIDragSession>)session {
+    UIView *src = self.container;
+    if (!src) return @[];
+    UIImage *shot = nil;
+    @try {
+        UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:src.bounds.size];
+        shot = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            [src drawViewHierarchyInRect:src.bounds afterScreenUpdates:NO];
+        }];
+    } @catch (__unused NSException *e) {}
+    if (!shot) return @[];
+    NSItemProvider *p = [[NSItemProvider alloc] initWithObject:shot];
+    UIDragItem *item = [[UIDragItem alloc] initWithItemProvider:p];
+    item.localObject = shot;
+    SPLog(@"xfer-drag[%@]: 发起拖拽 %.0fx%.0f", self.label, shot.size.width, shot.size.height);
+    return @[item];
+}
+
+- (UITargetedDragPreview *)dragInteraction:(UIDragInteraction *)interaction previewForLiftingItem:(UIDragItem *)item session:(id<UIDragSession>)session {
+    UIImage *img = item.localObject;
+    UIImageView *iv = [[UIImageView alloc] initWithImage:img];
+    iv.frame = CGRectMake(0, 0, 200, 200);
+    iv.contentMode = UIViewContentModeScaleAspectFill;
+    iv.clipsToBounds = YES;
+    iv.layer.cornerRadius = 12;
+    iv.alpha = 0.92;
+    UIPreviewParameters *params = [UIPreviewParameters new];
+    params.backgroundColor = [UIColor clearColor];
+    return [[UITargetedDragPreview alloc] initWithView:iv parameters:params target:nil];
+}
+
+- (void)dragInteraction:(UIDragInteraction *)interaction sessionWillBegin:(id<UIDragSession>)session {
+    gDragging = YES;
+    SPLog(@"xfer-drag[%@]: 拖拽开始", _label);
+}
+
+- (void)dragInteraction:(UIDragInteraction *)interaction sessionDidEnd:(id<UIDragSession>)session {
+    gDragging = NO;
+    SPLog(@"xfer-drag[%@]: 拖拽结束", _label);
+}
+
+@end
+
 @implementation SPXferDrag
 
 static const void *kDragInstalledKey = &kDragInstalledKey;
+static const void *kDragSrcKey = &kDragSrcKey;
 
 + (BOOL)dragging { return gDragging; }
 
@@ -73,7 +124,19 @@ static const void *kDragInstalledKey = &kDragInstalledKey;
     // 而是递归装到内部每一层 —— 否则触摸命中的是 sceneView 内部视图，
     // 系统根本不会把 drop 送到我们的容器上。
     [self installRecursivelyIn:container delegate:d label:label depth:0];
-    SPLog(@"xfer-drag: 容器 %@ 已装拖放(递归)", label);
+
+    // App 自身没有 UIDragInteraction 时，拖拽根本发起不了。
+    // 我们自己给容器装一个 UIDragInteraction：双指长按 0.5s 就把当前画面
+    // 做成一张可拖拽的图片，用户拖到另一半就能放下。
+    SPXferDrag_DragSource *ds = [SPXferDrag_DragSource new];
+    ds.container = container;
+    ds.label = label;
+    UIDragInteraction *drag = [[UIDragInteraction alloc] initWithDelegate:ds];
+    drag.enabled = YES;
+    [container addInteraction:drag];
+    objc_setAssociatedObject(container, &kDragSrcKey, ds, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    SPLog(@"xfer-drag: 容器 %@ 已装拖放(递归) + 自定义 drag", label);
     // 探测：这个子树里本来有没有系统的 drag interaction（App 自己是否支持长按拖动）
     [self dumpInteractionsIn:container label:label depth:0];
 }
@@ -132,7 +195,7 @@ static const void *kDragInstalledKey = &kDragInstalledKey;
 #pragma mark - 转发
 
 - (UIView *)deepestViewInContainerAtPoint:(CGPoint)p {
-    UIView *v = _container;
+    UIView *v = self.container;
     while (v) {
         UIView *next = nil;
         for (UIView *sub in v.subviews.reverseObjectEnumerator) {

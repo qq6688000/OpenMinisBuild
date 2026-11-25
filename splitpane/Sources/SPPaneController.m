@@ -364,9 +364,15 @@ static CGRect SPCurrentScreenBounds(void) {
     b.layer.zPosition = 2600;
     b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [b addTarget:self action:@selector(xferTapped) forControlEvents:UIControlEventTouchUpInside];
-    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(xferLongPressed:)];
-    lp.minimumPressDuration = 0.6;
-    [b addGestureRecognizer:lp];
+    // 长按兜底挂在窗口上，整块画面都能触发（按钮太小不好按）
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                                                     action:@selector(xferLongPressed:)];
+    lp.minimumPressDuration = 0.9;
+    lp.numberOfTouchesRequired = 2;     // 双指长按，避免和 App 自己的长按冲突
+    lp.cancelsTouchesInView = NO;
+    lp.delegate = (id<UIGestureRecognizerDelegate>)self;
+    [host.window addGestureRecognizer:lp];
+    SPLog(@"xfer longpress(2指) installed");
     [host addSubview:b];
     _xferButton = b;
     SPLog(@"xfer button added");
