@@ -796,6 +796,19 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     UIWindowScene *ownScene = savedWindowScene;
     @try { wentHome = [SPHost homePressInWindowScene:ownScene]; } @catch (__unused NSException *e) {}
     if (!wentHome) @try { wentHome = [SPHost homePress]; } @catch (__unused NSException *e) {}
+    // homePress 返回 YES 但系统不一定真转场（日志实证），再补一条强制路径。
+    // 稍等 0.15s：让窗口真正从窗口栈消失后再让系统转场，否则转场会被我们的窗口挡住。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @try {
+            BOOL f = [SPHost forceHomeScreen];
+            SPLog(@"stop: forceHomeScreen=%d", (int)f);
+        } @catch (__unused NSException *e) {}
+        // 再补一次 homePress（这次窗口已经彻底没了）
+        @try {
+            BOOL h2 = [SPHost homePress];
+            SPLog(@"stop: homePress retry=%d", (int)h2);
+        } @catch (__unused NSException *e) {}
+    });
     SPLog(@"stop: homePress=%d (diag=%@)", (int)wentHome, [SPHost homePressDiag]);
 
     // 兜底 1：直接把两个 App 的 scene 推成后台，SpringBoard 自会显示桌面。

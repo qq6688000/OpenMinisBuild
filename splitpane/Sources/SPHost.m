@@ -254,6 +254,43 @@ static NSMutableSet *gHomeTried = nil;
     }
 }
 
+
+// 回桌面的第 3 条路：直接命令切换器回桌面。
+// homePress 调用不抛异常（=1）但 SpringBoard 不一定真的转场（0.5.29 日志实证）。
+// SBUIController 另有 handleHomeButtonDoublePressDown / 而 coordinator 上有
+// dismissMainSwitcherNoninteractivelyAnimated: 和 activateMainSwitcherNoninteractivelyWithSource:animated:
++ (BOOL)forceHomeScreen {
+    // 1) SBUIController 的双击 Down/Up 序列（等效连按两次 home）
+    Class uic = NSClassFromString(@"SBUIController");
+    id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
+    for (NSString *sn in @[@"handleHomeButtonDoublePressDown", @"handleHomeButtonDoublePressUp"]) {
+        SEL sel = NSSelectorFromString(sn);
+        if (ui && [ui respondsToSelector:sel]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(ui, sel); SPLog(@"forceHome via %@", sn); return YES; }
+            @catch (__unused NSException *e) {}
+        }
+    }
+    // 2) coordinator：先让切换器显示桌面（activated 状态为 home）
+    Class cc = NSClassFromString(@"SBMainSwitcherControllerCoordinator");
+    id coord = cc ? SPMsg0(cc, @"sharedInstance") : nil;
+    if (coord) {
+        SEL d = NSSelectorFromString(@"dismissMainSwitcherNoninteractivelyAnimated:");
+        if ([coord respondsToSelector:d]) {
+            @try { ((void (*)(id, SEL, BOOL))objc_msgSend)(coord, d, NO);
+                    SPLog(@"forceHome via dismissMainSwitcher"); return YES; }
+            @catch (__unused NSException *e) {}
+        }
+        SEL a = NSSelectorFromString(@"activateMainSwitcherNoninteractivelyWithSource:animated:");
+        if ([coord respondsToSelector:a]) {
+            @try { ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(coord, a, 0, NO);
+                    SPLog(@"forceHome via activateMainSwitcher"); return YES; }
+            @catch (__unused NSException *e) {}
+        }
+    }
+    SPLog(@"forceHome: none available");
+    return NO;
+}
+
 + (BOOL)homePressInWindowScene:(UIWindowScene *)ws {
     if (!ws) return NO;
     Class uic = NSClassFromString(@"SBUIController");
