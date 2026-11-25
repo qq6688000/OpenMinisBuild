@@ -225,6 +225,35 @@ static NSMutableSet *gHomeTried = nil;
     return gHomeTried.count ? [[gHomeTried allObjects] componentsJoinedByString:@","] : @"none";
 }
 
+
+// 一次性把 SBUIController / SBMainWorkspace 上所有含 home/menu/返回 的方法打出来，
+// 用于定名（不再猜）。
++ (void)dumpHomeAPIs {
+    NSArray *classes = @[@"SBUIController", @"SBMainWorkspace", @"SBHomeScreenController",
+                         @"SBMainSwitcherControllerCoordinator", @"SBWorkspace"];
+    for (NSString *cn in classes) {
+        Class c = NSClassFromString(cn);
+        if (!c) { SPLog(@"homeAPI %@ = nil", cn); continue; }
+        NSMutableArray *hits = [NSMutableArray array];
+        unsigned int n = 0;
+        Method *ms = class_copyMethodList(c, &n);
+        for (unsigned int i = 0; i < n; i++) {
+            const char *nm = sel_getName(method_getName(ms[i]));
+            if (!nm) continue;
+            NSString *s = @(nm);
+            if ([s rangeOfString:@"ome" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [s rangeOfString:@"enu" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [s rangeOfString:@"xpose" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [s rangeOfString:@"witch" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                [hits addObject:s];
+            }
+        }
+        free(ms);
+        SPLog(@"homeAPI %@(%lu): %@", cn, (unsigned long)hits.count,
+              [hits componentsJoinedByString:@" | "]);
+    }
+}
+
 + (BOOL)homePress {
     static NSArray *classes = nil;
     static NSArray *sels = nil;

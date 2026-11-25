@@ -694,12 +694,23 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     NSString *savedTop = _topBundleID;
     NSString *savedBottom = _bottomBundleID;
     _active = NO;
+
+    // ⚠️ 先立刻 hidden，让屏幕立刻露出底下的东西。
+    // teardown 里要先摘视图、恢复 scene 尺寸再释放窗口，这几步有耗时，
+    // 期间窗口还是可见的就是一块黑色（Duo 源码注释里叫 "solid black rectangle"）。
+    @try {
+        _window.hidden = YES;
+        _window.windowLevel = UIWindowLevelNormal;
+        _window.rootViewController.view.transform = CGAffineTransformIdentity;
+    } @catch (__unused NSException *e) {}
+
     [self teardown];          // 内部先摘视图、再恢复 scene 尺寸、最后释放窗口
     SPLog(@"stop: window torn down, main=%@", main);
 
     // ⚠️ 先真回桌面。之前只 reactivateApp，窗口已经拆了但系统还没建好全屏呈现，
     // 中间那 2~3 秒就是用户看到的黑屏（0.5.20 日志实证）。
     // SPHost homePress 有多条兜底链，比 SBUIController 单点可靠。
+    @try { [SPHost dumpHomeAPIs]; } @catch (__unused NSException *e) {}
     BOOL wentHome = NO;
     @try { wentHome = [SPHost homePress]; } @catch (__unused NSException *e) {}
     SPLog(@"stop: homePress=%d (diag=%@)", (int)wentHome, [SPHost homePressDiag]);
