@@ -146,6 +146,7 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, strong) SPSplitView *split;
 @property (nonatomic, strong) UIView *chrome;
 @property (nonatomic, assign) BOOL suspended;
+@property (nonatomic, assign) BOOL goingHome;
 @property (nonatomic, assign) BOOL homePanArmed;
 @property (nonatomic, assign) CGFloat homePanStartY;
 @property (nonatomic, strong) UITapGestureRecognizer *cardTap;
@@ -378,6 +379,7 @@ void SPHostClearHostedBundleIDs(void);
     _window = w;
     _chrome = chrome;
     _split = split;
+    _goingHome = NO;   // 新开分屏时复位
     _topBundleID = [top copy];
     _bottomBundleID = [bottom copy];
 
@@ -705,13 +707,15 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         // 先把尺寸恢复成全屏，再交回前台：顺序反了系统会按半屏建呈现
         [_topHost restoreOriginalSceneSettings];
         [_bottomHost restoreOriginalSceneSettings];
-        if (keep.length) {
+        if (keep.length && !_goingHome) {
             [SPHost reactivateApp:keep];
             // 它的 scene 可能停在 contentState=0（日志实证），交回前台也不会自己画，
             // 必须切后台再切回来才会重建渲染
+            if (!_goingHome) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 @try { [SPHost forceRecycleApp:keep]; } @catch (__unused NSException *e) {}
             });
+            }
         }
         // 兜底：把「被压小」的 scene 全扫一遍恢复（漏掉某个 host 也不会留下残废 App）
         [SPRepair restoreAllScenes];
@@ -750,6 +754,8 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // teardown 会清空这两个，先存下来给「推后台」用
     NSString *savedTop = _topBundleID;
     NSString *savedBottom = _bottomBundleID;
+    // 我们要回桌面，绝不能把 App 再拉回前台（recycle 会把桌面盖掉）
+    _goingHome = YES;
     UIWindowScene *savedWindowScene = _window.windowScene;   // 拆窗前存下来
     // windowScene 可能是 Aperture（灵动岛），换成分屏窗口所在的那个正常场景
     if (savedWindowScene) {
