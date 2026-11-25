@@ -2,6 +2,9 @@
 #import <UIKit/UIKit.h>
 
 @interface SPGesture : NSObject
+- (NSString *)frontmostBundleID;
+- (UIImage *)snapshotScreen;
+- (void)sendHomePress;
 @property (class, readonly) SPGesture *shared;
 @property (nonatomic, assign) BOOL hooksAvailable;   // 系统手势钩子是否装上
 - (void)installInWindowScene:(UIWindowScene *)scene;

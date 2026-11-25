@@ -3,6 +3,14 @@
 #import "SPHost.h"
 #import "SPSettings.h"
 #import "SPParkCard.h"
+
+// SPParked.m 提供
+@interface SPParked : NSObject
++ (void)install;
++ (void)parkFrontmostApp;
++ (BOOL)isArmed;
++ (NSString *)parkedBundleID;
+@end
 #import "SPAppPicker.h"
 #import "SPPaneController.h"
 #import "SPLog.h"
@@ -321,6 +329,21 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
+
+    // ===== 主路径（PV 式）：全屏 App 内从底部上划到「灵动岛高度」松手 → 挂起该 App =====
+    // 之后用户自己点开任意 App，SPParked 监听到新的前台 App 就自动组建分屏。
+    // 判定：从底部起手 + 手指越过灵动岛以下约 120pt 的区域（约屏幕顶部 15%）
+    if (!SPPaneController.shared.active && fromBottom) {
+        CGFloat islandLine = h * 0.15;   // 灵动岛下沿附近
+        BOOL reachedIsland = (_dragPeakY <= islandLine) || (up >= h * 0.75);
+        if (reachedIsland) {
+            SPLog(@"pan: 上划到灵动岛 (peakY=%.0f islandLine=%.0f) -> 挂起前台 App", _dragPeakY, islandLine);
+            [SPParked parkFrontmostApp];
+            return YES;
+        }
+        SPLog(@"pan: 上划未到灵动岛 (peakY=%.0f need<=%.0f)，放行系统", _dragPeakY, islandLine);
+        return NO;
+    }
 
     // 分屏中上滑 → 把分屏缩成桌面上的任务卡片（画面保持实时，点卡片可回来）。
     // 这是用户明确要的交互：上划 home 不退出分屏，只是暂时收起来。

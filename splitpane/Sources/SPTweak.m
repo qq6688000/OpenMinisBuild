@@ -72,6 +72,9 @@ void SPProbeSwitcherAPI(void);
 void SPProbeIconMenu(void);
 void SPInstallIconMenuHook(void);
 void SPInstallSceneForegroundHook(void);
+@interface SPParked : NSObject
++ (void)install;
+@end
 void SPProbeForegroundAPI(void);
 
 static void SPRepairCallback(CFNotificationCenterRef center, void *observer,
@@ -210,6 +213,7 @@ static void SPBootstrapWhenReady(int tries) {
 
     // 装图标长按菜单：这是现在唯一的分屏入口
     @try { SPInstallIconMenuHook(); } @catch (NSException *e) { SPLog(@"icon hook ex %@", e.reason); }
+    @try { [SPParked install]; } @catch (NSException *e) { SPLog(@"parked install ex %@", e.reason); }
 
     BOOL hooked = NO;
     if ([SPSettings hooksEnabled]) hooked = SPInstallGestureHooks();
