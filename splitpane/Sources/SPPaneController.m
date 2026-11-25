@@ -161,6 +161,7 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, strong) UITapGestureRecognizer *cardTap;
 @property (nonatomic, strong) UIView *homeBar;
 @property (nonatomic, strong) UIView *homeBarPill;
+@property (nonatomic, strong) UIView *cardBlur;
 @property (nonatomic, strong) UITapGestureRecognizer *doubleTapExit;
 @property (nonatomic, strong) SPHost *topHost;
 @property (nonatomic, strong) SPHost *bottomHost;
@@ -526,14 +527,30 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // 所以彻底反过来做：我们不动系统，只动自己的窗口。
 
     CGRect screen = _window.windowScene.coordinateSpace.bounds;
-    CGFloat cw = screen.size.width * 0.30;
-    CGFloat ch = screen.size.height * 0.30;
-    CGRect cardFrame = CGRectMake(screen.size.width - cw - 16,
-                                  screen.size.height - ch - 100,
+    // 参照系统 App 切换器的任务卡片形态（用户截图）：
+    //   占满全屏高度，宽度约 76%，居中略偏右，顶部留出状态栏，底部留出 Dock。
+    CGFloat cw = screen.size.width * 0.76;
+    CGFloat ch = screen.size.height * 0.88;
+    CGRect cardFrame = CGRectMake(screen.size.width - cw - 26,   // 右侧留一点，露出上一张卡片
+                                  (screen.size.height - ch) / 2.0,
                                   cw, ch);
 
     _suspended = YES;
-    SPLog(@"suspend: 缩成桌面悬浮小窗 frame=%@", NSStringFromCGRect(cardFrame));
+    SPLog(@"suspend: 缩成任务卡片 frame=%@", NSStringFromCGRect(cardFrame));
+
+    // 卡片态铺一层毛玻璃背景：系统 App 切换器是这个观感
+    if (!_cardBlur) {
+        UIBlurEffect *eff = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:eff];
+        blur.frame = _window.bounds;
+        blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        blur.userInteractionEnabled = NO;
+        blur.alpha = 0;
+        [_window insertSubview:blur atIndex:0];
+        _cardBlur = blur;
+    }
+    _cardBlur.hidden = NO;
+    _cardBlur.alpha = 0;
 
     UIView *v = _window.rootViewController.view;
 
@@ -543,11 +560,19 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         self->_window.frame = cardFrame;
         v.frame = self->_window.bounds;
         v.transform = CGAffineTransformIdentity;
-        v.layer.cornerRadius = 22;
+        v.layer.cornerRadius = 44;
         v.layer.cornerCurve = kCACornerCurveContinuous;
         v.clipsToBounds = YES;
-        v.layer.borderWidth = 1.5;
-        v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.22].CGColor;
+        v.layer.borderWidth = 0;
+        // 系统卡片有明显的投影，加一个看起来才像
+        v.layer.shadowColor = [UIColor blackColor].CGColor;
+        v.layer.shadowOpacity = 0.45;
+        v.layer.shadowRadius = 30;
+        v.layer.shadowOffset = CGSizeMake(0, 12);
+        self->_window.layer.shadowColor = [UIColor blackColor].CGColor;
+        self->_window.layer.shadowOpacity = 0.5;
+        self->_window.layer.shadowRadius = 34;
+        self->_window.layer.shadowOffset = CGSizeMake(0, 14);
         self->_homeBar.hidden = YES;
         // 小窗只有 129x280，两块半屏内容挤进去完全看不清。
         // 改成：小窗里只留上半屏（缩比后正好是一张 App 卡片的样子），
@@ -586,6 +611,9 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         v.transform = CGAffineTransformIdentity;
         v.layer.cornerRadius = 0;
         v.layer.borderWidth = 0;
+        v.layer.shadowOpacity = 0;
+        self->_window.layer.shadowOpacity = 0;
+        self->_cardBlur.alpha = 0;
         self->_homeBar.hidden = NO;
         self->_split.singlePaneMode = NO;
         [self->_split setNeedsLayout];
