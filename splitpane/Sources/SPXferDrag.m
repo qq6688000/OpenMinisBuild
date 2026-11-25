@@ -17,6 +17,13 @@ static const void *kDragInstalledKey = &kDragInstalledKey;
 
 + (BOOL)dragging { return gDragging; }
 
++ (NSInteger)countInteractionsIn:(UIView *)view depth:(NSInteger)depth {
+    if (!view || depth > 10) return 0;
+    NSInteger n = (NSInteger)view.interactions.count;
+    for (UIView *sub in view.subviews) n += [self countInteractionsIn:sub depth:depth+1];
+    return n;
+}
+
 + (void)dumpInteractionsIn:(UIView *)view label:(NSString *)label depth:(NSInteger)depth {
     if (!view || depth > 10) return;
     if (view.interactions.count > 0) {
@@ -49,7 +56,11 @@ static const void *kDragInstalledKey = &kDragInstalledKey;
     SPXferDrag *d = objc_getAssociatedObject(container, kKey);
     if (d) {
         // 已经建过 delegate：只补装新出现的子视图（比如后建的 sceneView）
+        NSInteger before = [self countInteractionsIn:container depth:0];
         [self installRecursivelyIn:container delegate:d label:label depth:0];
+        NSInteger after = [self countInteractionsIn:container depth:0];
+        SPLog(@"xfer-drag: 补装 %@ interactions %ld -> %ld", label, (long)before, (long)after);
+        [self dumpInteractionsIn:container label:label depth:0];
         return;
     }
     d = [SPXferDrag new];

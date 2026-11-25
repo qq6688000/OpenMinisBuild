@@ -1102,7 +1102,10 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (!_containerView) return;
     CGSize r = CGSizeMake(round(size.width), round(size.height));
     if (r.width < 2 || r.height < 2) return;
+    // 尺寸变化小于 8pt 直接忽略：拖动分隔条时每秒几十次跨进程推送会把主线程拖垮，
+    // 而且会打断系统拖拽会话。
     if (CGSizeEqualToSize(r, _lastSize)) return;
+    if (fabs(r.height - _lastSize.height) < 8 && fabs(r.width - _lastSize.width) < 8) return;
     _lastSize = r;
     // 和 attach 用同一套参考尺寸规则：按「屏幕宽 × 容器高」推，
     // 不把容器那种极端宽高比直接给 scene（45×430 会把 App 压成一条）。
