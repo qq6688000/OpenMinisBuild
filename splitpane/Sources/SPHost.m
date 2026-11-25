@@ -1,4 +1,6 @@
 #import "SPHost.h"
+#import <CoreMotion/CoreMotion.h>
+#import <math.h>
 #import "SPSettings.h"
 #import "SPLog.h"
 #import <objc/runtime.h>
@@ -625,13 +627,62 @@ static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
 // 取设备真实方向：横屏时根视图宽 > 高，用它推给 scene 才对得上。
 // 之前固定竖屏 → 横屏下画面被压扁；按容器宽高比 → 竖屏下被误判横屏。
 // 唯一可靠的是「整个窗口场景的坐标空间尺寸」。
-static NSInteger SPDeviceOrientation(void) {
-    // 三层探测，实测这台机器上前两层都不更新（日志：横屏时 coordinateSpace 仍是 430x932，
-    // UIDevice.orientation 也停在 Portrait）。SpringBoard 里最准的是它自己的
-    // _SBInterfaceOrientationController 或 statusBarOrientation。
-    // UIInterfaceOrientation: 1=Portrait 2=PortraitUpsideDown 3=LandscapeRight 4=LandscapeLeft
+static NSInteger SPMotionOrientation(void);
 
-    // 0) UIWindowScene.interfaceOrientation —— 公开 API，最可靠
+static NSInteger SPDeviceOrientation(void) {
+    // 实测结论（0.8.0-0.8.3 日志）：这台机器的 SpringBoard 里
+    //   SBInterfaceOrientationController = nil
+    //   SBScreenRotationController = nil
+    //   statusBarOrientation = 0
+    //   UIDevice.orientation = 1
+    //   UIWindowScene.interfaceOrientation = 1，尺寸恒为 {430,932}
+    // 即使把手机横过来，系统层仍然认为竖屏 —— 系统方向 API 全部失效。
+    // 所以改用加速计（CoreMotion）直接读物理姿态，这是唯一不依赖系统的办法。
+    return SPMotionOrientation();
+}
+
+// 用加速计判断物理方向：x 主导 = 横屏，y 主导 = 竖屏。
+static NSInteger SPMotionOrientation(void) {
+    static NSInteger cached = 1;
+    static CFTimeInterval cachedAt = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - cachedAt < 0.2) return cached;   // 200ms 缓存，别每次都查
+    cachedAt = now;
+    @try {
+        Class mgr = NSClassFromString(@"CMMotionManager");
+        if (!mgr) return cached;
+        static id m = nil;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            m = [[mgr alloc] init];
+            ((void (*)(id, SEL, double))objc_msgSend)(m, NSSelectorFromString(@"setAccelerometerUpdateInterval:"), 0.1);
+            ((void (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"startAccelerometerUpdates"));
+        });
+        id data = SPMsg0(m, @"accelerometerData");
+        if (!data) return cached;
+        typedef struct { double x, y, z; } Vec3;
+        SEL accSel = NSSelectorFromString(@"acceleration");
+        if (![data respondsToSelector:accSel]) return cached;
+        NSMethodSignature *sig = [data methodSignatureForSelector:accSel];
+        if (!sig || [sig methodReturnLength] < sizeof(Vec3)) return cached;
+        Vec3 v;
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setTarget:data]; [inv setSelector:accSel];
+        [inv invoke];
+        [inv getReturnValue:&v];
+        double ax = fabs(v.x), ay = fabs(v.y);
+        if (ax > ay * 1.6 && ax > 0.5) {
+            // x 明显主导 → 横屏。左右判断：x>0 = 左横（home 在右）
+            cached = (v.x > 0) ? 4 : 3;
+        } else {
+            cached = 1;
+        }
+        SPLog(@"motion ax=%.2f ay=%.2f az=%.2f -> orient=%ld", v.x, v.y, v.z, (long)cached);
+    } @catch (NSException *e) { SPLog(@"motion ex %@", e.reason); }
+    return cached;
+}
+
+static NSInteger SPDeviceOrientationOld(void) {
     for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
         if (![sc isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *w = (UIWindowScene *)sc;

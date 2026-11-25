@@ -180,6 +180,8 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 @property (nonatomic, strong) UIView *homeBar;
 @property (nonatomic, strong) UIView *homeBarPill;
 @property (nonatomic, strong) UIView *cardBlur;
+@property (nonatomic, assign) BOOL lastPhysicalHorizontal;
+@property (nonatomic, strong) NSTimer *orientTimer;
 @property (nonatomic, assign) CGFloat supersededWindowLevel;
 @property (nonatomic, assign) CGAffineTransform supersededRootTransform;
 @property (nonatomic, assign) CGRect supersededRootFrame;
@@ -254,22 +256,49 @@ void SPHostClearHostedBundleIDs(void);
 // windowScene.coordinateSpace.bounds 不随旋转更新，必须自己换算。
 static CGRect SPCurrentScreenBounds(void) {
     CGSize s = [UIScreen mainScreen].bounds.size;
-    // 与 SPHost 里同源的方向判断（statusBarOrientation 优先，实测 UIDevice 在 SpringBoard 不更新）
-    NSInteger o = 1;
-    @try {
-        Class oc = NSClassFromString(@"SBInterfaceOrientationController");
-        id ctrl = nil;
-        if (oc && [oc respondsToSelector:NSSelectorFromString(@"sharedInstance")])
-            ctrl = ((id (*)(id, SEL))objc_msgSend)(oc, NSSelectorFromString(@"sharedInstance"));
-        if (ctrl && [ctrl respondsToSelector:NSSelectorFromString(@"interfaceOrientation")])
-            o = ((NSInteger (*)(id, SEL))objc_msgSend)(ctrl, NSSelectorFromString(@"interfaceOrientation"));
-        else
-            o = [UIApplication sharedApplication].statusBarOrientation;
-    } @catch (__unused NSException *e) {}
-    if (o == 3 || o == 4) {   // 横屏
-        if (s.height > s.width) { CGFloat t = s.width; s.width = s.height; s.height = t; }
+    // 系统方向 API 在这台机器上全部失效（日志实证：横屏时仍报 io=1/{430,932}），
+    // 所以用加速计判断物理方向，横屏时把屏幕尺寸交换。
+    Class mgr = NSClassFromString(@"CMMotionManager");
+    if (mgr) {
+        @try {
+            static id m = nil;
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{
+                m = [[mgr alloc] init];
+                ((void (*)(id, SEL, double))objc_msgSend)(m, NSSelectorFromString(@"setAccelerometerUpdateInterval:"), 0.1);
+                ((void (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"startAccelerometerUpdates"));
+            });
+            id data = ((id (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"accelerometerData"));
+            if (data) {
+                SEL accSel = NSSelectorFromString(@"acceleration");
+                NSMethodSignature *sig = [data methodSignatureForSelector:accSel];
+                typedef struct { double x, y, z; } Vec3;
+                if (sig && [sig methodReturnLength] >= sizeof(Vec3)) {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setTarget:data]; [inv setSelector:accSel]; [inv invoke];
+                    Vec3 v; [inv getReturnValue:&v];
+                    if (fabs(v.x) > fabs(v.y) * 1.6 && fabs(v.x) > 0.5) {
+                        if (s.height > s.width) { CGFloat t = s.width; s.width = s.height; s.height = t; }
+                    }
+                }
+            }
+        } @catch (__unused NSException *e) {}
     }
     return CGRectMake(0, 0, s.width, s.height);
+}
+
+- (BOOL)spIsPhysicallyHorizontal {
+    CGRect b = SPCurrentScreenBounds();
+    return b.size.width > b.size.height;
+}
+
+- (void)spPollOrientation {
+    if (!_window || !_active) return;
+    BOOL h = [self spIsPhysicallyHorizontal];
+    if (h == _lastPhysicalHorizontal) return;
+    _lastPhysicalHorizontal = h;
+    SPLog(@"physical orientation changed horizontal=%d", (int)h);
+    [self spOrientationChanged:nil];
 }
 
 - (void)spOrientationChanged:(NSNotification *)n {
@@ -432,10 +461,12 @@ static CGRect SPCurrentScreenBounds(void) {
     _doubleTapExit = dbl;
     SPLog(@"double-tap exit installed");
 
-    // 旋转：窗口跟着设备方向走，两块重新排版
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(spOrientationChanged:)
-                                                 name:UIDeviceOrientationDidChangeNotification object:nil];
-    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+    // 旋转：这台机器系统不发旋转通知（且方向 API 全失效），
+    // 改用 0.5s 轮询物理方向，变了就重排。
+    _lastPhysicalHorizontal = [self spIsPhysicallyHorizontal];
+    _orientTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+        [self spPollOrientation];
+    }];
 
     // 出口 1：三指下滑
     // 单指从底部上划 → 挂起成任务卡片（不退出分屏）
