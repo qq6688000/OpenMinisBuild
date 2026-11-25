@@ -39,16 +39,23 @@ static BOOL gDragging = NO;
 }
 
 - (UITargetedDragPreview *)dragInteraction:(UIDragInteraction *)interaction previewForLiftingItem:(UIDragItem *)item session:(id<UIDragSession>)session {
-    UIImage *img = item.localObject;
-    UIImageView *iv = [[UIImageView alloc] initWithImage:img];
-    iv.frame = CGRectMake(0, 0, 200, 200);
-    iv.contentMode = UIViewContentModeScaleAspectFill;
-    iv.clipsToBounds = YES;
-    iv.layer.cornerRadius = 12;
-    iv.alpha = 0.92;
-    UIPreviewParameters *params = [UIPreviewParameters new];
-    params.backgroundColor = [UIColor clearColor];
-    return [[UITargetedDragPreview alloc] initWithView:iv parameters:params target:nil];
+    // 崩溃教训（SpringBoard-2026-11-25-201339.ips）：
+    // 自建的 UIImageView 不在窗口层级里，UITargetedDragPreview initWithView: 会抛异常。
+    // target 必须是视图层级里的真实视图。最稳的是返回 nil，让系统用默认预览。
+    UIView *src = self.snapshotFrom ?: self.container;
+    if (!src || !src.window) return nil;
+    @try {
+        UIPreviewParameters *params = [UIPreviewParameters new];
+        params.backgroundColor = [UIColor clearColor];
+        params.visiblePath = [UIBezierPath bezierPathWithRoundedRect:src.bounds cornerRadius:16];
+        UITargetedDragPreview *p = [[UITargetedDragPreview alloc] initWithView:src
+                                                                    parameters:params
+                                                                        target:src];   // target = 真实视图
+        return p;
+    } @catch (NSException *e) {
+        SPLog(@"preview ex %@ -> 返回 nil 用系统默认", e.reason);
+        return nil;
+    }
 }
 
 - (void)dragInteraction:(UIDragInteraction *)interaction sessionWillBegin:(id<UIDragSession>)session {
