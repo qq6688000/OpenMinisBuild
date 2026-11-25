@@ -129,6 +129,8 @@ static const CGFloat kMaxPaneRatio = 0.95;
 - (void)startHeartbeat;
 @end
 
+void SPHostClearHostedBundleIDs(void);
+
 @implementation SPPaneController
 
 + (instancetype)shared {
@@ -408,6 +410,10 @@ static const CGFloat kMaxPaneRatio = 0.95;
 - (void)teardown {
     // 卡片窗口层级很高，不清理会一直挡在桌面上（也会挡点击）
     [SPParkCard dismissAll];
+
+    // ⚠️ 必须最先清空托管表：SPScenePin 会强制这些 App 保持前台，
+    // 不清的话退出分屏后它们会被永远钉在前台，回不到桌面。
+    SPHostClearHostedBundleIDs();
 
     SPDumpScenes("before-teardown");
 

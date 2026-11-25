@@ -37,6 +37,13 @@
 @property (nonatomic, strong) UIImageView *snapshotView;
 @property (nonatomic, strong) id scene;
 @property (nonatomic, assign) CGSize referenceSize;
+@end
+
+void SPHostRegisterHostedBundleID(NSString *bundleID);
+void SPHostUnregisterHostedBundleID(NSString *bundleID);
+void SPHostClearHostedBundleIDs(void);
+
+@interface SPHost ()
 - (void)detach;   // 前向声明：attach 内部要先拆旧宿主
 @property (nonatomic, strong) id handle;
 @property (nonatomic, strong) SPHostRequester *requester;
@@ -663,6 +670,8 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     SPFitHostView(host, container, _referenceSize);
     _hostView = host;
     _attached = YES;
+    // 登记托管：SPScenePin 靠它判定哪些 scene 要保持前台（防闪回桌面）
+    SPHostRegisterHostedBundleID(_bundleID);
     _live = YES;
     _snapshotActive = NO;
     SPLog(@"attach OK %@ diag=%@ sent=%d view=%@ bounds=%@", _bundleID, _lastDiag, sent,
@@ -866,6 +875,7 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     _snapshotView = nil;
     _attached = NO;
     _live = NO;
+    SPHostUnregisterHostedBundleID(_bundleID);
     _scene = nil;
     _handle = nil;
     _controller = nil;
