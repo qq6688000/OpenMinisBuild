@@ -364,9 +364,47 @@ static CGRect SPCurrentScreenBounds(void) {
     b.layer.zPosition = 2600;
     b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [b addTarget:self action:@selector(xferTapped) forControlEvents:UIControlEventTouchUpInside];
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(xferLongPressed:)];
+    lp.minimumPressDuration = 0.6;
+    [b addGestureRecognizer:lp];
     [host addSubview:b];
     _xferButton = b;
     SPLog(@"xfer button added");
+}
+
+- (void)xferLongPressed:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    SPLog(@"xferLongPressed -> 尝试抓取当前窗口可见文本");
+    NSString *txt = [self harvestTextFromView:_split];
+    if (txt.length) {
+        [UIPasteboard generalPasteboard].string = txt;
+        SPLog(@"xferLongPressed: 已复制 %lu 字", (unsigned long)txt.length);
+    } else {
+        SPLog(@"xferLongPressed: 没抓到文本");
+    }
+}
+
+// 遍历视图树，把 UILabel / UITextView / UITextField 里的文字拼起来。
+// App 的真实内容在 sceneView 里，从这里能拿到当前屏幕上可见的文字。
+- (NSString *)harvestTextFromView:(UIView *)root {
+    NSMutableArray *out = [NSMutableArray array];
+    [self collectText:root into:out depth:0];
+    return [out componentsJoinedByString:@"\n"];
+}
+
+- (void)collectText:(UIView *)v into:(NSMutableArray *)out depth:(NSInteger)d {
+    if (!v || d > 24) return;
+    if ([v isKindOfClass:[UILabel class]]) {
+        NSString *t = ((UILabel *)v).text;
+        if (t.length) [out addObject:t];
+    } else if ([v isKindOfClass:[UITextView class]]) {
+        NSString *t = ((UITextView *)v).text;
+        if (t.length) [out addObject:t];
+    } else if ([v isKindOfClass:[UITextField class]]) {
+        NSString *t = ((UITextField *)v).text;
+        if (t.length) [out addObject:t];
+    }
+    for (UIView *sub in v.subviews) [self collectText:sub into:out depth:d + 1];
 }
 
 - (void)xferTapped {

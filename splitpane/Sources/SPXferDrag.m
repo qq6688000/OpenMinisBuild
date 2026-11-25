@@ -17,6 +17,17 @@ static const void *kDragInstalledKey = &kDragInstalledKey;
 
 + (BOOL)dragging { return gDragging; }
 
++ (void)dumpInteractionsIn:(UIView *)view label:(NSString *)label depth:(NSInteger)depth {
+    if (!view || depth > 10) return;
+    if (view.interactions.count > 0) {
+        NSMutableArray *names = [NSMutableArray array];
+        for (id in0 in view.interactions) [names addObject:NSStringFromClass([in0 class])];
+        SPLog(@"xfer-drag[%@] d=%ld %@ -> %@", label, (long)depth,
+              NSStringFromClass([view class]), [names componentsJoinedByString:@","]);
+    }
+    for (UIView *sub in view.subviews) [self dumpInteractionsIn:sub label:label depth:depth+1];
+}
+
 // 递归给整棵子树装 drop：容器 → split → pane → sceneView → 内部视图
 + (void)installRecursivelyIn:(UIView *)view delegate:(id)del label:(NSString *)label depth:(NSInteger)depth {
     if (!view || depth > 8) return;
@@ -52,6 +63,8 @@ static const void *kDragInstalledKey = &kDragInstalledKey;
     // 系统根本不会把 drop 送到我们的容器上。
     [self installRecursivelyIn:container delegate:d label:label depth:0];
     SPLog(@"xfer-drag: 容器 %@ 已装拖放(递归)", label);
+    // 探测：这个子树里本来有没有系统的 drag interaction（App 自己是否支持长按拖动）
+    [self dumpInteractionsIn:container label:label depth:0];
 }
 
 #pragma mark - UIDropInteractionDelegate
