@@ -683,14 +683,14 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     CGSize target = container.bounds.size;
     if (target.width < 2 || target.height < 2) target = reference;
 
-    // 照抄 Duo 的写法（DPSceneHost.m layoutHostView）：
-    // bounds 固定为 scene 原尺寸（全屏），center 对齐容器中心，
-    // 再用 transform 做 cover 缩放，溢出由容器 clipsToBounds 裁掉。
-    // 关键点：全程不改 scene 尺寸，纯视觉变换 —— 拖动零延迟、不黑屏。
+    // 用户要求：App 的底栏（任务/消息那些 tab）必须完整可见。
+    // 所以用 fit（MIN 缩放）：整个 App 界面缩进容器，上下都不裁。
+    // 之前用 MAX（cover）会把底部 tab 栏切掉 —— 这是用户截图里看不到底栏的原因。
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0, 0, reference.width, reference.height);
     host.center = CGPointMake(target.width / 2.0, target.height / 2.0);
-    CGFloat scale = MAX(target.width / reference.width, target.height / reference.height);
+    // scene 已经按容器尺寸排版了，这里 1:1 放置即可（不缩放、不裁切、不留边）
+    CGFloat scale = 1.0;
     container.clipsToBounds = YES;
     host.transform = CGAffineTransformMakeScale(scale, scale);
 }
@@ -732,8 +732,11 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     //   "a half-screen setFrame is invalid on iOS 16 and kills the hosted pid"
     // 推半屏尺寸 = 系统判定非法帧 → 杀掉托管进程 → 拖动时黑屏 + 卡顿。
     // 正确做法：scene 保持全屏渲染，拖动时只改 hostView 的 scale/center。
-    CGSize ref = [UIScreen mainScreen].bounds.size;
-    if (ref.width < 2 || ref.height < 2) ref = container.bounds.size;
+    // 用户要求：两块各自按「全屏」显示 —— 宽度占满、不缩放、不压缩。
+    // 做法：把容器真实尺寸推给 scene，让 App 自己按这个尺寸重排版（0.5.2 的做法）。
+    // 这样画面 1:1 贴满容器，两侧没有边，底栏也完整。
+    CGSize ref = container.bounds.size;
+    if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
     _referenceSize = ref;
     _lastSize = ref;
     NSInteger orient = (ref.width > ref.height) ? 4 : 1;
@@ -899,11 +902,16 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (r.width < 2 || r.height < 2) return;
     if (CGSizeEqualToSize(r, _lastSize)) return;
     _lastSize = r;
-    // ⚠️ 这里不再向 scene 推任何 settings。
-    // 拖动时只需要把 hostView 重新等比缩放贴进容器（纯本地变换，零跨进程开销）。
-    // 推半屏 settings 会被系统判为非法帧并杀掉 App 进程，这就是之前拖动黑屏的根因。
+    // 用户要求画面按容器 1:1 显示，所以尺寸变化时必须把新尺寸推给 scene，
+    // 让它重新按新高度排版本（否则拖动后画面和容器对不上）。
+    _referenceSize = r;
+    NSInteger orient = (r.width > r.height) ? 4 : 1;
+    NSString *sub = nil;
+    SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
+    SPLog(@"resize %@ -> %@ (%@)", _bundleID, NSStringFromCGSize(r), sub ?: @"-");
+
     if (_hostView && _containerView) {
-        SPFitHostView(_hostView, _containerView, _referenceSize);
+        SPFitHostView(_hostView, _containerView, r);
     }
     _snapshotView.frame = _containerView.bounds;
 }
