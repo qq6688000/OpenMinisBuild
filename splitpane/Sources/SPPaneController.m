@@ -19,9 +19,9 @@
 
 static const CGFloat kChromeHeight = 0.0;
 static const CGFloat kSeamHeight = 26.0;  // 用户要求改回原来的宽度
-// 用户要求：分屏比例可以拉到 10/90
-static const CGFloat kMinPaneRatio = 0.10;
-static const CGFloat kMaxPaneRatio = 0.90;
+// 用户要求：分屏比例可以拉到 5/95
+static const CGFloat kMinPaneRatio = 0.05;
+static const CGFloat kMaxPaneRatio = 0.95;
 
 // ---------------------------------------------------------------- 接缝视图
 
