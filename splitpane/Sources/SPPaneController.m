@@ -19,11 +19,12 @@
 
 static const CGFloat kChromeHeight = 0.0;
 static const CGFloat kSeamHeight = 26.0;  // 用户要求改回原来的宽度
-// 用户要求：比例固定 10/90，不再允许拖动改变
+// 用户要求：分隔条可拖，但只有两个停靠位 —— 10/90 或 90/10
 static const CGFloat kMinPaneRatio = 0.10;
 static const CGFloat kMaxPaneRatio = 0.90;
-static const CGFloat kFixedPaneRatio = 0.10;   // 上半屏占 10%，下半屏 90%
-static const BOOL kRatioLocked = YES;           // 固定比例，禁止拖动
+static const CGFloat kSnapLow = 0.10;    // 上半屏 10% / 下半屏 90%
+static const CGFloat kSnapHigh = 0.90;   // 上半屏 90% / 下半屏 10%
+static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 
 // ---------------------------------------------------------------- 接缝视图
 
@@ -33,6 +34,7 @@ static const BOOL kRatioLocked = YES;           // 固定比例，禁止拖动
 @property (nonatomic, strong) UIView *seam;
 @property (nonatomic, strong) UIView *grabber;
 @property (nonatomic, assign) CGFloat splitRatio;
+@property (nonatomic, assign) BOOL snapping;
 @property (nonatomic, copy) void (^onSeamMoved)(void);
 @property (nonatomic, copy) void (^onSeamEnded)(void);
 @property (nonatomic, assign) BOOL singlePaneMode;   // 小窗态：只显示上半屏
@@ -62,12 +64,9 @@ static const BOOL kRatioLocked = YES;           // 固定比例，禁止拖动
         [_seam addSubview:_grabber];
         [self addSubview:_seam];
 
-        // 固定 10/90 时不挂拖动（否则拖完弹回，反而卡手）
-        if (!kRatioLocked) {
-            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
-            [_seam addGestureRecognizer:pan];
-        }
-        _splitRatio = kFixedPaneRatio;
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
+        [_seam addGestureRecognizer:pan];
+        _splitRatio = kSnapLow;
     }
     return self;
 }
@@ -101,15 +100,24 @@ static const BOOL kRatioLocked = YES;           // 固定比例，禁止拖动
     CGPoint p = [g locationInView:self];
     CGFloat usable = MAX(self.bounds.size.height - kSeamHeight, 1);
     CGFloat r = p.y / usable;
-    if (kRatioLocked) {
-        // 固定 10/90：拖动分隔条不改比例
-        self.splitRatio = kFixedPaneRatio;
+    if (kRatioSnap && !_snapping) {
+        // 拖动过程中实时跟手（限制在 10%~90% 之间），松手时再吸附
+        self.splitRatio = MIN(MAX(r, kMinPaneRatio), kMaxPaneRatio);
     } else {
         self.splitRatio = MIN(MAX(r, kMinPaneRatio), kMaxPaneRatio);
     }
     [self setNeedsLayout];
     if (self.onSeamMoved) self.onSeamMoved();
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        if (kRatioSnap) {
+            // 松手吸附到最近的一档：10/90 或 90/10
+            CGFloat mid = (_splitRatio < 0.5) ? kSnapLow : kSnapHigh;
+            SPLog(@"seam snap: %.2f -> %.2f", _splitRatio, mid);
+            _snapping = YES;
+            [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                             animations:^{ self.splitRatio = mid; }
+                             completion:^(BOOL f) { self->_snapping = NO; }];
+        }
         if (self.onSeamEnded) self.onSeamEnded();
     }
     if (g.state == UIGestureRecognizerStateEnded && [SPSettings haptics]) {
