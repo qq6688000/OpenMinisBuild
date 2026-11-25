@@ -5,6 +5,8 @@
 // （只 hidden 不释放的窗口会在桌面上留隐形窗户挡点击）。
 @interface SPWindowRegistry : NSObject
 + (UIWindow *)makeWindowWithScene:(UIWindowScene *)scene level:(CGFloat)level;
++ (UIWindow *)makeWindowWithScene:(UIWindowScene *)scene level:(CGFloat)level windowClass:(Class)windowClass;
++ (NSArray<UIWindow *> *)registeredWindows;
 + (void)releaseWindow:(UIWindow *)w;
 + (void)killAll;
 + (NSUInteger)count;

@@ -8,4 +8,5 @@
                         onPick:(void (^)(NSString *bundleID))onPick
                       onCancel:(void (^)(void))onCancel;
 + (BOOL)isPresenting;
++ (void)cancelIfPresent;
 @end

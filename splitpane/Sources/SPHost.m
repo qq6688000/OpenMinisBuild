@@ -1,10 +1,8 @@
 #import "SPHost.h"
-#import "SPXferDrag.h"
-#import <CoreMotion/CoreMotion.h>
-#import <math.h>
 #import "SPSettings.h"
 #import "SPLog.h"
 #import <objc/runtime.h>
+#import <math.h>
 
 // ════════════════════════════════════════════════════════════════════════════
 // 一个 App 的画面。真实链路（抄 Duo 在 16.4.1 上跑通的实证，不是猜）：
@@ -42,21 +40,61 @@
 @property (nonatomic, assign) CGSize referenceSize;
 @end
 
-void SPHostRegisterHostedBundleID(NSString *bundleID);
-void SPHostUnregisterHostedBundleID(NSString *bundleID);
-void SPHostClearHostedBundleIDs(void);
+void SPHostRegisterHostedScene(id scene, id owner);
+void SPHostUnregisterHostedScene(id scene, id owner);
+void SPRepairRecordSceneSettings(id scene, NSDictionary *settings);
+NSDictionary *SPRepairOriginalSettingsForScene(id scene);
+void SPRepairForgetScene(id scene);
+BOOL SPRepairRestoreSceneGeometry(id scene, NSDictionary *settings, NSString **diag);
 
 @interface SPHost ()
-- (void)detach;   // 前向声明：attach 内部要先拆旧宿主
+- (void)detach;
+- (BOOL)tryAttachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene;
+- (void)attemptAttachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
+                     attempts:(NSInteger)attempts interval:(NSTimeInterval)interval generation:(NSUInteger)generation;
+- (void)releaseHostedPresentation;
+- (void)layoutSnapshot;
+- (void)waitForContentReady:(NSInteger)tries generation:(NSUInteger)generation;
 @property (nonatomic, strong) id handle;
 @property (nonatomic, strong) SPHostRequester *requester;
 @property (nonatomic, strong) id controller;
+@property (nonatomic, strong) NSObject *registrationToken;
+@property (nonatomic, strong) UIImage *pendingSnapshot;
 @property (nonatomic, assign, readwrite) BOOL live;
 @property (nonatomic, assign) BOOL attached;
+@property (nonatomic, assign) BOOL contentPolling;
+@property (nonatomic, assign) BOOL callbacksEnabled;
+@property (nonatomic, assign) NSUInteger attachmentGeneration;
 @property (nonatomic, assign) CGSize lastSize;
-@property (nonatomic, strong) NSDictionary *originalSettings;   // frame/orientation 原值
+@property (nonatomic, strong) NSDictionary *originalSettings;   // 只保存本宿主会修改的几何值
 @property (nonatomic, assign) BOOL touchedSettings;
 @end
+
+static BOOL SPHostOnMain(NSString *operation) {
+    if ([NSThread isMainThread]) return YES;
+    SPLog(@"host %@ rejected off-main", operation);
+    return NO;
+}
+
+// 所有清理路径共用；不要同时调用 invalidate 和 detachScene，避免二次释放呈现权。
+static void SPReleaseSceneView(UIView *view, id controller) {
+    UIViewController *vc = [controller isKindOfClass:[UIViewController class]] ? controller : nil;
+    if (vc.parentViewController) [vc willMoveToParentViewController:nil];
+    for (NSString *name in @[@"invalidate", @"detachScene"]) {
+        if (!SPABI(view, name, "v", 0)) continue;
+        @try { ((void (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(name)); break; }
+        @catch (NSException *e) { SPLog(@"host release %@ ex %@", name, e.reason); }
+    }
+    [view removeFromSuperview];
+    if (vc.parentViewController) [vc removeFromParentViewController];
+}
+
+static BOOL SPSceneHasContent(id scene) {
+    if (!SPABI(scene, @"isValid", @encode(BOOL), 0) || !SPBool0(scene, @"isValid")) return NO;
+    if (!SPABI(scene, @"contentState", @encode(NSInteger), 0)) return NO;
+    // 0/1 不能证明已有渲染内容；不能再靠 subviews/layers 个数把空 sceneView 判为 live。
+    return SPInt0(scene, @"contentState") == 2;
+}
 
 @implementation SPHost
 
@@ -292,42 +330,6 @@ static NSMutableSet *gHomeTried = nil;
     }
     SPLog(@"forceHome: none available");
     return NO;
-}
-
-
-// 一次性探测所有可能的方向来源，把真实值打出来定名。
-+ (void)dumpOrientationAPIs {
-    NSArray *classes = @[@"SBInterfaceOrientationController", @"SBScreenRotationController",
-                         @"SBDeviceOrientationController", @"SBOrientationController",
-                         @"SBSceneManager", @"SBMainDisplaySceneManager"];
-    for (NSString *cn in classes) {
-        Class c = NSClassFromString(cn);
-        if (!c) { SPLog(@"orientAPI %@ = nil", cn); continue; }
-        NSMutableArray *hits = [NSMutableArray array];
-        unsigned n = 0;
-        Method *ms = class_copyMethodList(c, &n);
-        for (unsigned i = 0; i < n; i++) {
-            const char *nm = sel_getName(method_getName(ms[i]));
-            if (!nm) continue;
-            NSString *s = @(nm);
-            if ([s rangeOfString:@"rient" options:NSCaseInsensitiveSearch].location != NSNotFound)
-                [hits addObject:s];
-        }
-        free(ms);
-        SPLog(@"orientAPI %@(%lu): %@", cn, (unsigned long)hits.count,
-              [hits componentsJoinedByString:@" | "]);
-    }
-    // UIApplication 的 statusBarOrientation 实际值
-    SPLog(@"orientAPI statusBarOrientation=%ld device=%ld",
-          (long)[UIApplication sharedApplication].statusBarOrientation,
-          (long)[[UIDevice currentDevice] orientation]);
-    // 每个 scene 的 interfaceOrientation
-    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *w = (UIWindowScene *)sc;
-        SPLog(@"orientAPI scene %@ io=%ld sz=%@", NSStringFromClass([w class]),
-              (long)w.interfaceOrientation, NSStringFromCGSize(w.coordinateSpace.bounds.size));
-    }
 }
 
 + (BOOL)homePressInWindowScene:(UIWindowScene *)ws {
@@ -580,195 +582,76 @@ static NSMutableSet *gHomeTried = nil;
 #pragma mark - 规范 IFBSceneSettings
 
 static id SPGet(id o, NSString *name) {
-    if (!o) return nil;
-    @try {
-        SEL s = NSSelectorFromString(name);
-        if ([o respondsToSelector:s]) return ((id (*)(id, SEL))objc_msgSend)(o, s);
-        return [o valueForKey:name];
-    } @catch (__unused NSException *e) { return nil; }
+    @try { return SPMsg0(o, name); }
+    @catch (__unused NSException *e) { return nil; }
 }
 
 static BOOL SPSetI(id o, NSString *name, NSInteger v) {
     @try {
-        SEL s = NSSelectorFromString(name);
-        if (![o respondsToSelector:s]) return NO;
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(o, s, v);
+        if (!SPABI(o, name, "v", 1, @encode(NSInteger))) return NO;
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(o, NSSelectorFromString(name), v);
         return YES;
     } @catch (__unused NSException *e) { return NO; }
-}
-
-static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
-    return SPSubmitSceneSettingsEx(scene, pane, orient, YES, diag);
 }
 
 // 把面板尺寸写进 scene settings。不推这一下，画面仍按全屏渲染，host 是空的。
 // 工厂出来的 SBDeviceApplicationSceneView 默认不渲染：必须关掉占位内容、
 // 关掉「宿主缩放上下文」、并把 displayMode 设成 4（活画面）。
 // 少任何一步，视图就是一块黑（0.3.1 的黑屏就是这么来的）。
-static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
-    if (!v) return;
+static BOOL SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
+    if (!v) return NO;
     @try {
         SEL ph = NSSelectorFromString(@"setPlaceholderContentEnabled:");
-        BOOL hasPh = [v respondsToSelector:ph];
+        BOOL hasPh = SPABI(v, @"setPlaceholderContentEnabled:", "v", 1, @encode(BOOL));
         if (hasPh) ((void (*)(id, SEL, BOOL))objc_msgSend)(v, ph, NO);
         SEL rz = NSSelectorFromString(@"setResizesHostedContext:");
-        BOOL hasRz = [v respondsToSelector:rz];
+        BOOL hasRz = SPABI(v, @"setResizesHostedContext:", "v", 1, @encode(BOOL));
         if (hasRz) ((void (*)(id, SEL, BOOL))objc_msgSend)(v, rz, NO);
         SEL dm = NSSelectorFromString(@"setDisplayMode:animationFactory:completion:");
-        BOOL hasDm = [v respondsToSelector:dm];
+        BOOL hasDm = SPABI(v, @"setDisplayMode:animationFactory:completion:", "v", 3, @encode(NSInteger), "@", "@");
         if (hasDm) ((void (*)(id, SEL, NSInteger, id, id))objc_msgSend)(v, dm, 4, nil, nil);
         v.userInteractionEnabled = YES;
         if (diag) [diag appendFormat:@" prep=ph%d rz%d dm%d", hasPh, hasRz, hasDm];
+        return hasDm;
     } @catch (NSException *e) {
-        if (diag) [diag appendString:[NSString stringWithFormat:@" prep!(%@)", e.reason]];
+        if (diag) [diag appendFormat:@" prep!(%@)", e.reason];
+        return NO;
     }
 }
 
-
-// 取设备真实方向：横屏时根视图宽 > 高，用它推给 scene 才对得上。
-// 之前固定竖屏 → 横屏下画面被压扁；按容器宽高比 → 竖屏下被误判横屏。
-// 唯一可靠的是「整个窗口场景的坐标空间尺寸」。
-static NSInteger SPMotionOrientation(void);
-
-static NSInteger SPDeviceOrientation(void) {
-    // 实测结论（0.8.0-0.8.3 日志）：这台机器的 SpringBoard 里
-    //   SBInterfaceOrientationController = nil
-    //   SBScreenRotationController = nil
-    //   statusBarOrientation = 0
-    //   UIDevice.orientation = 1
-    //   UIWindowScene.interfaceOrientation = 1，尺寸恒为 {430,932}
-    // 即使把手机横过来，系统层仍然认为竖屏 —— 系统方向 API 全部失效。
-    // 所以改用加速计（CoreMotion）直接读物理姿态，这是唯一不依赖系统的办法。
-    return SPMotionOrientation();
-}
-
-// 用加速计判断物理方向：x 主导 = 横屏，y 主导 = 竖屏。
-static NSInteger SPMotionOrientation(void) {
-    static NSInteger cached = 1;
-    static CFTimeInterval cachedAt = 0;
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - cachedAt < 0.2) return cached;   // 200ms 缓存，别每次都查
-    cachedAt = now;
-    @try {
-        Class mgr = NSClassFromString(@"CMMotionManager");
-        if (!mgr) return cached;
-        static id m = nil;
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{
-            m = [[mgr alloc] init];
-            ((void (*)(id, SEL, double))objc_msgSend)(m, NSSelectorFromString(@"setAccelerometerUpdateInterval:"), 0.1);
-            ((void (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"startAccelerometerUpdates"));
-        });
-        id data = SPMsg0(m, @"accelerometerData");
-        if (!data) return cached;
-        typedef struct { double x, y, z; } Vec3;
-        SEL accSel = NSSelectorFromString(@"acceleration");
-        if (![data respondsToSelector:accSel]) return cached;
-        NSMethodSignature *sig = [data methodSignatureForSelector:accSel];
-        if (!sig || [sig methodReturnLength] < sizeof(Vec3)) return cached;
-        Vec3 v;
-        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-        [inv setTarget:data]; [inv setSelector:accSel];
-        [inv invoke];
-        [inv getReturnValue:&v];
-        double ax = fabs(v.x), ay = fabs(v.y);
-        if (ax > ay * 1.6 && ax > 0.5) {
-            // x 明显主导 → 横屏。左右判断：x>0 = 左横（home 在右）
-            cached = (v.x > 0) ? 4 : 3;
-        } else {
-            cached = 1;
-        }
-        SPLog(@"motion ax=%.2f ay=%.2f az=%.2f -> orient=%ld", v.x, v.y, v.z, (long)cached);
-    } @catch (NSException *e) { SPLog(@"motion ex %@", e.reason); }
-    return cached;
-}
-
-static NSInteger SPDeviceOrientationOld(void) {
-    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *w = (UIWindowScene *)sc;
-        NSInteger v = (NSInteger)w.interfaceOrientation;
-        if (v >= 1 && v <= 4) { return v; }
-    }
-
-    // 1) SpringBoard 的接口方向控制器
-    Class oc = NSClassFromString(@"SBInterfaceOrientationController");
-    id ctrl = nil;
-    if (oc) {
-        if ([oc respondsToSelector:NSSelectorFromString(@"sharedInstance")])
-            ctrl = ((id (*)(id, SEL))objc_msgSend)(oc, NSSelectorFromString(@"sharedInstance"));
-        if (!ctrl && [oc respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")])
-            ctrl = ((id (*)(id, SEL))objc_msgSend)(oc, NSSelectorFromString(@"sharedInstanceIfExists"));
-    }
-    if (ctrl) {
-        for (NSString *sn in @[@"interfaceOrientation", @"currentInterfaceOrientation"]) {
-            SEL sel = NSSelectorFromString(sn);
-            if ([ctrl respondsToSelector:sel]) {
-                @try {
-                    NSInteger v = ((NSInteger (*)(id, SEL))objc_msgSend)(ctrl, sel);
-                    if (v >= 1 && v <= 4) { SPLog(@"orient via SBInterfaceOrientationController.%@ = %ld", sn, (long)v); return v; }
-                } @catch (__unused NSException *e) {}
-            }
-        }
-    }
-
-    // 2) statusBarOrientation
-    @try {
-        NSInteger v = [UIApplication sharedApplication].statusBarOrientation;
-        if (v >= 1 && v <= 4) return v;
-    } @catch (__unused NSException *e) {}
-
-    // 3) 兜底：设备方向
-    UIDeviceOrientation o = [[UIDevice currentDevice] orientation];
-    if (o == UIDeviceOrientationLandscapeLeft)  return 4;
-    if (o == UIDeviceOrientationLandscapeRight) return 3;
-    return 1;
-}
-
-static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOOL touchForeground, NSString **diag) {
+static BOOL SPSubmitSceneSettings(id scene, CGSize pane, NSInteger orient, NSString **diag) {
     if (diag) *diag = nil;
-    if (!scene) { if (diag) *diag = @"no-scene"; return NO; }
+    if (!scene || !isfinite(pane.width) || !isfinite(pane.height) || pane.width < 2 || pane.height < 2) {
+        if (diag) *diag = @"invalid-scene-size";
+        return NO;
+    }
     @try {
         id settings = SPGet(scene, @"settings");
-        if (!settings) { if (diag) *diag = @"no-settings"; return NO; }
         id desired = SPMsg0(settings, @"mutableCopy");
-        if (!desired) { if (diag) *diag = @"copy-nil"; return NO; }
-        SEL setFrameSel = NSSelectorFromString(@"setFrame:");
-        if (![desired respondsToSelector:setFrameSel]) { if (diag) *diag = @"no-setFrame"; return NO; }
-        ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setFrameSel,
-            CGRectMake(0, 0, pane.width, pane.height));
-        // 方向跟随设备：横屏时容器是 932x430，推 3/2 让 App 按横屏排版；
-        // 竖屏推 1。这样两种方向下画面都能完整显示。
-        SPSetI(desired, @"setInterfaceOrientation:", orient);
-        // 前台化，否则后台 scene 停渲染。恢复时绝不做 ——
-        // 退出后把 App 推进前台会把桌面挡在后面，表现就是「桌面点不了」。
-        SEL fgGet = NSSelectorFromString(@"isForeground");
-        if (!touchForeground) { /* 不动前台状态 */ }
-        else if ([desired respondsToSelector:fgGet]) {
-            SEL setFg = NSSelectorFromString(@"setForeground:");
-            if ([desired respondsToSelector:setFg]) ((void (*)(id, SEL, BOOL))objc_msgSend)(desired, setFg, YES);
-        } else {
-            SEL bgGet = NSSelectorFromString(@"isBackgrounded");
-            if ([desired respondsToSelector:bgGet]) {
-                SEL setBg = NSSelectorFromString(@"setBackgrounded:");
-                if ([desired respondsToSelector:setBg]) ((void (*)(id, SEL, BOOL))objc_msgSend)(desired, setBg, NO);
-            }
+        if (!SPABI(desired, @"setFrame:", "v", 1, @encode(CGRect))) {
+            if (diag) *diag = @"no-setFrame-ABI";
+            return NO;
         }
+        SPVoidRect1(desired, @"setFrame:", CGRectMake(0, 0, pane.width, pane.height));
+        // 方向仅在接管时写一次，来源是 scene 已有设置；拖动不触碰方向/远端尺寸。
+        SPSetI(desired, @"setInterfaceOrientation:", orient);
+        SPVoid1B(desired, @"setForeground:", YES);
+        SPVoid1B(desired, @"setBackgrounded:", NO);
         id immutable = SPMsg0(desired, @"copy");
         if (!immutable) { if (diag) *diag = @"immutable-nil"; return NO; }
-        SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
-        if ([scene respondsToSelector:upd]) {
-            ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, immutable, nil, nil);
+        NSString *three = @"updateSettings:withTransitionContext:completion:";
+        if (SPABI(scene, three, "v", 3, "@", "@", "@")) {
+            ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, NSSelectorFromString(three), immutable, nil, nil);
             if (diag) *diag = @"sent3";
             return YES;
         }
-        SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
-        if ([scene respondsToSelector:upd2]) {
-            ((void (*)(id, SEL, id, id))objc_msgSend)(scene, upd2, immutable, nil);
+        NSString *two = @"updateSettings:withTransitionContext:";
+        if (SPABI(scene, two, "v", 2, "@", "@")) {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(scene, NSSelectorFromString(two), immutable, nil);
             if (diag) *diag = @"sent2";
             return YES;
         }
-        if (diag) *diag = @"no-updateSettings";
+        if (diag) *diag = @"no-updateSettings-ABI";
     } @catch (NSException *e) {
         if (diag) *diag = [NSString stringWithFormat:@"ex %@", e.reason];
     }
@@ -786,18 +669,29 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 }
 
 - (void)installSnapshot:(UIImage *)snapshot {
-    if (!snapshot || !_containerView) return;
+    if (!SPHostOnMain(@"installSnapshot:") || !snapshot) return;
+    // 允许先 installSnapshot 后 attach；原版底部快照在 container 尚为空时直接丢掉。
+    _pendingSnapshot = snapshot;
+    [self layoutSnapshot];
+}
+
+- (void)layoutSnapshot {
+    UIView *container = _containerView;
+    if (!container || !_pendingSnapshot) return;
     if (!_snapshotView) {
-        _snapshotView = [[UIImageView alloc] initWithImage:snapshot];
+        _snapshotView = [[UIImageView alloc] initWithImage:_pendingSnapshot];
         _snapshotView.contentMode = UIViewContentModeScaleAspectFill;
         _snapshotView.clipsToBounds = YES;
+        _snapshotView.userInteractionEnabled = NO;
         _snapshotView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [_containerView insertSubview:_snapshotView atIndex:0];
     } else {
-        _snapshotView.image = snapshot;
+        _snapshotView.image = _pendingSnapshot;
     }
-    _snapshotView.frame = _containerView.bounds;
-    _snapshotView.hidden = NO;
+    if (_snapshotView.superview != container) [container insertSubview:_snapshotView atIndex:0];
+    _snapshotView.frame = container.bounds;
+    _snapshotView.hidden = _live;
+    _snapshotActive = !_live;
+    if (_hostView) _hostView.hidden = !_live;
 }
 
 
@@ -806,12 +700,39 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 // 否则 VC 一释放就把 view 一起带走（Duo 0.7.x 踩过）。
 - (UIView *)viewFromResultRetaining:(id)result {
     if ([result isKindOfClass:[UIView class]]) return (UIView *)result;
-    if (result && [result respondsToSelector:@selector(view)]) {
-        self.controller = result;
-        UIView *v = ((UIView *(*)(id, SEL))objc_msgSend)(result, @selector(view));
-        if ([v isKindOfClass:[UIView class]]) return v;
+    // 只对真正的 VC 做 view 生命周期管理，不向任意有同名 selector 的对象猜返回类型。
+    if ([result isKindOfClass:[UIViewController class]]) {
+        UIView *v = [(UIViewController *)result view];
+        if ([v isKindOfClass:[UIView class]]) { self.controller = result; return v; }
     }
     return nil;
+}
+
+static id SPNewSceneView(id handle, NSString *name, CGSize ref, NSInteger orient, id requester) {
+    BOOL separate = [name containsString:@"contentOrientation:"];
+    BOOL abi = separate ? SPABI(handle, name, "@", 4, @encode(CGSize), @encode(NSInteger), @encode(NSInteger), "@")
+                        : SPABI(handle, name, "@", 3, @encode(CGSize), @encode(NSInteger), "@");
+    if (!abi) return nil;
+    NSMethodSignature *sig = [handle methodSignatureForSelector:NSSelectorFromString(name)];
+    if (!sig) return nil;
+    @try {
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        inv.target = handle;
+        inv.selector = NSSelectorFromString(name);
+        [inv setArgument:&ref atIndex:2];
+        [inv setArgument:&orient atIndex:3];
+        if (separate) [inv setArgument:&orient atIndex:4];
+        [inv setArgument:&requester atIndex:separate ? 5 : 4];
+        [inv invoke];
+        void *raw = NULL;
+        [inv getReturnValue:&raw];
+        // 这两条已知工厂都属于 new 方法族，返回 +1；NSInvocation 本身不替 ARC 消费它。
+        // 原版 __unsafe_unretained 读取后遗失 +1，导致每次交换/重试泄漏呈现者。
+        return (__bridge_transfer id)raw;
+    } @catch (NSException *e) {
+        SPLog(@"factory %@ ex %@", name, e.reason);
+        return nil;
+    }
 }
 
 
@@ -819,466 +740,391 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
 // 画面覆盖整个容器，超出的部分由容器 clipsToBounds 裁掉。
 // 之前用 MIN（contain）导致画面只占 60% 宽、四周大片留白 —— 用户明确要求铺满。
 static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
-    if (!host || !container || reference.width < 2 || reference.height < 2) return;
+    if (!host || !container || !isfinite(reference.width) || !isfinite(reference.height) ||
+        reference.width < 2 || reference.height < 2) return;
     CGSize target = container.bounds.size;
-    if (target.width < 2 || target.height < 2) target = reference;
+    if (!isfinite(target.width) || !isfinite(target.height) || target.width < 2 || target.height < 2) return;
 
-    // 用户要求：App 的底栏（任务/消息那些 tab）必须完整可见。
-    // 所以用 fit（MIN 缩放）：整个 App 界面缩进容器，上下都不裁。
-    // 之前用 MAX（cover）会把底部 tab 栏切掉 —— 这是用户截图里看不到底栏的原因。
-    // host 的 bounds 用 reference（推给 scene 的尺寸），容器实际尺寸可能已变，
-    // 所以按实际比例缩放（fit：完整显示、不裁切、不变形）。
-    // 注意顺序：先设 identity + bounds，再设 transform，最后设 center，否则居中会算错。
-    CGFloat sx = target.width / reference.width;
-    CGFloat sy = target.height / reference.height;
-    // PV 用 cover：铺满容器、超出裁掉。这样 45pt 宽的容器里看到的是完整画面的
-    // 一块裁切区域，而不是把 App 压成一条。
-    CGFloat scale = MAX(sx, sy);
-
+    // 照抄 Duo 的写法（DPSceneHost.m layoutHostView）：
+    // bounds 固定为 scene 原尺寸（全屏），center 对齐容器中心，
+    // 再用 transform 做 cover 缩放，溢出由容器 clipsToBounds 裁掉。
+    // 关键点：全程不改 scene 尺寸，纯视觉变换 —— 拖动零延迟、不黑屏。
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0, 0, reference.width, reference.height);
-    host.transform = CGAffineTransformMakeScale(scale, scale);
-    host.center = CGPointMake(target.width / 2.0, target.height / 2.0);
+    host.center = CGPointMake(CGRectGetMidX(container.bounds), CGRectGetMidY(container.bounds));
+    CGFloat scale = MAX(target.width / reference.width, target.height / reference.height);
     container.clipsToBounds = YES;
-}
-
-
-// 纯快照：只贴图，零 scene 操作。
-
-- (BOOL)attachSnapshot:(UIImage *)image cropHalf:(NSInteger)half toContainer:(UIView *)container {
-    if (!container) return NO;
-    _containerView = container;
-    [self detach];
-
-    UIImage *use = image;
-    if (image && half >= 0 && half <= 1) {
-        // 把整张全屏图对半裁开：上半给上容器、下半给下容器
-        CGImageRef cg = image.CGImage;
-        if (cg) {
-            size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
-            CGRect r = CGRectMake(0, half == 0 ? 0 : h / 2.0, w, h / 2.0);
-            CGImageRef sub = CGImageCreateWithImageInRect(cg, r);
-            if (sub) { use = [UIImage imageWithCGImage:sub scale:image.scale orientation:image.imageOrientation]; CGImageRelease(sub); }
-        }
-    }
-
-    UIImageView *iv = [[UIImageView alloc] initWithImage:use];
-    iv.contentMode = UIViewContentModeScaleAspectFill;
-    iv.clipsToBounds = YES;
-    iv.userInteractionEnabled = NO;
-    iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [container addSubview:iv];
-    iv.frame = container.bounds;
-    _snapshotView = iv;
-    _snapshotActive = YES;
-    _attached = NO;
-    _live = NO;
-    SPLog(@"attach SNAPSHOT %@ half=%ld img=%@", _bundleID, (long)half,
-          use ? NSStringFromCGSize(use.size) : @"nil");
-    return YES;
-}
-
-- (BOOL)attachSnapshot:(UIImage *)image toContainer:(UIView *)container {
-    if (!container) return NO;
-    _containerView = container;
-    [self detach];
-
-    UIImageView *iv = [[UIImageView alloc] initWithImage:image];
-    // 快照是全屏 430x932，容器只有 430x453。
-    // AspectFit 会把整张图缩成中间一条（两侧黑边，用户截图实证）。
-    // 改成 AspectFill + 居中：铺满容器、超出部分裁掉，看起来才像真的分屏。
-    iv.contentMode = UIViewContentModeScaleAspectFill;
-    iv.clipsToBounds = YES;
-    iv.userInteractionEnabled = NO;
-    iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [container addSubview:iv];
-    iv.frame = container.bounds;
-    _snapshotView = iv;
-    _snapshotActive = YES;
-    _attached = NO;      // 没有托管活 scene
-    _live = NO;
-    SPLog(@"attach SNAPSHOT %@ img=%@", _bundleID,
-          image ? NSStringFromCGSize(image.size) : @"nil");
-    return YES;
+    host.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene {
-    if (!container) return NO;
-    _containerView = container;
-    if (_attached && _hostView && _hostView.superview == container) return YES;
+    if (!SPHostOnMain(@"attachToContainer:")) return NO;
+    [self cancelPendingAttachments];
+    _callbacksEnabled = YES;
+    return [self tryAttachToContainer:container inWindowScene:windowScene];
+}
 
-    // 每次重新 attach 前把旧宿主彻底摘掉。
-    // 不拆就叠多个 SBDeviceApplicationSceneView 渲染同一个 FBScene：既卡顿，
-    // 又会在容器被替换时留下挂在死容器上的宿主（日志里的 "container gone"）。
-    [self detach];
-
-    // ⚠️ scene 的参考尺寸永远是「全屏」，绝不推半屏。
-    // 参考 InteractivePiP Duo 的实测结论（DPSceneHost.m:1786 注释）：
-    //   "a half-screen setFrame is invalid on iOS 16 and kills the hosted pid"
-    // 推半屏尺寸 = 系统判定非法帧 → 杀掉托管进程 → 拖动时黑屏 + 卡顿。
-    // 正确做法：scene 保持全屏渲染，拖动时只改 hostView 的 scale/center。
-    // ref 必须保持真实屏幕的宽高比，只缩放大小 —— 绝不改成容器那种极端比例。
-    // 日志实证：容器 45x430 时给 ref={430,430}（正方形），App 按正方形排版，
-    // cover 缩进 45pt 细条后就只剩中间一块，画面完全对不上。
-    CGSize screen = [UIScreen mainScreen].bounds.size;
-    BOOL landscape = ([UIScreen mainScreen].bounds.size.width > screen.height) ||
-                     (container.bounds.size.width > container.bounds.size.height);
-    CGSize ref = screen;
-    if (!landscape && container.bounds.size.height > 2) {
-        // 竖屏：按容器高度等比缩放屏幕尺寸（保持 430:932 的比例）
-        CGFloat h = MAX(container.bounds.size.height, 200);
-        ref = CGSizeMake(round(screen.width * (h / screen.height)), h);
-    } else if (landscape && container.bounds.size.width > 2) {
-        CGFloat w = MAX(container.bounds.size.width, 200);
-        ref = CGSizeMake(w, round(screen.height * (w / screen.width)));
+- (BOOL)tryAttachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene {
+    // 在第一次尝试之前检查；不能像原版先创建宿主，失败后才检查退出状态。
+    UIWindow *window = container.window;
+    if (!container || !window || window.hidden ||
+        (windowScene && window.windowScene != windowScene)) return NO;
+    if (_live && _hostView && _hostView.superview == container) return YES;
+    // 已建但尚无内容：只按当前代际轮询，不能重复创建第二个呈现者。
+    if (_attached && _hostView && _scene && SPBool0(_scene, @"isValid")) {
+        _containerView = container;
+        [self layoutSnapshot];
+        [self waitForContentReady:8 generation:_attachmentGeneration];
+        return YES;
     }
-    if (ref.width < 2 || ref.height < 2) ref = screen;
-    _referenceSize = ref;
-    _lastSize = ref;
-    // ⚠️ 绝不能按容器宽高比推方向！
-    // 分屏容器是 430x453（宽 > 高），会被判成横屏 → App 整个界面旋转 90 度，
-    // 画面就"丢失"了（用户截图实证：标题竖排、内容跑到左上角）。
-    // 屏幕本身是竖屏，就永远按竖屏推。
-    NSInteger orient = SPDeviceOrientation();   // 跟随设备真实方向
+    [self releaseHostedPresentation];
+    _containerView = container;
+    [self layoutSnapshot];
+    _lastDiag = nil;
 
-    // 1) 真 FBScene
     id scene = [SPHost fbSceneForBundleID:_bundleID];
-    if (!scene) {
-        // 降级：App 未运行时先拉起来
-        _lastDiag = @"no-scene";
+    if (!scene) { _lastDiag = @"no-scene"; return NO; }
+    _scene = scene;
+
+    // 全屏参考尺寸：决不以面板 bounds 作远端 frame。方向取 scene 自身已知设置，
+    // 不请求系统旋转，也不根据 UIScreen 当前横竖猜着覆盖已有 scene 方向。
+    CGSize ref = window.screen.bounds.size;
+    if (!isfinite(ref.width) || !isfinite(ref.height) || ref.width < 2 || ref.height < 2) {
+        _lastDiag = @"invalid-display-size";
+        _scene = nil;
         return NO;
     }
-    _scene = scene;
+    id settings = SPMsg0(scene, @"settings");
+    NSInteger orient = SPInt0(settings, @"interfaceOrientation");
+    if (orient < UIInterfaceOrientationPortrait || orient > UIInterfaceOrientationLandscapeRight) {
+        CGRect frame = SPRect0(settings, @"frame");
+        CGSize basis = frame.size.width >= 2 && frame.size.height >= 2 ? frame.size : ref;
+        orient = basis.width > basis.height ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationPortrait;
+    }
+    BOOL landscape = UIInterfaceOrientationIsLandscape(orient);
+    if (landscape != (ref.width > ref.height)) ref = CGSizeMake(ref.height, ref.width);
+    _referenceSize = ref;
+    _lastSize = CGSizeZero;
 
     // 2) 拥有工厂的句柄
     id handle = [SPHost sceneHandleForScene:scene];
     if (!handle) handle = scene;      // 有些机型 scene 自己就暴露工厂
 
-    // 3) 唯一存在的工厂（本机只有这个）
-    UIView *host = nil;
-    SEL viewSel = NSSelectorFromString(
-        @"newSceneViewWithReferenceSize:contentOrientation:containerOrientation:hostRequester:");
-    if ([handle respondsToSelector:viewSel]) {
-        NSMethodSignature *sig = [handle methodSignatureForSelector:viewSel];
-        if (sig) {
-            @try {
-                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                inv.target = handle;
-                inv.selector = viewSel;
-                [inv setArgument:&ref atIndex:2];
-                [inv setArgument:&orient atIndex:3];
-                [inv setArgument:&orient atIndex:4];
-                SPHostRequester *req = _requester;
-                [inv setArgument:&req atIndex:5];
-                [inv invoke];
-                __unsafe_unretained id result = nil;
-                [inv getReturnValue:&result];
-                host = [self viewFromResultRetaining:result];
-            } @catch (NSException *e) {
-                SPLog(@"factory ex %@", e.reason);
-            }
-        }
-    }
+    // 3) 只使用新建的、自有呈现者；不得把系统 switcher 的 sceneView 摘来并 invalidate。
+    _requester = [SPHostRequester new];
+    NSString *factory = @"newSceneViewWithReferenceSize:contentOrientation:containerOrientation:hostRequester:";
+    id result = SPNewSceneView(handle, factory, ref, orient, _requester);
+    UIView *host = [self viewFromResultRetaining:result];
     if (host) _lastDiag = @"factory-sep";
-
-    // 降级：另外两个变体（本机没有，留着给别的系统版本）
     if (!host) {
-        SEL v2 = NSSelectorFromString(@"newSceneViewWithReferenceSize:orientation:hostRequester:");
-        if ([handle respondsToSelector:v2]) {
-            NSMethodSignature *sig = [handle methodSignatureForSelector:v2];
-            @try {
-                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                inv.target = handle; inv.selector = v2;
-                [inv setArgument:&ref atIndex:2];
-                [inv setArgument:&orient atIndex:3];
-                SPHostRequester *req = _requester;
-                [inv setArgument:&req atIndex:4];
-                [inv invoke];
-                __unsafe_unretained id result = nil;
-                [inv getReturnValue:&result];
-                host = [self viewFromResultRetaining:result];
-            } @catch (__unused NSException *e) {}
-            if (host) _lastDiag = @"factory-orient";
-        }
-    }
-    if (!host) {
-        // 最后兜底：已经存在的 sceneView（切换器里那个）
-        id sv = SPMsg0(scene, @"sceneView");
-        if ([sv isKindOfClass:[UIView class]]) { host = sv; _lastDiag = @"sceneView-prop"; }
+        factory = @"newSceneViewWithReferenceSize:orientation:hostRequester:";
+        result = SPNewSceneView(handle, factory, ref, orient, _requester);
+        host = [self viewFromResultRetaining:result];
+        if (host) _lastDiag = @"factory-orient";
     }
     _handle = handle;
-    if (!host) {
-        _lastDiag = _lastDiag ?: @"no-factory";
+    if (!host || host.superview || ([self.controller isKindOfClass:[UIViewController class]] &&
+                                  [(UIViewController *)self.controller parentViewController])) {
+        _lastDiag = host ? @"factory-returned-owned-view" : @"no-compatible-factory";
         SPLog(@"attach FAIL %@ diag=%@ handle=%@", _bundleID, _lastDiag,
               handle ? NSStringFromClass([handle class]) : @"nil");
-        [self detach];   // 失败也要清干净，否则下次重试会叠一个新的宿主
+        _controller = nil;
+        _handle = nil;
+        _scene = nil;
+        return NO;
+    }
+    _hostView = host;
+
+    // 4) 改任何 scene 几何值之前保存可恢复基准；不允许无法恢复的接管。
+    if (![self captureOriginalSettings]) {
+        _lastDiag = @"cannot-capture-original-geometry";
+        [self releaseHostedPresentation];
+        return NO;
+    }
+    NSMutableString *prepDiag = [NSMutableString string];
+    if (!SPPrepareSceneHost(host, prepDiag)) {
+        _lastDiag = [@"cannot-prepare-live-host" stringByAppendingString:prepDiag];
+        [self releaseHostedPresentation];
+        return NO;
+    }
+    _registrationToken = [NSObject new];
+    SPHostRegisterHostedScene(scene, _registrationToken);
+    NSString *sub = nil;
+    // 在发送之前登记归属，第一次 updateSettings 就能被 pin hook 正确处理。
+    BOOL sent = SPSubmitSceneSettings(scene, ref, orient, &sub);
+    _lastDiag = [NSString stringWithFormat:@"%@%@/%@", _lastDiag, prepDiag, sub ?: @"-"];
+    if (!sent) {
+        [self releaseHostedPresentation];
         return NO;
     }
 
-    // 4) 推 scene settings：不推的话画面还是全屏，host 是空的
-    // 在改任何东西之前，先把原始 frame / orientation 记下来
-    [self captureOriginalSettings];
-
-    NSMutableString *prepDiag = [NSMutableString string];
-    SPPrepareSceneHost(host, prepDiag);
-
-    NSString *sub = nil;
-    BOOL sent = SPSubmitSceneSettings(scene, ref, orient, &sub);
-    _lastDiag = [NSString stringWithFormat:@"%@%@/%@", _lastDiag, prepDiag, sub ?: @"-"];
-
-    // 等比缩放：scene 按 ref 全屏渲染，容器只有半屏，取 MIN(sx,sy) 并居中
-    // 容器底色给个深灰：等比缩放后两侧留白是「设计如此」，不是渲染失败的黑屏
-    if (!container.backgroundColor || CGColorGetAlpha(container.backgroundColor.CGColor) < 0.01) {
+    // 全屏参考画面以 cover 缩放到面板。VC 工厂结果要同时保活并完成 containment。
+    if (!container.backgroundColor || CGColorGetAlpha(container.backgroundColor.CGColor) < 0.01)
         container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
-    }
-    // 顺序必须：先 addSubview 再定位。
-    // 先设 center 时 host 还没有父视图，center 没有参照系 → 画面飘到容器外 = 整块黑。
+    UIViewController *vc = [_controller isKindOfClass:[UIViewController class]] ? _controller : nil;
+    UIViewController *parent = SPFindAncestorVC(container);
+    if (vc && parent && parent != vc) [parent addChildViewController:vc];
     host.autoresizingMask = UIViewAutoresizingNone;
     host.userInteractionEnabled = YES;
     [container addSubview:host];
+    if (vc.parentViewController) [vc didMoveToParentViewController:vc.parentViewController];
     [container layoutIfNeeded];
     SPFitHostView(host, container, _referenceSize);
-    _hostView = host;
     _attached = YES;
-    // sceneView 是 attach 时才建出来的，必须在此时补装 drop（PV 递归装到每层）
-    @try { [SPXferDrag attachToContainer:container label:_bundleID]; } @catch (__unused NSException *e) {}
-    // 登记托管：SPScenePin 靠它判定哪些 scene 要保持前台（防闪回桌面）
-    SPHostRegisterHostedBundleID(_bundleID);
-    _live = YES;
-    _snapshotActive = NO;
-    SPLog(@"attach OK %@ diag=%@ sent=%d view=%@ bounds=%@", _bundleID, _lastDiag, sent,
-          NSStringFromClass([host class]), NSStringFromCGRect(host.bounds));
-
-    // 画面自检：1.2s 后如果宿主里依然没有渲染内容，就露出快照（宁可显示旧画面也不给灰屏）
-    __weak typeof(self) wself = self;
-    __weak UIView *whost = host;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong typeof(wself) self = wself;
-        if (!self || !whost || whost.superview == nil) return;
-        // ⚠️ 不能用 subviews/layers 数量判断：建出来的空 sceneView 也有 1 个图层，
-        // 日志里「subviews=1 layers=1 -> live」但屏幕是黑的，就是这个原因。
-        // 真正的依据是 scene 的内容状态：contentState == 2 且 scene 有效。
-        BOOL hasContent = NO;
-        @try {
-            id sc = self->_scene;
-            NSInteger cs = -1;
-            SEL csSel = NSSelectorFromString(@"contentState");
-            if (sc && [sc respondsToSelector:csSel])
-                cs = ((NSInteger (*)(id, SEL))objc_msgSend)(sc, csSel);
-            BOOL valid = sc ? SPBool0(sc, @"isValid") : NO;
-            hasContent = valid && (cs == 2 || cs == 1);
-            SPLog(@"content check %@: contentState=%ld valid=%d subviews=%lu -> %@", self->_bundleID,
-                  (long)cs, (int)valid, (unsigned long)whost.subviews.count,
-                  hasContent ? @"live" : @"not-ready");
-        } @catch (NSException *e) { SPLog(@"content check ex %@", e.reason); }
-        if (!hasContent && self->_snapshotView) {
-            // 没就绪：先用快照垫住，别露黑；同时轮询等它真正出画面
-            whost.hidden = YES;
-            self->_snapshotView.hidden = NO;
-            self->_snapshotActive = YES;
-            [self waitForContentReady:8];
-        }
-    });
+    _live = SPSceneHasContent(scene);
+    [self layoutSnapshot];
+    SPLog(@"attach %@ %@ diag=%@ view=%@ bounds=%@", _live ? @"live" : @"waiting", _bundleID,
+          _lastDiag, NSStringFromClass([host class]), NSStringFromCGRect(host.bounds));
+    // 即使没有快照也检查就绪，不能只在装有快照时才轮询。
+    [self waitForContentReady:8 generation:_attachmentGeneration];
     return YES;
+}
+
+- (void)cancelPendingAttachments {
+    if (!SPHostOnMain(@"cancelPendingAttachments")) return;
+    _attachmentGeneration++;
+    _contentPolling = NO;
+    _callbacksEnabled = NO;
 }
 
 - (void)attachWhenReady:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
                 attempts:(NSInteger)attempts interval:(NSTimeInterval)interval {
-    if ([self attachToContainer:container inWindowScene:windowScene]) return;
-    if (attempts <= 0) { SPLog(@"attach gave up %@", self.bundleID); return; }
+    if (!SPHostOnMain(@"attachWhenReady:")) return;
+    [self cancelPendingAttachments];
+    _callbacksEnabled = YES;
+    if (!container) return;
+    _containerView = container;
+    [self layoutSnapshot];
+    if (!isfinite(interval) || interval <= 0) interval = 0.4;
+    [self attemptAttachToContainer:container inWindowScene:windowScene attempts:MAX(0, attempts)
+                         interval:MAX(0.05, interval) generation:_attachmentGeneration];
+}
+
+- (void)attemptAttachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
+                     attempts:(NSInteger)attempts interval:(NSTimeInterval)interval generation:(NSUInteger)generation {
+    if (generation != _attachmentGeneration || !container || _containerView != container ||
+        !container.window || container.window.hidden ||
+        (windowScene && container.window.windowScene != windowScene)) return;
+    if ([self tryAttachToContainer:container inWindowScene:windowScene]) return;
+    if (attempts <= 0) { SPLog(@"attach gave up %@ (%@)", _bundleID, _lastDiag); return; }
     __weak typeof(self) wself = self;
     __weak UIView *wc = container;
     __weak UIWindowScene *ws = windowScene;
-    // 容器已经不在屏幕上（用户退出了分屏）就停手，别在后台一直扫
-    if (!container.window) { SPLog(@"attach abandon %@ (container gone)", self.bundleID); return; }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    __weak UIWindow *ww = container.window;
+    NSTimeInterval delay = MIN(interval, 30.0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
-        if (!self || self->_attached) return;
-        [self attachWhenReady:wc inWindowScene:ws attempts:attempts - 1 interval:interval];
+        UIView *current = wc;
+        if (!self || generation != self->_attachmentGeneration || !current || !ww ||
+            current != self->_containerView || current.window != ww || ww.hidden ||
+            (windowScene && !ws)) return;
+        [self attemptAttachToContainer:current inWindowScene:ws attempts:attempts - 1
+                             interval:interval generation:generation];
     });
+}
+
+- (BOOL)moveToContainer:(UIView *)container {
+    if (!SPHostOnMain(@"moveToContainer:") || !container.window || container.window.hidden) return NO;
+    [self cancelPendingAttachments];
+    _containerView = container;
+    _lastSize = CGSizeZero;
+    [self layoutSnapshot];
+    if (!_attached || !_hostView) {
+        // scene 尚未建立的面板同样可以交换：旧容器上的重试失效，新容器接着等待。
+        [self attachWhenReady:container inWindowScene:container.window.windowScene attempts:8 interval:1.5];
+        return YES;
+    }
+    UIViewController *vc = [_controller isKindOfClass:[UIViewController class]] ? _controller : nil;
+    UIViewController *parent = SPFindAncestorVC(container);
+    BOOL changeParent = vc && parent != vc && vc.parentViewController != parent;
+    if (changeParent) {
+        if (vc.parentViewController) {
+            [vc willMoveToParentViewController:nil];
+            [_hostView removeFromSuperview];
+            [vc removeFromParentViewController];
+        }
+        if (parent) [parent addChildViewController:vc];
+    }
+    [container addSubview:_hostView];
+    if (changeParent && parent) [vc didMoveToParentViewController:parent];
+    [container layoutIfNeeded];
+    SPFitHostView(_hostView, container, _referenceSize);
+    [self refreshLiveness];
+    [self waitForContentReady:8 generation:_attachmentGeneration];
+    return YES;
 }
 
 - (void)setFrameSize:(CGSize)size {
     if (!_containerView) return;
     CGSize r = CGSizeMake(round(size.width), round(size.height));
     if (r.width < 2 || r.height < 2) return;
-    // 尺寸变化小于 8pt 直接忽略：拖动分隔条时每秒几十次跨进程推送会把主线程拖垮，
-    // 而且会打断系统拖拽会话。
     if (CGSizeEqualToSize(r, _lastSize)) return;
-    if (fabs(r.height - _lastSize.height) < 8 && fabs(r.width - _lastSize.width) < 8) return;
     _lastSize = r;
-    // 和 attach 用同一套参考尺寸规则：按「屏幕宽 × 容器高」推，
-    // 不把容器那种极端宽高比直接给 scene（45×430 会把 App 压成一条）。
-    CGSize screen = [UIScreen mainScreen].bounds.size;
-    CGSize ref = r;
-    if (r.width > r.height) {
-        // 横屏容器：宽度取屏幕宽、高度按容器
-        ref = CGSizeMake(MAX(r.width, 120), screen.height);
-    } else {
-        ref = CGSizeMake(screen.width, MAX(r.height, 120));
-    }
-    _referenceSize = ref;
-    NSInteger orient = SPDeviceOrientation();
-    NSString *sub = nil;
-    SPSubmitSceneSettingsEx(_scene, ref, orient, NO, &sub);
-    SPLog(@"resize %@ -> %@ (ref=%@ orient=%ld %@)", _bundleID, NSStringFromCGSize(r),
-          NSStringFromCGSize(ref), (long)orient, sub ?: @"-");
-
+    // ⚠️ 这里不再向 scene 推任何 settings。
+    // 拖动时只需要把 hostView 重新等比缩放贴进容器（纯本地变换，零跨进程开销）。
+    // 推半屏 settings 会被系统判为非法帧并杀掉 App 进程，这就是之前拖动黑屏的根因。
     if (_hostView && _containerView) {
-        SPFitHostView(_hostView, _containerView, ref);
+        SPFitHostView(_hostView, _containerView, _referenceSize);
     }
     _snapshotView.frame = _containerView.bounds;
 }
 
-// 等 scene 真正渲染出内容再换上活画面（首次分屏时下面那个 App 常还在启动）
-- (void)waitForContentReady:(int)tries {
-    // ⚠️ 窗口已经隐藏 / 已 detach 时立刻停手。
-    // 否则会一直空转等一个永远不会就绪的 scene（0.6.5 日志：contentState=0 卡到 SpringBoard 假死）。
-    if (!_attached || !_hostView || _hostView.window == nil) {
-        SPLog(@"content poll stopped: %@ (attached=%d)", _bundleID, (int)_attached);
-        return;
-    }
+// 所有延迟回调同时核对 generation、scene、host、container、window，不能污染后一次挂载。
+- (void)waitForContentReady:(NSInteger)tries generation:(NSUInteger)generation {
+    UIView *host = _hostView;
+    UIView *container = _containerView;
+    UIWindow *window = container.window;
+    if (_contentPolling || generation != _attachmentGeneration || !_attached || !host ||
+        !window || window.hidden || host.superview != container || _live) return;
     if (tries <= 0) { SPLog(@"content never ready: %@", _bundleID); return; }
+    _contentPolling = YES;
     __weak typeof(self) wself = self;
+    __weak UIView *wh = host;
+    __weak UIView *wc = container;
+    __weak UIWindow *ww = window;
+    __weak id ws = _scene;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
-        if (!self || !self->_hostView) return;
-        BOOL ready = NO;
-        @try {
-            id sc = self->_scene;
-            NSInteger cs = -1;
-            SEL csSel = NSSelectorFromString(@"contentState");
-            if (sc && [sc respondsToSelector:csSel])
-                cs = ((NSInteger (*)(id, SEL))objc_msgSend)(sc, csSel);
-            ready = sc && SPBool0(sc, @"isValid") && (cs == 2 || cs == 1);
-        } @catch (__unused NSException *e) {}
-        if (ready) {
-            self->_hostView.hidden = NO;
-            self->_snapshotView.hidden = YES;
-            self->_snapshotActive = NO;
-            SPLog(@"content ready: %@", self->_bundleID);
-        } else {
-            [self waitForContentReady:tries - 1];
+        if (!self || generation != self->_attachmentGeneration) return;
+        UIView *currentHost = wh;
+        UIView *currentContainer = wc;
+        UIWindow *currentWindow = ww;
+        if (!self->_attached || !currentHost || !currentContainer || !currentWindow ||
+            currentWindow.hidden || currentHost != self->_hostView || currentContainer != self->_containerView ||
+            currentHost.superview != currentContainer || currentContainer.window != currentWindow || ws != self->_scene) {
+            self->_contentPolling = NO;
+            return;
         }
+        // refresh 时保留 polling 标记，避免它另起一条轮询链。
+        BOOL ready = [self refreshLiveness];
+        self->_contentPolling = NO;
+        if (!ready) [self waitForContentReady:tries - 1 generation:generation];
+        else SPLog(@"content ready: %@", self->_bundleID);
     });
 }
 
 - (BOOL)refreshLiveness {
-    if (!_attached) return NO;
-    BOOL alive = YES;
-    if (_scene && [_scene respondsToSelector:NSSelectorFromString(@"isValid")] && !SPBool0(_scene, @"isValid"))
-        alive = NO;
-    if (alive && _hostView && _hostView.subviews.count == 0 && _hostView.layer.sublayers.count == 0)
-        alive = NO;
-    if (!alive && !_snapshotActive) {
-        _snapshotActive = YES;
-        _hostView.hidden = YES;
-        _snapshotView.hidden = NO;
-    }
-    _live = alive;
-    return alive;
+    if (!SPHostOnMain(@"refreshLiveness")) return NO;
+    BOOL ready = NO;
+    @try {
+        ready = _attached && _hostView && _hostView.superview == _containerView &&
+                _containerView.window && !_containerView.window.hidden && SPSceneHasContent(_scene);
+    } @catch (NSException *e) { SPLog(@"content check %@ ex %@", _bundleID, e.reason); }
+    _live = ready;
+    _snapshotActive = !ready && _snapshotView != nil;
+    _snapshotView.hidden = ready;
+    // 没快照时保留宿主可见以便它后续出画面，不把黑屏永久 hidden 住。
+    _hostView.hidden = _snapshotActive;
+    if (!ready && !_contentPolling) [self waitForContentReady:8 generation:_attachmentGeneration];
+    return ready;
 }
 
-- (void)captureOriginalSettings {
-    if (_touchedSettings) return;
+- (BOOL)captureOriginalSettings {
+    if (_touchedSettings && _originalSettings[@"frame"]) return YES;
     @try {
-        id settings = SPGet(_scene, @"settings");
-        if (!settings) return;
-        NSMutableDictionary *d = [NSMutableDictionary dictionary];
-        SEL fGet = NSSelectorFromString(@"frame");
-        if ([settings respondsToSelector:fGet]) {
-            CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
-            d[@"frame"] = [NSValue valueWithCGRect:f];
+        NSDictionary *shared = SPRepairOriginalSettingsForScene(_scene);
+        if (shared) {
+            _originalSettings = shared;
+        } else {
+            id settings = SPGet(_scene, @"settings");
+            if (!SPABI(settings, @"frame", @encode(CGRect), 0)) return NO;
+            CGRect frame = SPRect0(settings, @"frame");
+            if (!isfinite(frame.origin.x) || !isfinite(frame.origin.y) ||
+                !isfinite(frame.size.width) || !isfinite(frame.size.height) ||
+                frame.size.width < 2 || frame.size.height < 2) return NO;
+            NSMutableDictionary *original = [NSMutableDictionary dictionaryWithObject:[NSValue valueWithCGRect:frame] forKey:@"frame"];
+            if (SPABI(settings, @"interfaceOrientation", @encode(NSInteger), 0))
+                original[@"orientation"] = @(SPInt0(settings, @"interfaceOrientation"));
+            _originalSettings = [original copy];
         }
-        SEL ioGet = NSSelectorFromString(@"interfaceOrientation");
-        if ([settings respondsToSelector:ioGet])
-            d[@"orientation"] = @(((NSInteger (*)(id, SEL))objc_msgSend)(settings, ioGet));
-        _originalSettings = d;
+        SPRepairRecordSceneSettings(_scene, _originalSettings);
         _touchedSettings = YES;
-        SPLog(@"scene %@ original frame=%@", _bundleID,
-              d[@"frame"] ? NSStringFromCGRect([d[@"frame"] CGRectValue]) : @"?");
+        SPLog(@"scene %@ captured frame=%@", _bundleID, NSStringFromCGRect([_originalSettings[@"frame"] CGRectValue]));
+        return YES;
     } @catch (NSException *e) { SPLog(@"capture settings ex %@", e.reason); }
+    return NO;
 }
 
 - (void)restoreOriginalSceneSettings {
+    if (!SPHostOnMain(@"restoreOriginalSceneSettings")) return;
+    [self cancelPendingAttachments];
+    [self restoreSavedGeometry];
+}
+
+- (void)restoreSavedGeometry {
+    // 恢复前先撤销本 owner 的前台 pin；否则 updateSettings hook 会把恢复再次前台化。
+    SPHostUnregisterHostedScene(_scene, _registrationToken);
+    _registrationToken = nil;
     if (!_touchedSettings || !_scene || !_originalSettings) return;
-    NSValue *frameVal = _originalSettings[@"frame"];
-    NSNumber *oriVal = _originalSettings[@"orientation"];
-    if (!frameVal) return;
-    // 退出时恢复成全屏尺寸：App 回到系统正常布局，否则它一直按半屏渲染 → 黑/灰
-    // 1) 先原样写回接管前的 frame（最保守）
-    CGRect orig = [frameVal CGRectValue];
-    CGRect screen = [UIScreen mainScreen].bounds;
-    CGSize target = orig.size;
-    // 原值是半屏尺寸（我们接管后才记录的）就改用屏幕尺寸
-    if (target.width < 2 || target.height < screen.size.height * 0.9) target = screen.size;
-    NSString *sub = nil;
-    // 方向一律不写：捕获到的 oriVal 可能是被我们改过的脏值，写回去会让 App 永久横屏
-    SPSubmitSceneSettingsEx(_scene, target, 1, NO, &sub);
-    SPLog(@"scene %@ restore target=%.0fx%.0f (orig=%.0fx%.0f)", _bundleID,
-          target.width, target.height, orig.size.width, orig.size.height);
-    SPLog(@"scene %@ restored to %.0fx%.0f (%@)", _bundleID, screen.size.width, screen.size.height, sub ?: @"-");
-    // 回读确认：没生效就说明推错了地方，必须写日志（否则用户看到的就是「App 坏了」）
-    @try {
-        id settings = SPGet(_scene, @"settings");
-        SEL fGet = NSSelectorFromString(@"frame");
-        if (settings && [settings respondsToSelector:fGet]) {
-            CGRect now = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
-            SPLog(@"scene %@ now reads %.0fx%.0f", _bundleID, now.size.width, now.size.height);
-            if (now.size.height < screen.size.height * 0.9) {
-                // 没生效：再推一次，用 2 参数版本
-                SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
-                id settings2 = SPGet(_scene, @"settings");
-                id desired = SPMsg0(settings2, @"mutableCopy");
-                SEL setF = NSSelectorFromString(@"setFrame:");
-                if (desired && [desired respondsToSelector:setF]) {
-                    ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setF,
-                        CGRectMake(0, 0, screen.size.width, screen.size.height));
-                    id imm = SPMsg0(desired, @"copy");
-                    if (imm && [_scene respondsToSelector:upd2])
-                        ((void (*)(id, SEL, id, id))objc_msgSend)(_scene, upd2, imm, nil);
-                    SPLog(@"scene %@ retried restore", _bundleID);
-                }
-            }
-        }
-    } @catch (NSException *e) { SPLog(@"verify ex %@", e.reason); }
+    if (SPHostSceneIsHosted(_scene)) {
+        // 旧 owner 退出时仍有新 owner：基准留在 repair 台账给最后一个 owner 恢复。
+        SPLog(@"scene %@ restore deferred (another owner)", _bundleID);
+        _touchedSettings = NO;
+        _originalSettings = nil;
+        return;
+    }
+    NSString *diag = nil;
+    BOOL sent = SPRepairRestoreSceneGeometry(_scene, _originalSettings, &diag);
+    SPLog(@"scene %@ restore %@ (%@)", _bundleID, sent ? @"submitted" : @"pending", diag ?: @"-");
+    if (sent) {
+        SPRepairForgetScene(_scene);
+        _touchedSettings = NO;
+        _originalSettings = nil;
+    }
+    // updateSettings 是异步事务；不在同一栈回读旧 frame 后再猜着发第二个全屏事务。
+}
+
+- (void)releaseHostedPresentation {
+    SPHostUnregisterHostedScene(_scene, _registrationToken);
+    _registrationToken = nil;
+    _attached = NO;
+    _live = NO;
+    // requester / handle 在 invalidate 完成前保持强引用。
+    @try { SPReleaseSceneView(_hostView, _controller); }
+    @catch (NSException *e) { SPLog(@"detach view ex %@", e.reason); }
+    _hostView = nil;
+    _controller = nil;
+    // 未显式 restore 的交换旧路径、替换失败、dealloc 前 detach 也不能丢失恢复机会。
+    [self restoreSavedGeometry];
+    _scene = nil;
+    _handle = nil;
+    _requester = nil;
+    _originalSettings = nil;
     _touchedSettings = NO;
+    _referenceSize = CGSizeZero;
+    _lastSize = CGSizeZero;
 }
 
 - (void)detach {
-    // ⚠️ 顺序很重要：先主动放弃 scene 的呈现权，再把视图摘下来。
-    // 只 removeFromSuperview 的话，scene 仍认为我们在渲染它 →
-    // 拆窗后它没有别的 present，画面不再刷新 → 再次打开就是灰屏/黑屏。
-    @try {
-        if (_hostView) {
-            // ⚠️ 这里不再推全屏参考尺寸。
-            // 改尺寸要等 hostView 摘掉之后由 restoreOriginalSceneSettings 统一做，
-            // 否则「半屏视图 + 全屏 settings」同时存在，那一帧就是黑的。
-            // 有些版本提供 invalidate / 释放接口，存在就调
-            for (NSString *selName in @[@"invalidate", @"detachScene"]) {
-                SEL sel = NSSelectorFromString(selName);
-                if (![_hostView respondsToSelector:sel]) continue;
-                @try { ((void (*)(id, SEL))objc_msgSend)(_hostView, sel); }
-                @catch (__unused NSException *e) {}
-            }
-        }
-    } @catch (NSException *e) { SPLog(@"detach prep ex %@", e.reason); }
-
-    [_hostView removeFromSuperview];
+    if (!SPHostOnMain(@"detach")) return;
+    [self cancelPendingAttachments];
+    [self releaseHostedPresentation];
     [_snapshotView removeFromSuperview];
-    _hostView = nil;
     _snapshotView = nil;
-    _attached = NO;
-    _live = NO;
-    SPHostUnregisterHostedBundleID(_bundleID);
-    _scene = nil;
-    _handle = nil;
-    _controller = nil;
+    _pendingSnapshot = nil;
+    _snapshotActive = NO;
+    _containerView = nil;
 }
 
 - (void)dealloc {
-    [_hostView removeFromSuperview];
-    [_snapshotView removeFromSuperview];
+    // 正常路径由 owner 在主线程显式 detach。遗漏时也必须撤登记并放弃呈现权，
+    // 且不能像原版直接在任意释放线程触碰 UIKit。
+    SPHostUnregisterHostedScene(_scene, _registrationToken);
+    UIView *view = _hostView;
+    UIImageView *snapshot = _snapshotView;
+    id scene = _scene;
+    NSDictionary *original = _touchedSettings ? _originalSettings : nil;
+    NSArray *resources = @[_controller ?: NSNull.null, _requester ?: NSNull.null, _handle ?: NSNull.null];
+    void (^cleanup)(void) = ^{
+        @try { SPReleaseSceneView(view, resources.firstObject); [snapshot removeFromSuperview]; }
+        @catch (NSException *e) { SPLog(@"host dealloc cleanup ex %@", e.reason); }
+        if (original && !SPHostSceneIsHosted(scene)) {
+            NSString *diag = nil;
+            if (SPRepairRestoreSceneGeometry(scene, original, &diag)) SPRepairForgetScene(scene);
+        }
+    };
+    if ([NSThread isMainThread]) cleanup();
+    else dispatch_async(dispatch_get_main_queue(), cleanup);
 }
 
 @end

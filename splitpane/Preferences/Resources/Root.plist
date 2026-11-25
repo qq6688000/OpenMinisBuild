@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>装了之后如果进安全模式：先回这里把「Hook 系统上滑手势」和「自装 pan」都关掉，只留状态栏双击，再注销。入口：状态栏双击 → 选 App → 上下分屏。</string>
+			<string>装了之后如果进安全模式：先关闭「Hook 系统上滑手势」和「自装 pan」，只留状态栏双击，再注销。首次开启系统手势 Hook 需注销主屏幕；关闭入口立即停止响应。入口：状态栏双击 → 选 App → 上下分屏。</string>
 			<key>label</key>
 			<string>SplitPane 上下分屏</string>
 		</dict>
@@ -93,6 +93,8 @@
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>手感</string>
+			<key>footerText</key>
+			<string>上滑必须从屏幕底部起手。此值限定最小上滑距离（20%～80%）；挂起前台 App 仍需滑到灵动岛下方区域。</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -106,7 +108,7 @@
 			<key>key</key>
 			<string>parkThreshold</string>
 			<key>label</key>
-			<string>上滑触发阈值（屏高百分比）</string>
+			<string>上滑最小距离（屏高百分比）</string>
 			<key>max</key>
 			<integer>80</integer>
 			<key>min</key>

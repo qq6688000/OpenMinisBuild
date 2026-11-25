@@ -1,16 +1,24 @@
-TARGET := iphone:clang:16.5:16.1
-ARCHS := arm64e
-THEOS_PACKAGE_SCHEME := 
+# Keep a single release pipeline: real Apple clang/ld, both the tweak and
+# preference bundle, signature verification, and versioned Debian packaging.
+# The old Linux Theos wrapper silently selected arm64 + LLD and omitted prefs.
+PYTHON ?= python3
+PROJECT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+.DEFAULT_GOAL := all
 
-include $(THEOS)/makefiles/common.mk
+.PHONY: all package apple-build check-toolchain clean help
+all: package
 
-TWEAK_NAME := SplitPane
-SplitPane_FILES := $(wildcard Sources/*.m)
-SplitPane_FRAMEWORKS := UIKit Foundation QuartzCore CoreGraphics
-SplitPane_PRIVATE_FRAMEWORKS :=
-SplitPane_CFLAGS := -isystem $(THEOS)/sdks/iPhoneOS16.5.sdk/usr/include-c++ 
-SplitPane_CFLAGS += -fobjc-arc -ISources -Wno-objc-multiple-method-names -Wno-unguarded-availability-new -fno-modules -fno-module-maps -DSDK16
-SplitPane_LDFLAGS := -Xlinker -undefined -Xlinker dynamic_lookup
-SplitPane_INSTALL_PATH := /Library/MobileSubstrate/DynamicLibraries
+package apple-build:
+	$(PYTHON) "$(PROJECT_DIR)build-apple.py"
 
-include $(THEOS_MAKE_PATH)/tweak.mk
+check-toolchain:
+	$(PYTHON) "$(PROJECT_DIR)build-apple.py" --check-toolchain
+
+clean:
+	rm -rf -- "$(PROJECT_DIR)dist-apple"
+
+help:
+	@printf '%s\n' \
+	  'make package          Build/verify both binaries and package (macOS + full Xcode).' \
+	  'make check-toolchain  Check tool identities only; not a successful product build.' \
+	  'make clean            Remove generated dist-apple output only.'

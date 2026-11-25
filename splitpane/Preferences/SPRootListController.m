@@ -2,6 +2,7 @@
 #import "vendor/include/Preferences/PSSpecifier.h"
 #import <notify.h>
 #import <spawn.h>
+#import <math.h>
 
 extern char **environ;
 
@@ -9,6 +10,41 @@ extern char **environ;
 
 static NSString *const SPDomain = @"com.seagull.splitpane";
 static NSString *const SPChangeNotification = @"SplitPaneSettingsDidChange";
+
+// 仅接受本面板声明的键；损坏的 plist/偏好不能变成任意 CFPreferences 写入。
+static id SPPanelDefault(NSString *key) {
+    if (![key isKindOfClass:[NSString class]]) return nil;
+    return @{@"enabled": @YES, @"statusTapEntry": @YES, @"hookHomeGesture": @NO,
+             @"fallbackPanEntry": @NO, @"showBanner": @YES,
+             @"parkThreshold": @45, @"haptics": @YES}[key];
+}
+
+static id SPPanelValue(id value, NSString *key) {
+    id fallback = SPPanelDefault(key);
+    if (!fallback) return nil;
+    if ([key isEqualToString:@"parkThreshold"]) {
+        double d = 45.0;
+        if ([value isKindOfClass:[NSNumber class]] && CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID()) {
+            d = [value doubleValue];
+        } else if ([value isKindOfClass:[NSString class]]) {
+            NSScanner *scanner = [NSScanner scannerWithString:[value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
+            if (![scanner scanDouble:&d] || !scanner.isAtEnd) return fallback;
+        }
+        if (!isfinite(d) || d <= 0) return fallback;
+        if (d <= 1.0) d *= 100.0; // 兼容运行时已支持的旧比例值
+        return @(MIN(MAX(d, 20.0), 80.0));
+    }
+    if ([value isKindOfClass:[NSNumber class]]) {
+        double d = [value doubleValue];
+        return d == 0 ? @NO : (d == 1 ? @YES : fallback);
+    }
+    if ([value isKindOfClass:[NSString class]]) {
+        NSString *s = [[value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+        if ([@[@"1", @"true", @"yes"] containsObject:s]) return @YES;
+        if ([@[@"0", @"false", @"no"] containsObject:s]) return @NO;
+    }
+    return fallback;
+}
 
 @interface SPRootListController : PSListController
 @end
@@ -27,17 +63,20 @@ static NSString *const SPChangeNotification = @"SplitPaneSettingsDidChange";
 
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
+    if (!SPPanelDefault(key)) return [specifier propertyForKey:@"default"];
+    CFPreferencesAppSynchronize((__bridge CFStringRef)SPDomain);
     CFPropertyListRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key, (__bridge CFStringRef)SPDomain);
-    if (!v) return [specifier propertyForKey:@"default"];
-    return (__bridge_transfer id)v;
+    return SPPanelValue(v ? (__bridge_transfer id)v : nil, key);
 }
 
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
-    CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value,
+    id normalized = SPPanelValue(value, key);
+    if (!normalized) return;
+    CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)normalized,
                              (__bridge CFStringRef)SPDomain);
-    CFPreferencesAppSynchronize((__bridge CFStringRef)SPDomain);
-    notify_post(SPChangeNotification.UTF8String);
+    if (CFPreferencesAppSynchronize((__bridge CFStringRef)SPDomain))
+        notify_post(SPChangeNotification.UTF8String);
 }
 
 - (void)repairScenes {

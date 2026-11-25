@@ -14,15 +14,16 @@
 @property (nonatomic, assign) BOOL snapshotActive;
 @property (nonatomic, copy) NSString *lastDiag;
 
+// 宿主/scene/UIKit 生命周期方法必须在主线程调用。
+// attach 的延迟重试和内容轮询均可取消；detach 也会取消并恢复自身改过的几何信息。
 - (instancetype)initWithBundleID:(NSString *)bundleID;
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene;
-// 纯快照模式：只往容器里贴一张冻结图，完全不碰 scene（不抓 scene、不推 settings）。
-// SpringBoard 里这样最稳：不会因为 scene 状态变化导致黑屏/卡顿/崩溃。
-- (BOOL)attachSnapshot:(UIImage *)image toContainer:(UIView *)container;
-// withCrop：只显示图片的一部分（0=上半 1=下半），用来让两块看起来是不同内容
-- (BOOL)attachSnapshot:(UIImage *)image cropHalf:(NSInteger)half toContainer:(UIView *)container;
 - (void)attachWhenReady:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
                 attempts:(NSInteger)attempts interval:(NSTimeInterval)interval;
+// 交换面板只移动已创建的 sceneView，不销毁/重建 scene；未挂载则在新容器重试。
+- (BOOL)moveToContainer:(UIView *)container;
+// 退出第一步调用；不拆视图、不改 scene 状态，只使旧重试/内容回调失效。
+- (void)cancelPendingAttachments;
 - (void)installSnapshot:(UIImage *)snapshot;
 - (void)setFrameSize:(CGSize)size;
 - (BOOL)refreshLiveness;
@@ -40,7 +41,6 @@
 + (BOOL)homePress;
 + (BOOL)homePressInWindowScene:(UIWindowScene *)ws;
 + (BOOL)forceHomeScreen;
-+ (void)dumpOrientationAPIs;
 + (BOOL)pushSceneToBackground:(NSString *)bundleID;
 + (void)dumpHomeAPIs;
 // 只做激活（毫秒级，不启动进程），用来让 App 自己重排成全屏
@@ -48,6 +48,9 @@
 + (void)forceRecycleApp:(NSString *)bundleID;
 + (BOOL)openApp:(NSString *)bundleID suspended:(BOOL)suspended completion:(void (^)(BOOL ok))completion;
 + (BOOL)activateApp:(NSString *)bundleID windowScene:(UIWindowScene *)scene completion:(void (^)(BOOL ok))completion;
-+ (BOOL)homePress;
 + (NSString *)homePressDiag;
 @end
+
+// 旧函数名保留给面板退出链路；内部以 scene 对象和弱 owner 登记，不再按 bundle 子串匹配。
+FOUNDATION_EXPORT void SPHostClearHostedBundleIDs(void);
+FOUNDATION_EXPORT BOOL SPHostSceneIsHosted(id scene);

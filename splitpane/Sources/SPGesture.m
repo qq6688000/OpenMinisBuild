@@ -10,11 +10,13 @@
 + (void)parkFrontmostApp;
 + (BOOL)isArmed;
 + (NSString *)parkedBundleID;
++ (void)cancelPendingSession;
 @end
 #import "SPAppPicker.h"
 #import "SPPaneController.h"
 #import "SPLog.h"
 #import "SPWindowRegistry.h"
+#import <math.h>
 
 // 入口层。三条通道，按可靠性排序：
 //   1) hook 系统 home 手势的 touchesEnded（Duo 实证这条路能接住）
@@ -38,6 +40,12 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 @property (nonatomic, strong) UIPanGestureRecognizer *fallbackPan;
 @property (nonatomic, strong) UITapGestureRecognizer *statusTap;
 @property (nonatomic, weak) UIView *panHost;
+@property (nonatomic, strong) NSMutableArray<UITapGestureRecognizer *> *statusTaps;
+@property (nonatomic, assign) NSUInteger pickerGeneration;
+- (BOOL)beginTrackingAtPoint:(CGPoint)loc;
+- (void)removeStatusTaps;
+- (void)removeFallbackPan;
+- (UIWindowScene *)windowSceneForEntry;
 - (void)presentPickerForSplitWithParked:(NSString *)parked needPark:(BOOL)needPark;
 - (void)returnToHomeDismissingApp:(NSString *)bundleID;
 @end
@@ -53,7 +61,15 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 #pragma mark - 装入口
 
 - (void)installInWindowScene:(UIWindowScene *)scene {
-    if (scene) _scene = scene;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self installInWindowScene:scene]; });
+        return;
+    }
+    if (scene && scene != _scene) {
+        [self removeStatusTaps];
+        [self removeFallbackPan];
+        _scene = scene;
+    }
     [[NSNotificationCenter defaultCenter] removeObserver:self name:SPNotifyChanged object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(settingsChanged)
                                                  name:SPNotifyChanged object:nil];
@@ -61,8 +77,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     UIWindowScene *ws = scene ?: _scene;
     if (!ws) { SPLog(@"install: no window scene yet"); return; }
     @try {
-        if ([SPSettings statusTapEnabled]) [self installStatusTapInScene:ws];
-        if ([SPSettings fallbackPanEnabled] && !self.hooksAvailable) [self installFallbackPanInScene:ws];
+        [self settingsChanged];
     } @catch (NSException *e) {
         SPLog(@"install ex %@", e.reason);
     }
@@ -75,6 +90,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     // 状态栏那层的 host 用 SBRootSceneWindow 最靠谱。
     UIWindow *root = nil, *home = nil;
     for (UIWindow *w in scene.windows) {
+        if ([[SPWindowRegistry registeredWindows] containsObject:w]) continue;
         if (w.isHidden || w.alpha < 0.01) continue;
         if (w.windowLevel > UIWindowLevelStatusBar) continue;
         // 排除我们家自己的 overlay（level 1~4），否则会把卡片/分屏窗口当成 SpringBoard 主窗口
@@ -86,6 +102,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     if (root) return root;
     if (home) return home;
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.windowScene != scene || [[SPWindowRegistry registeredWindows] containsObject:w]) continue;
         if (w.isHidden || w.alpha <= 0.01) continue;
         if (w.windowLevel > UIWindowLevelNormal && w.windowLevel < 100) continue;
         if (w.windowLevel <= UIWindowLevelStatusBar) return w;
@@ -109,6 +126,7 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     tap.cancelsTouchesInView = NO;
     [host addGestureRecognizer:tap];
     _statusTap = tap;
+    _statusTaps = [NSMutableArray arrayWithObject:tap];
 
     // 状态栏本身是独立 window/子树：普通点击可能被系统吞掉，再往它的状态栏管理视图上挂一份
     @try {
@@ -120,12 +138,13 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
             if ([v isKindOfClass:[NSArray class]]) { views = v; break; }
         }
         for (UIView *sv in views) {
-            if (![sv isKindOfClass:[UIView class]]) continue;
+            if (![sv isKindOfClass:[UIView class]] || sv.window.windowScene != scene) continue;
             UITapGestureRecognizer *t2 = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statusDoubleTapped:)];
             t2.numberOfTapsRequired = 2;
             t2.delegate = self;
             t2.cancelsTouchesInView = NO;
             [sv addGestureRecognizer:t2];
+            [_statusTaps addObject:t2];
         }
         SPLog(@"statusTap installed on %@ + %lu status bars", NSStringFromClass(host.class),
               (unsigned long)views.count);
@@ -148,26 +167,66 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     SPLog(@"fallback pan installed");
 }
 
+- (void)removeStatusTaps {
+    for (UITapGestureRecognizer *tap in [_statusTaps copy]) [tap.view removeGestureRecognizer:tap];
+    _statusTaps = nil;
+    _statusTap = nil;
+}
+
+- (void)removeFallbackPan {
+    [_fallbackPan.view removeGestureRecognizer:_fallbackPan];
+    _fallbackPan = nil;
+    _panHost = nil;
+    [self cancelTracking];
+}
+
 - (void)settingsChanged {
-    if (![SPSettings enabled] && self.card) [self.card dismissAnimated:nil];
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self settingsChanged]; });
+        return;
+    }
+    [self cancelTracking];
+    BOOL enabled = [SPSettings enabled];
+    if (!enabled || ![SPSettings statusTapEnabled]) [self removeStatusTaps];
+    else if (_scene) [self installStatusTapInScene:_scene];
+    if (!enabled || ![SPSettings fallbackPanEnabled] || (self.hooksAvailable && [SPSettings hooksEnabled]))
+        [self removeFallbackPan];
+    else if (_scene) [self installFallbackPanInScene:_scene];
+    if (!enabled) {
+        ++_pickerGeneration;
+        _busy = NO;
+        [SPParked cancelPendingSession];
+        [SPParkCard dismissAll];
+        self.card = nil;
+        self.parkedBundleID = nil;
+        self.parkedSnapshot = nil;
+    }
 }
 
 #pragma mark - 手势代理
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
-    CGPoint p = [touch locationInView:g.view];
-    CGFloat h = g.view.bounds.size.height;
-    if (g == _statusTap) return p.y <= kStatusStrip;
-    if (g == _fallbackPan) return p.y >= h - kBottomStrip;
-    return YES;
+    if (![SPSettings enabled] || _busy || [SPAppPicker isPresenting] ||
+        [[SPWindowRegistry registeredWindows] containsObject:touch.window]) return NO;
+    CGPoint p = [touch.window convertPoint:[touch locationInView:touch.window] toWindow:nil];
+    if ([_statusTaps containsObject:(UITapGestureRecognizer *)g])
+        return [SPSettings statusTapEnabled] && isfinite(p.y) && p.y >= 0 && p.y <= kStatusStrip;
+    if (g == _fallbackPan) {
+        if (![SPSettings fallbackPanEnabled] || (self.hooksAvailable && [SPSettings hooksEnabled])) return NO;
+        return [self beginTrackingAtPoint:p]; // 用真正的 touchesBegan，不用 pan 达到识别阈值后的坐标
+    }
+    return NO;
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    if (![SPSettings enabled] || _busy || [SPAppPicker isPresenting]) return NO;
     if (g == _fallbackPan) {
         CGPoint v = [(UIPanGestureRecognizer *)g velocityInView:g.view];
-        return v.y < 0;    // 只认往上
+        BOOL upward = _tracking && v.y < 0 && fabs(v.y) > fabs(v.x);
+        if (!upward) [self cancelTracking];
+        return upward;
     }
-    return YES;
+    return [_statusTaps containsObject:(UITapGestureRecognizer *)g] && [SPSettings statusTapEnabled];
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
@@ -177,11 +236,13 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 #pragma mark - 状态栏双击（兜底入口）
 
 - (void)statusDoubleTapped:(UITapGestureRecognizer *)g {
-    if (![SPSettings enabled]) return;
+    if (![SPSettings enabled] || ![SPSettings statusTapEnabled] ||
+        g.state != UIGestureRecognizerStateRecognized || ![_statusTaps containsObject:(UITapGestureRecognizer *)g]) return;
     @try { [self _statusDoubleTapped]; } @catch (NSException *e) { SPLog(@"statusTap ex %@", e.reason); }
 }
 
 - (void)_statusDoubleTapped {
+    if (_busy || [SPAppPicker isPresenting]) return;
     NSString *front = [self frontmostBundleID];
     SPLog(@"status double tap, front=%@ active=%d", front, (int)SPPaneController.shared.active);
     if (SPPaneController.shared.active) {
@@ -192,7 +253,8 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         [SPPaneController.shared stopWithCompletion:nil];
         return;
     }
-    if (!front.length) return;
+    if (_lastExitAt > 0 && CFAbsoluteTimeGetCurrent() - _lastExitAt < 1.2) return;
+    if (!front.length || [front isEqualToString:@"com.apple.springboard"]) return;
     [self presentPickerForSplitWithParked:front needPark:NO];
 }
 
@@ -203,15 +265,16 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)_fallbackPanned:(UIPanGestureRecognizer *)g {
-    CGPoint p = [g locationInView:g.view];
-    if (g.state == UIGestureRecognizerStateBegan) {
-        _dragStartY = p.y;
+    if (g != _fallbackPan) return;
+    if (g.state == UIGestureRecognizerStateCancelled || g.state == UIGestureRecognizerStateFailed ||
+        ![SPSettings enabled] || ![SPSettings fallbackPanEnabled]) {
+        [self cancelTracking];
         return;
     }
+    CGPoint p = [g.view.window convertPoint:[g locationInView:g.view.window] toWindow:nil];
+    [self handleHomePanMoved:p];
     if (g.state != UIGestureRecognizerStateEnded) return;
-    CGPoint t = [g translationInView:g.view];
-    CGPoint v = [g velocityInView:g.view];
-    [self consumeHomePan:nil translation:t velocity:v];
+    [self consumeHomePan:g translation:[g translationInView:g.view] velocity:[g velocityInView:g.view]];
 }
 
 #pragma mark - 前台 App
@@ -283,41 +346,51 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     _dragPeakY = 0;
 }
 
-- (void)handleHomePanBegan:(CGPoint)loc {
+- (BOOL)beginTrackingAtPoint:(CGPoint)loc {
+    [self cancelTracking];
+    CGSize size = [UIScreen mainScreen].bounds.size;
+    if (![SPSettings enabled] || _busy || [SPAppPicker isPresenting] || [SPParked isArmed] ||
+        !isfinite(loc.x) || !isfinite(loc.y) || loc.x < 0 || loc.x > size.width ||
+        loc.y < size.height - kBottomStrip || loc.y > size.height) return NO;
     _dragStartY = loc.y;
     _dragPeakY = loc.y;
     _tracking = YES;
+    return YES;
+}
+
+- (void)handleHomePanBegan:(CGPoint)loc {
+    if (![SPSettings hooksEnabled] || !self.hooksAvailable) { [self cancelTracking]; return; }
+    [self beginTrackingAtPoint:loc];
 }
 
 // pan 每动一次就更新最高点（touchesEnded 时 translation 已被清零，只能自己记）
 - (void)handleHomePanMoved:(CGPoint)loc {
     if (!_tracking) return;
+    if (!isfinite(loc.x) || !isfinite(loc.y)) { [self cancelTracking]; return; }
     if (loc.y < _dragPeakY) _dragPeakY = loc.y;
 }
 
 - (BOOL)consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity {
     @try { return [self _consumeHomePan:pan translation:translation velocity:velocity]; }
-    @catch (NSException *e) { SPLog(@"consume ex %@", e.reason); return NO; }
+    @catch (NSException *e) { [self cancelTracking]; SPLog(@"consume ex %@", e.reason); return NO; }
 }
 
 - (BOOL)_consumeHomePan:(UIPanGestureRecognizer *)pan translation:(CGPoint)translation velocity:(CGPoint)velocity {
-    if (![SPSettings enabled]) return NO;
-    if (_busy) return NO;
+    (void)pan; (void)velocity;
+    if (!_tracking) return NO; // 没有本次有效起手时，绝不能沿用上一次的 start/peak
+    CGFloat startY = _dragStartY;
+    CGFloat peakY = _dragPeakY;
+    [self cancelTracking];
+    if (![SPSettings enabled] || _busy || [SPAppPicker isPresenting] || [SPParked isArmed]) return NO;
 
-    CGSize screen = [UIScreen mainScreen].bounds.size;
-    CGFloat h = screen.height;
-    // 有些情况下 recognizer 的 translation 已被清零，velocity 还能用，两个都算一遍取大的
-    CGFloat up = MAX(-translation.y, -velocity.y * 0.18);
-    // 自己记的位移优先：官方 translation 在 touchesEnded 常常是 0（日志实测 up=-0）
-    if (_tracking) up = MAX(up, _dragStartY - _dragPeakY);
-    _tracking = NO;
-    // 触发高度：必须真的往上滑到一定距离才弹面板（用户要求「必须到那个高度」）。
-    // 取屏高的 45%（430×932 上约 420pt，即手指要越过屏幕中线），
-    // 轻扫、误触、点按都不会触发。
-    CGFloat need = MAX(360.0, h * 0.45);
-    BOOL fromBottom = (_dragStartY >= h - kBottomStrip);
+    CGFloat h = [UIScreen mainScreen].bounds.size.height;
+    // 只用真实走过的距离；速度推算会把底边短促轻扫放大成「已到灵动岛」。
+    CGFloat up = startY - peakY;
+    if (isfinite(translation.y)) up = MAX(up, -translation.y);
+    CGFloat need = h * [SPSettings parkThreshold];
+    BOOL fromBottom = (startY >= h - kBottomStrip && startY <= h);
     SPLog(@"pan up=%.0f need=%.0f startY=%.0f fromBottom=%d active=%d",
-          up, need, _dragStartY, fromBottom, (int)SPPaneController.shared.active);
+          up, need, startY, fromBottom, (int)SPPaneController.shared.active);
 
     if (!fromBottom) return NO;
     if (up < need) return NO;
@@ -327,60 +400,31 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
         return NO;
     }
 
-    NSString *front = [self frontmostBundleID];
-    if (!front.length) { SPLog(@"no frontmost"); return NO; }
-
-    // ===== 分屏中上划：从底部起手 → 把分屏缩成桌面悬浮小窗（不死锁在容器里） =====
+    // 保留 0.7.0 当前可达的退出语义；退出不应依赖私有前台 getter 是否成功。
     if (SPPaneController.shared.active) {
-        if (!fromBottom) return NO;
-        // 用户要求：分屏中上划直接拆窗回桌面，不做任何挂起/缩窗。
         SPLog(@"pan: 分屏中上划 -> 直接拆窗回桌面");
-        NSString *t = SPPaneController.shared.topBundleID;
-        NSString *b = SPPaneController.shared.bottomBundleID;
-        UIWindowScene *ws = nil;
-        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-            if ([NSStringFromClass([sc class]) containsString:@"Aperture"]) continue;
-            ws = (UIWindowScene *)sc; break;
-        }
-        (void)t; (void)b; (void)ws;
+        _lastExitAt = CFAbsoluteTimeGetCurrent();
         [SPPaneController.shared stopWithCompletion:nil];
         return YES;
     }
+    NSString *front = [self frontmostBundleID];
+    if (!front.length || [front isEqualToString:@"com.apple.springboard"]) return NO;
 
     // ===== 主路径（PV 式）：全屏 App 内从底部上划到「灵动岛高度」松手 → 挂起该 App =====
     // 之后用户自己点开任意 App，SPParked 监听到新的前台 App 就自动组建分屏。
     // 判定：从底部起手 + 手指越过灵动岛以下约 120pt 的区域（约屏幕顶部 15%）
     if (!SPPaneController.shared.active && fromBottom) {
         CGFloat islandLine = h * 0.15;   // 灵动岛下沿附近
-        BOOL reachedIsland = (_dragPeakY <= islandLine) || (up >= h * 0.75);
+        BOOL reachedIsland = (peakY <= islandLine) || (up >= h * 0.75);
         if (reachedIsland) {
-            SPLog(@"pan: 上划到灵动岛 (peakY=%.0f islandLine=%.0f) -> 挂起前台 App", _dragPeakY, islandLine);
+            SPLog(@"pan: 上划到灵动岛 (peakY=%.0f islandLine=%.0f) -> 挂起前台 App", peakY, islandLine);
             [SPParked parkFrontmostApp];
             return YES;
         }
-        SPLog(@"pan: 上划未到灵动岛 (peakY=%.0f need<=%.0f)，放行系统", _dragPeakY, islandLine);
+        SPLog(@"pan: 上划未到灵动岛 (peakY=%.0f need<=%.0f)，放行系统", peakY, islandLine);
         return NO;
     }
 
-    // 分屏中上滑 → 把分屏缩成桌面上的任务卡片（画面保持实时，点卡片可回来）。
-    // 这是用户明确要的交互：上划 home 不退出分屏，只是暂时收起来。
-    if (SPPaneController.shared.active) {
-        if (SPPaneController.shared.suspended) {
-            // 已挂起成卡片：放行系统手势，让用户正常回桌面 / 打开别的 App
-            SPLog(@"pan: 已挂起，放行系统手势");
-            return NO;
-        }
-        SPLog(@"pan: 分屏中上滑 -> suspend to card");
-        [SPPaneController.shared suspendToCardWithCompletion:^{
-            SPLog(@"suspend completion");
-        }];
-        return YES;
-    }
-
-    // 非分屏状态：入口统一走「长按图标 → 上下分屏」。
-    // 上滑不再自己弹 picker（日志实证：弹了就 1 秒被 cancel，纯属打扰）。
-    SPLog(@"pan: 上滑不触发（入口是长按图标）");
     return NO;
 }
 
@@ -402,12 +446,12 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)parkForegroundApp:(NSString *)bundleID {
+    if (![SPSettings enabled] || _busy || [SPAppPicker isPresenting] || SPPaneController.shared.active || !bundleID.length) return;
     // 不再停一张小卡片：上滑到位就直接冻结画面 + 弹「选 App」面板。
     // （用户要求：图 1 那种浮在桌面的小卡片彻底不要，桌面底部也不能留残留窗口）
     [SPParkCard dismissAll];
     self.card = nil;
 
-    _busy = YES;
     _parkedBundleID = bundleID;
     UIImage *shot = [self snapshotScreen];
     self.parkedSnapshot = shot;
@@ -430,40 +474,69 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     [self presentPickerForSplitWithParked:card.bundleID needPark:YES];
 }
 
+- (UIWindowScene *)windowSceneForEntry {
+    NSSet<UIScene *> *scenes = [UIApplication sharedApplication].connectedScenes;
+    if (_scene && [scenes containsObject:_scene] &&
+        _scene.activationState == UISceneActivationStateForegroundActive &&
+        ![NSStringFromClass(_scene.class) containsString:@"Aperture"]) return _scene;
+    for (UIScene *scene in scenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] &&
+            scene.activationState == UISceneActivationStateForegroundActive &&
+            ![NSStringFromClass(scene.class) containsString:@"Aperture"]) return (UIWindowScene *)scene;
+    }
+    return nil;
+}
+
 - (void)presentPickerForSplitWithParked:(NSString *)parked needPark:(BOOL)needPark {
+    if (![SPSettings enabled] || !parked.length || _busy || [SPAppPicker isPresenting] || SPPaneController.shared.active) return;
+    [SPParked cancelPendingSession];
     _busy = YES;
+    NSUInteger generation = ++_pickerGeneration;
+    UIImage *snapshot = self.parkedSnapshot;
+    UIWindowScene *scene = [self windowSceneForEntry];
     __weak typeof(self) wself = self;
-    [SPAppPicker presentFromWindowScene:_scene bundleIDs:@[parked ?: @""] onPick:^(NSString *bid) {
+    [SPAppPicker presentFromWindowScene:scene bundleIDs:@[parked] onPick:^(NSString *bid) {
         __strong typeof(wself) self = wself;
+        if (!self || self.pickerGeneration != generation) return;
+        self.busy = NO;
+        self.parkedBundleID = nil;
+        self.parkedSnapshot = nil;
+        if (![SPSettings enabled] || SPPaneController.shared.active || !scene ||
+            scene.activationState != UISceneActivationStateForegroundActive ||
+            ![[UIApplication sharedApplication].connectedScenes containsObject:scene]) return;
         SPLog(@"picked %@", bid);
         if (needPark) { [self.card dismissAnimated:nil]; self.card = nil; }
-        [SPParkCard dismissAll];   // 双保险：任何残留卡片都在这儿收掉
-
-        // 长按图标进来时，第一个 App 可能根本没运行（日志实证：top attach diag=no-scene），
-        // 必须先把它拉起来，否则上半屏永远是空的。
-        [SPHost openAppAsync:parked completion:^(BOOL okOpen) {
+        [SPParkCard dismissAll];
+        BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:scene topSnapshot:snapshot];
+        SPLog(@"start top=%@ bottom=%@ -> %d", parked, bid, (int)ok);
+        // 先由 pane 同步占有会话，再异步拉起上半屏；不引入阻塞主线程的 openApplication。
+        if (ok) [SPHost openAppAsync:parked completion:^(BOOL okOpen) {
             SPLog(@"icon entry: ensure top %@ opened=%d", parked, (int)okOpen);
         }];
-
-        BOOL ok = [SPPaneController.shared startWithTop:parked bottom:bid windowScene:self.scene topSnapshot:self.parkedSnapshot];
-        SPLog(@"start top=%@ bottom=%@ -> %d", parked, bid, (int)ok);
-        if (!ok) [SPHost openAppAsync:bid completion:nil];
-        self.busy = NO;
+        else if (!SPPaneController.shared.active) [SPHost openAppAsync:bid completion:nil];
     } onCancel:^{
         __strong typeof(wself) self = wself;
-        SPLog(@"picker cancel -> back to home, dismiss %@", parked);
-        // 用户要求：点 × = 回桌面，并且把挂起的 App 也退掉
-        [self returnToHomeDismissingApp:parked];
+        if (!self || self.pickerGeneration != generation) return;
         self.busy = NO;
+        self.parkedBundleID = nil;
+        self.parkedSnapshot = nil;
+        if (![SPSettings enabled] || SPPaneController.shared.active) return;
+        SPLog(@"picker cancel -> back to home, dismiss %@", parked);
+        [self returnToHomeDismissingApp:parked];
     }];
 }
 
 // 取消挂起：先把 App 推回后台（不是 SIGKILL，避免 SpringBoard 重启），
 // 再确保我们自己的窗口全部收掉，最后回桌面。
 - (void)returnToHomeDismissingApp:(NSString *)bundleID {
+    if (SPPaneController.shared.active) return; // 迟到的 picker 取消不能拆掉新的分屏
+    ++_pickerGeneration;
+    _busy = NO;
+    [SPParked cancelPendingSession];
     [SPParkCard dismissAll];
     self.card = nil;
     self.parkedBundleID = nil;
+    self.parkedSnapshot = nil;
 
     // 1) 让 App 退到后台：把它自己「收起」，SpringBoard 就会回到桌面
     if (bundleID.length) {
@@ -471,41 +544,52 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
             [SPHost suspendAppToBackground:bundleID];
         } @catch (NSException *e) { SPLog(@"suspend ex %@", e.reason); }
     }
-    // 2) 兜底：所有自建窗口
-    [SPWindowRegistry killAll];
-    // 3) 最后按一次 home（这台机器 homePress 不可用时它会自己跳过）
+    // picker 已经通过 registry 只释放自己的窗口，不能 killAll 误杀另一个会话。
+    // 最后按一次 home（这台机器 homePress 不可用时它会自己跳过）
     [SPHost homePress];
     SPLog(@"returnToHome done");
 }
 
 // 从主屏图标长按菜单进入：这个 App 作为上半屏，弹面板选下半屏
 - (void)startSplitFromIconForBundleID:(NSString *)bundleID {
-    if (!bundleID.length) { SPLog(@"icon entry: empty bundleID"); return; }
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self startSplitFromIconForBundleID:bundleID]; });
+        return;
+    }
+    if (![bundleID isKindOfClass:[NSString class]] || !bundleID.length || ![SPSettings enabled]) return;
+    // 快速再次长按不能改写正在展示的 picker 所属 App/快照；旧回调仍由其 generation 验证。
+    if (_busy || [SPAppPicker isPresenting] || SPPaneController.shared.active) return;
     SPLog(@"icon entry: %@", bundleID);
     [SPParkCard dismissAll];
     self.card = nil;
     self.parkedBundleID = bundleID;
     self.parkedSnapshot = [self snapshotScreen];
-    _busy = NO;
     [self presentPickerForSplitWithParked:bundleID needPark:NO];
 }
 
 - (void)presentPickerForSwap {
+    if (![SPSettings enabled] || _busy || [SPAppPicker isPresenting] || !SPPaneController.shared.active) return;
     _busy = YES;
+    NSUInteger generation = ++_pickerGeneration;
     __weak typeof(self) wself = self;
     NSString *top = SPPaneController.shared.topBundleID;
     NSString *bottom = SPPaneController.shared.bottomBundleID;
     NSMutableArray *extra = [NSMutableArray array];
     if (top.length) [extra addObject:top];
     if (bottom.length) [extra addObject:bottom];
-    [SPAppPicker presentFromWindowScene:_scene bundleIDs:extra onPick:^(NSString *bid) {
+    UIWindowScene *scene = [self windowSceneForEntry];
+    [SPAppPicker presentFromWindowScene:scene bundleIDs:extra onPick:^(NSString *bid) {
         __strong typeof(wself) self = wself;
+        if (!self || self.pickerGeneration != generation) return;
+        self.busy = NO;
+        if (![SPSettings enabled] || !SPPaneController.shared.active ||
+            ![SPPaneController.shared.topBundleID isEqualToString:top] ||
+            ![SPPaneController.shared.bottomBundleID isEqualToString:bottom]) return;
         SPLog(@"swap pick %@", bid);
         [SPPaneController.shared replaceBundleID:bid];
-        self.busy = NO;
     } onCancel:^{
         __strong typeof(wself) self = wself;
-        self.busy = NO;
+        if (self.pickerGeneration == generation) self.busy = NO;
     }];
 }
 

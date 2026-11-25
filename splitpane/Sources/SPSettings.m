@@ -1,4 +1,5 @@
 #import "SPSettings.h"
+#import <math.h>
 
 NSString *const SPNotifyChanged = @"SplitPaneSettingsDidChange";
 static NSString *const SPDomain = @"com.seagull.splitpane";
@@ -8,6 +9,7 @@ static void SPSettingsDarwinCallback(CFNotificationCenterRef center, void *obser
                                     CFDictionaryRef info) {
     (void)center; (void)observer; (void)name; (void)object; (void)info;
     dispatch_async(dispatch_get_main_queue(), ^{
+        CFPreferencesAppSynchronize((__bridge CFStringRef)SPDomain);
         [[NSNotificationCenter defaultCenter] postNotificationName:SPNotifyChanged object:nil];
     });
 }
@@ -24,17 +26,28 @@ static id SPPref(NSString *key) {
 
 static BOOL SPBoolValue(NSString *key, BOOL fallback) {
     id v = SPPref(key);
-    if (!v) return fallback;
-    if (CFGetTypeID((__bridge CFTypeRef)v) == CFBooleanGetTypeID())
-        return CFBooleanGetValue((__bridge CFBooleanRef)v);
-    return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : fallback;
+    if ([v isKindOfClass:[NSNumber class]]) {
+        double d = [v doubleValue];
+        return d == 0.0 ? NO : (d == 1.0 ? YES : fallback);
+    }
+    if ([v isKindOfClass:[NSString class]]) {
+        NSString *s = [[v stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+        if ([@[@"1", @"true", @"yes"] containsObject:s]) return YES;
+        if ([@[@"0", @"false", @"no"] containsObject:s]) return NO;
+    }
+    return fallback;
 }
 
 static double SPPrefDouble(NSString *key, double fallback) {
     id v = SPPref(key);
-    if (!v) return fallback;
-    double d = [v respondsToSelector:@selector(doubleValue)] ? [v doubleValue] : 0;
-    return d > 0 ? d : fallback;
+    double d = fallback;
+    if ([v isKindOfClass:[NSNumber class]] && CFGetTypeID((__bridge CFTypeRef)v) != CFBooleanGetTypeID()) {
+        d = [v doubleValue];
+    } else if ([v isKindOfClass:[NSString class]]) {
+        NSScanner *scanner = [NSScanner scannerWithString:[v stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
+        if (![scanner scanDouble:&d] || !scanner.isAtEnd) return fallback;
+    }
+    return isfinite(d) && d > 0 ? d : fallback;
 }
 
 + (BOOL)enabled { return SPBoolValue(@"enabled", YES); }
@@ -44,34 +57,31 @@ static double SPPrefDouble(NSString *key, double fallback) {
 + (double)seamThickness { return SPPrefDouble(@"seamThickness", 34.0); }
 + (BOOL)bannerEnabled { return SPBoolValue(@"showBanner", YES); }
 + (BOOL)hooksEnabled { return SPBoolValue(@"hookHomeGesture", NO); }
-+ (BOOL)statusTapEnabled {
-    // 唯一不依赖任何私有 API 的入口，默认必须有；用户显式关掉才停
-    id v = SPPref(@"statusTapEntry");
-    if (!v) return YES;
-    return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : YES;
-}
++ (BOOL)statusTapEnabled { return SPBoolValue(@"statusTapEntry", YES); }
 + (BOOL)fallbackPanEnabled { return SPBoolValue(@"fallbackPanEntry", NO); }
 + (double)parkThreshold {
     // 设置面板的滑杆写的是 20..80 的整数（百分比），这里统一归一到 0.20..0.80
     double v = SPPrefDouble(@"parkThreshold", 45.0);
     if (v > 1.0) v /= 100.0;
-    return MIN(MAX(v, 0.20), 0.85);
+    return MIN(MAX(v, 0.20), 0.80);
 }
 
 + (void)startObserving {
-    NSNotificationCenter *__weak wc = [NSNotificationCenter defaultCenter];
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
-                                                      object:nil queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification *n) {
-        [wc postNotificationName:SPNotifyChanged object:nil];
-    }];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
+                                                          object:nil queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *n) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:SPNotifyChanged object:nil];
+        }];
 
-    // 设置面板改完 → Darwin 通知跨进程送到 SpringBoard
-    static char token;
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    &token, SPSettingsDarwinCallback,
-                                    (__bridge CFStringRef)SPNotifyChanged,
-                                    NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+        // 设置面板改完 → Darwin 通知跨进程送到 SpringBoard
+        static char token;
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        &token, SPSettingsDarwinCallback,
+                                        (__bridge CFStringRef)SPNotifyChanged,
+                                        NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    });
 }
 
 @end

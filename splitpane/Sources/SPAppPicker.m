@@ -2,6 +2,7 @@
 #import "SPCompat.h"
 #import "SPHost.h"
 #import "SPWindowRegistry.h"
+#import "SPSettings.h"
 #import <objc/runtime.h>
 
 typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } SBIconImageInfo;
@@ -67,6 +68,7 @@ static NSArray<NSString *> *SPInstalledAppBundleIDs(void) {
     NSArray *apps = nil;
     if (ctrl) apps = SPMsg0(ctrl, @"allApplications");
     if (![apps isKindOfClass:[NSArray class]]) apps = SPMsg0(ctrl, @"applications");
+    if (![apps isKindOfClass:[NSArray class]]) return out;
     for (id app in apps) {
         if (![app respondsToSelector:NSSelectorFromString(@"bundleIdentifier")]) continue;
         NSString *bid = SPMsg0(app, @"bundleIdentifier");
@@ -84,6 +86,18 @@ static NSArray<NSString *> *SPInstalledAppBundleIDs(void) {
 
 #pragma mark - 面板
 
+@interface SPAppPickerCell : UICollectionViewCell
+@property (nonatomic, copy) NSString *representedBundleID;
+@end
+
+@implementation SPAppPickerCell
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    self.representedBundleID = nil;
+    ((UIImageView *)[self.contentView viewWithTag:1001]).image = nil;
+}
+@end
+
 @interface SPAppPicker () <UICollectionViewDataSource, UICollectionViewDelegateFlowLayout>
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) UICollectionView *grid;
@@ -93,6 +107,9 @@ static NSArray<NSString *> *SPInstalledAppBundleIDs(void) {
 @property (nonatomic, strong) UIVisualEffectView *blur;
 @property (nonatomic, strong) UIView *card;
 @property (nonatomic, strong) UILabel *hintLabel;
+@property (nonatomic, assign) BOOL finishing;
+@property (nonatomic, copy) NSString *resultBundleID;
+- (void)finishWithBundleID:(NSString *)bundleID animated:(BOOL)animated;
 @end
 
 @implementation SPAppPicker
@@ -101,38 +118,66 @@ static SPAppPicker *gPicker = nil;
 
 + (BOOL)isPresenting { return gPicker != nil; }
 
++ (void)cancelIfPresent {
+    if (gPicker) [gPicker finishWithBundleID:nil animated:NO];
+}
+
 + (void)presentFromWindowScene:(UIWindowScene *)scene bundleIDs:(NSArray *)extra
                         onPick:(void (^)(NSString *))onPick onCancel:(void (^)(void))onCancel {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self presentFromWindowScene:scene bundleIDs:extra onPick:onPick onCancel:onCancel];
+        });
+        return;
+    }
     if (gPicker) return;
-    if (!scene) {
+    if (![SPSettings enabled]) { if (onCancel) onCancel(); return; }
+    if (!scene || scene.activationState != UISceneActivationStateForegroundActive ||
+        [NSStringFromClass(scene.class) containsString:@"Aperture"]) {
+        scene = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) {
+            if ([s isKindOfClass:[UIWindowScene class]] &&
+                s.activationState == UISceneActivationStateForegroundActive &&
+                ![NSStringFromClass(s.class) containsString:@"Aperture"]) {
                 scene = (UIWindowScene *)s; break;
             }
         }
     }
-    if (!scene) return;
+    if (!scene) { if (onCancel) onCancel(); return; }
     SPAppPicker *p = [SPAppPicker new];
     gPicker = p;
     p.pickBlock = onPick;
     p.cancelBlock = onCancel;
-    NSMutableArray *items = [NSMutableArray array];
-    if ([extra isKindOfClass:[NSArray class]]) [items addObjectsFromArray:extra];
-    [items addObjectsFromArray:SPInstalledAppBundleIDs()];
-    NSMutableArray *uniq = [NSMutableArray array]; NSMutableSet *seen = [NSMutableSet set];
-    for (NSString *b in items) { if (![seen containsObject:b]) { [seen addObject:b]; [uniq addObject:b]; } }
-    p.items = uniq;
-    [p buildInScene:scene];
+    @try {
+        NSMutableArray *items = [NSMutableArray array];
+        if ([extra isKindOfClass:[NSArray class]]) [items addObjectsFromArray:extra];
+        [items addObjectsFromArray:SPInstalledAppBundleIDs()];
+        NSMutableArray *uniq = [NSMutableArray array]; NSMutableSet *seen = [NSMutableSet set];
+        for (id b in items) {
+            if (![b isKindOfClass:[NSString class]] || ![b length] || [seen containsObject:b]) continue;
+            [seen addObject:b]; [uniq addObject:b];
+        }
+        p.items = uniq;
+        [p buildInScene:scene];
+    } @catch (__unused NSException *e) {
+        [p finishWithBundleID:nil animated:NO];
+    }
 }
 
 - (void)buildInScene:(UIWindowScene *)scene {
     UIWindow *w = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelNormal + 3];
+    if (!w) { [self finishWithBundleID:nil animated:NO]; return; }
+    _window = w;
     w.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;
     w.rootViewController = vc;
     w.hidden = NO;
-    _window = w;
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self selector:@selector(settingsChanged:) name:SPNotifyChanged object:nil];
+    [nc addObserver:self selector:@selector(sceneDisconnected:) name:UISceneDidDisconnectNotification object:scene];
+    [nc addObserver:self selector:@selector(sceneDisconnected:) name:UISceneDidEnterBackgroundNotification object:scene];
+    [nc addObserver:self selector:@selector(windowHidden:) name:UIWindowDidBecomeHiddenNotification object:w];
 
     _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
     _blur.frame = vc.view.bounds;
@@ -153,7 +198,7 @@ static SPAppPicker *gPicker = nil;
     _grid.delegate = self;
     _grid.showsVerticalScrollIndicator = NO;
     _grid.alpha = 0;
-    [_grid registerClass:NSClassFromString(@"UICollectionViewCell") forCellWithReuseIdentifier:@"app"];
+    [_grid registerClass:SPAppPickerCell.class forCellWithReuseIdentifier:@"app"];
     [vc.view addSubview:_grid];
 
     UILabel *hint = [[UILabel alloc] init];
@@ -199,24 +244,57 @@ static SPAppPicker *gPicker = nil;
 }
 
 - (void)cancel:(id)sender {
-    [self finishWithBundleID:nil];
+    [self finishWithBundleID:nil animated:YES];
 }
 
-- (void)finishWithBundleID:(NSString *)bundleID {
-    if (!_window) return;
+- (void)settingsChanged:(NSNotification *)notification {
+    if (![SPSettings enabled]) [self finishWithBundleID:nil animated:NO];
+}
+
+- (void)sceneDisconnected:(NSNotification *)notification {
+    [self finishWithBundleID:nil animated:NO];
+}
+
+- (void)windowHidden:(NSNotification *)notification {
+    [self finishWithBundleID:nil animated:NO];
+}
+
+- (void)finishWithBundleID:(NSString *)bundleID animated:(BOOL)animated {
+    if (_finishing) {
+        if (!bundleID.length) self.resultBundleID = nil; // 动画期间的关闭/断场景优先于先前选择
+        return;
+    }
+    _finishing = YES;
+    self.resultBundleID = bundleID;
     UIWindow *w = _window;
-    _window = nil;
-    gPicker = nil;
+    w.userInteractionEnabled = NO;
+    void (^pick)(NSString *) = self.pickBlock;
+    void (^cancel)(void) = self.cancelBlock;
+    self.pickBlock = nil;
+    self.cancelBlock = nil;
+    void (^cleanup)(void) = ^{
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
+        NSString *result = self.resultBundleID;
+        self.resultBundleID = nil;
+        self.grid.delegate = nil;
+        self.grid.dataSource = nil;
+        self.window = nil;
+        [SPWindowRegistry releaseWindow:w];
+        if (gPicker == self) gPicker = nil;
+        // 交接前必须已放掉自己的窗口；回调可能立即创建分屏或另一个 picker。
+        if (result.length && pick) pick(result);
+        else if (cancel) cancel();
+    };
+    if (!animated || !w || w.hidden || !w.windowScene) { cleanup(); return; }
     [UIView animateWithDuration:0.2 animations:^{
         self.blur.alpha = 0;
         self.grid.alpha = 0;
-    } completion:^(BOOL finished) {
-        [SPWindowRegistry releaseWindow:w];
-    }];
-    if (bundleID && self.pickBlock) self.pickBlock(bundleID);
-    else if (self.cancelBlock) self.cancelBlock();
-    self.pickBlock = nil;
-    self.cancelBlock = nil;
+        self.hintLabel.alpha = 0;
+    } completion:^(BOOL finished) { cleanup(); }];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 #pragma mark - 网格
@@ -226,8 +304,9 @@ static SPAppPicker *gPicker = nil;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
-    UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"app" forIndexPath:ip];
+    SPAppPickerCell *cell = (SPAppPickerCell *)[cv dequeueReusableCellWithReuseIdentifier:@"app" forIndexPath:ip];
     NSString *bid = _items[ip.item];
+    cell.representedBundleID = bid;
     UIImageView *iv = [cell.contentView viewWithTag:1001];
     UILabel *lb = [cell.contentView viewWithTag:1002];
     if (!iv) {
@@ -251,13 +330,21 @@ static SPAppPicker *gPicker = nil;
     iv.image = cached;
     iv.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1];
     if (!cached) {
-        __weak UIImageView *wiv = iv;
+        __weak SPAppPickerCell *weakCell = cell;
+        __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            UIImage *img = SPIconForBundleID(bid, CGSizeMake(64, 64));
+            UIImage *img = nil;
+            @try { img = SPIconForBundleID(bid, CGSizeMake(64, 64)); }
+            @catch (__unused NSException *e) {}
             if (!img) return;
             [SPIconCache() setObject:img forKey:bid];
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (wiv) wiv.image = img;
+                SPAppPicker *picker = weakSelf;
+                SPAppPickerCell *currentCell = weakCell;
+                if (!picker.window || picker.finishing || !currentCell ||
+                    ![currentCell.representedBundleID isEqualToString:bid]) return;
+                UIImageView *currentImage = [currentCell.contentView viewWithTag:1001];
+                currentImage.image = img;
             });
         });
     }
@@ -266,7 +353,8 @@ static SPAppPicker *gPicker = nil;
 }
 
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
-    [self finishWithBundleID:_items[ip.item]];
+    if (_finishing || ip.item >= _items.count) return;
+    [self finishWithBundleID:_items[ip.item] animated:YES];
 }
 
 @end

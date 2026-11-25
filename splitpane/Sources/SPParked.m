@@ -5,6 +5,8 @@
 #import "SPGesture.h"
 #import "SPHost.h"
 #import "SPPaneController.h"
+#import "SPSettings.h"
+#import "SPAppPicker.h"
 
 // ============================================================================
 // PV 式编排：App 内上划到灵动岛 → 该 App 被挂起 → 用户手动开另一个 App → 自动分屏
@@ -32,38 +34,45 @@
 static SPParkedSession *gParked = nil;
 static BOOL gArmed = NO;          // 正在等待「用户手动打开新 App」
 static id gObserver = nil;
+static id gSettingsObserver = nil;
+static NSUInteger gGeneration = 0;
+static BOOL gLaunching = NO;
 
 @interface SPParked : NSObject
++ (void)cancelPendingSession;
++ (void)pollSession:(SPParkedSession *)session generation:(NSUInteger)generation count:(NSInteger)n;
 @end
 
 @implementation SPParked
 
-static BOOL gPolling = NO;
-
-+ (void)startPolling {
-    if (gPolling) return;
-    gPolling = YES;
-    __weak typeof(self) wself = self;
-    [self pollOnce: wself count:0];
++ (void)cancelPendingSession {
+    ++gGeneration;
+    gArmed = NO;
+    gLaunching = NO;
+    gParked = nil;
 }
 
-+ (void)pollOnce: (id)unused count: (NSInteger)n {
-    (void)unused;
-    if (!gArmed || !gParked || n > 40) { gPolling = NO; return; }
++ (void)pollSession:(SPParkedSession *)session generation:(NSUInteger)generation count:(NSInteger)n {
+    if (generation != gGeneration || gParked != session || !gArmed) return;
+    if (![SPSettings enabled] || SPPaneController.shared.active || [SPAppPicker isPresenting] ||
+        n > 40 || CACurrentMediaTime() - session.at >= 15.0) {
+        [self cancelPendingSession];
+        return;
+    }
     @try {
         NSString *front = [[SPGesture shared] frontmostBundleID];
         if (front.length &&
-            ![front isEqualToString:gParked.bundleID] &&
+            ![front isEqualToString:session.bundleID] &&
             ![front isEqualToString:@"com.apple.springboard"] &&
             ![front containsString:@"Spotlight"]) {
             SPLog(@"parked: poll 发现新前台 %@", front);
             [self triggerSplitWith:front];
-            gPolling = NO;
-            return;
         }
     } @catch (__unused NSException *e) {}
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ [self pollOnce:nil count:n + 1]; });
+                   dispatch_get_main_queue(), ^{
+        [self pollSession:session generation:generation count:n + 1];
+    });
 }
 
 + (void)install {
@@ -75,6 +84,11 @@ static BOOL gPolling = NO;
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(NSNotification *n) {
         @try { [self handleBecameActive:n]; } @catch (NSException *e) { SPLog(@"parked obs ex %@", e.reason); }
+    }];
+    gSettingsObserver = [nc addObserverForName:SPNotifyChanged object:nil
+                                       queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *n) {
+        if (![SPSettings enabled]) [self cancelPendingSession];
     }];
     SPLog(@"parked: observer installed");
 }
@@ -96,44 +110,57 @@ static BOOL gPolling = NO;
 
 + (void)handleBecameActive:(NSNotification *)n {
     if (!gArmed || !gParked) return;
-    NSString *bid = [self bundleIDFromNotification:n];
-    if (!bid.length) return;
-    if ([bid isEqualToString:gParked.bundleID]) return;         // 挂起的那个回来了，忽略
-    if ([bid isEqualToString:@"com.apple.springboard"]) return;
-
-    SPLog(@"parked: 检测到新前台 %@ -> 与 %@ 组建分屏", bid, gParked.bundleID);
-    [self triggerSplitWith:bid];
+    [self triggerSplitWith:[self bundleIDFromNotification:n]];
 }
 
 + (void)triggerSplitWith:(NSString *)bid {
-    if (!gArmed || !gParked) return;
-    gArmed = NO;
-
-    NSString *top = gParked.bundleID;
-    UIImage *snap = gParked.snapshot;
-    gParked = nil;
-
+    if (!gArmed || !gParked || !bid.length || [bid isEqualToString:gParked.bundleID] ||
+        [bid isEqualToString:@"com.apple.springboard"] || [bid containsString:@"Spotlight"]) return;
+    if (![SPSettings enabled] || SPPaneController.shared.active || [SPAppPicker isPresenting]) {
+        [self cancelPendingSession];
+        return;
+    }
     UIWindowScene *ws = nil;
     for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-        NSString *cn = NSStringFromClass([sc class]);
-        if ([cn containsString:@"Aperture"]) continue;
+        if (![sc isKindOfClass:[UIWindowScene class]] ||
+            sc.activationState != UISceneActivationStateForegroundActive ||
+            [NSStringFromClass(sc.class) containsString:@"Aperture"]) continue;
         ws = (UIWindowScene *)sc; break;
     }
-    if (!ws) { SPLog(@"parked: 找不到 windowScene"); return; }
+    if (!ws) { SPLog(@"parked: 找不到 windowScene，继续等待"); return; }
 
-    // 稍等一下，让用户刚打开的 App 完成启动
+    SPParkedSession *session = gParked;
+    NSUInteger generation = gGeneration;
+    gArmed = NO;
+    gLaunching = YES;
+    // 新 App 启动后仍须是同一会话、同一前台；不能在用户取消或改开第三个 App 后抢回来。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        SPLog(@"parked: start split top=%@ bottom=%@", top, bid);
-        [SPPaneController.shared startWithTop:top bottom:bid windowScene:ws topSnapshot:snap];
+        if (generation != gGeneration || gParked != session || !gLaunching) return;
+        NSString *front = [[SPGesture shared] frontmostBundleID];
+        if (![SPSettings enabled] || SPPaneController.shared.active || [SPAppPicker isPresenting] ||
+            ws.activationState != UISceneActivationStateForegroundActive ||
+            ![[UIApplication sharedApplication].connectedScenes containsObject:ws] ||
+            ![front isEqualToString:bid]) {
+            [self cancelPendingSession];
+            return;
+        }
+        SPLog(@"parked: start split top=%@ bottom=%@", session.bundleID, bid);
+        BOOL started = [SPPaneController.shared startWithTop:session.bundleID bottom:bid
+                                                windowScene:ws topSnapshot:session.snapshot];
+        SPLog(@"parked: start result=%d", (int)started);
+        [self cancelPendingSession];
     });
 }
 
 // 上划到灵动岛高度松手 → 调用这里
 + (void)parkFrontmostApp {
-    if (SPPaneController.shared.active) {
-        SPLog(@"parked: 已在分屏中，忽略");
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self parkFrontmostApp]; });
+        return;
+    }
+    if (![SPSettings enabled] || SPPaneController.shared.active || [SPAppPicker isPresenting] || gArmed || gLaunching) {
+        SPLog(@"parked: 当前不可挂起，忽略");
         return;
     }
     SPParkedSession *ps = [SPParkedSession new];
@@ -146,6 +173,7 @@ static BOOL gPolling = NO;
     ps.snapshot = [[SPGesture shared] snapshotScreen];
     gParked = ps;
     gArmed = YES;
+    NSUInteger generation = ++gGeneration;
     SPLog(@"parked: %@ 已挂起，等待用户打开第二个 App", ps.bundleID);
 
     // 让 App 真正退到后台（桌面随之出现）。
@@ -154,6 +182,8 @@ static BOOL gPolling = NO;
     NSString *target = ps.bundleID;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        if (generation != gGeneration || gParked != ps || !gArmed || ![SPSettings enabled] ||
+            SPPaneController.shared.active || [SPAppPicker isPresenting]) return;
         BOOL bg = NO;
         @try { bg = [SPHost pushSceneToBackground:target]; }
         @catch (__unused NSException *e) {}
@@ -164,20 +194,19 @@ static BOOL gPolling = NO;
 
     // 轮询兜底：通知有时收不到（SpringBoard 里 post 的时机不确定），
     // 每 0.4s 查一次前台 App，发现新的就组建分屏。
-    [self startPolling];
+    [self pollSession:ps generation:generation count:0];
 
     // 15 秒没开新 App 就自动放弃
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (gArmed && gParked == ps) {
-            gArmed = NO;
-            gParked = nil;
+        if (generation == gGeneration && gParked == ps) {
+            [self cancelPendingSession];
             SPLog(@"parked: 超时放弃");
         }
     });
 }
 
-+ (BOOL)isArmed { return gArmed; }
++ (BOOL)isArmed { return gArmed || gLaunching; }
 + (NSString *)parkedBundleID { return gParked.bundleID; }
 
 @end

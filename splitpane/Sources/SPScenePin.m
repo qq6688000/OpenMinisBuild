@@ -24,65 +24,61 @@
 //       绝不影响正常 App 切换与系统行为。
 // ============================================================================
 
-// 由 SPHost 维护：当前分屏里正在托管的 bundleID 集合
-static NSMutableSet<NSString *> *SPHostedBundleIDs(void) {
-    static NSMutableSet *set = nil;
+// 以 scene 实例 + 弱 owner token 登记：同 bundle 的新宿主不能被旧 detach 注销。
+// 弱 key/owner 避免退出遗漏时注册表反过来延长 scene / host 的生命周期。
+static NSMapTable *SPHostedScenes(void) {
+    static NSMapTable *map;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ set = [NSMutableSet set]; });
-    return set;
+    dispatch_once(&once, ^{
+        map = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality
+                                   valueOptions:NSPointerFunctionsStrongMemory];
+    });
+    return map;
 }
 
-void SPHostRegisterHostedBundleID(NSString *bundleID) {
-    if (!bundleID.length) return;
-    @synchronized (SPHostedBundleIDs()) { [SPHostedBundleIDs() addObject:bundleID]; }
+void SPHostRegisterHostedScene(id scene, id owner) {
+    if (!scene || !owner) return;
+    NSMapTable *map = SPHostedScenes();
+    @synchronized (map) {
+        NSHashTable *owners = [map objectForKey:scene];
+        if (!owners) {
+            owners = [NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality];
+            [map setObject:owners forKey:scene];
+        }
+        [owners addObject:owner];
+    }
 }
 
-void SPHostUnregisterHostedBundleID(NSString *bundleID) {
-    if (!bundleID.length) return;
-    @synchronized (SPHostedBundleIDs()) { [SPHostedBundleIDs() removeObject:bundleID]; }
+void SPHostUnregisterHostedScene(id scene, id owner) {
+    if (!scene || !owner) return;
+    NSMapTable *map = SPHostedScenes();
+    @synchronized (map) {
+        NSHashTable *owners = [map objectForKey:scene];
+        [owners removeObject:owner];
+        if (!owners.allObjects.count) [map removeObjectForKey:scene];
+    }
 }
 
 void SPHostClearHostedBundleIDs(void) {
-    @synchronized (SPHostedBundleIDs()) { [SPHostedBundleIDs() removeAllObjects]; }
+    NSMapTable *map = SPHostedScenes();
+    @synchronized (map) { [map removeAllObjects]; }
 }
 
-static BOOL SPSceneIsHosted(id scene) {
+BOOL SPHostSceneIsHosted(id scene) {
     if (!scene) return NO;
-    NSString *identifier = nil;
-    // identifier 是公开属性；_identifier / sceneIdentifier 作兜底
-    for (NSString *key in @[@"identifier", @"_identifier", @"sceneIdentifier"]) {
-        SEL sel = NSSelectorFromString(key);
-        if (![scene respondsToSelector:sel]) continue;
-        @try {
-            id v = ((id (*)(id, SEL))objc_msgSend)(scene, sel);
-            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) { identifier = v; break; }
-        } @catch (__unused NSException *e) {}
+    NSMapTable *map = SPHostedScenes();
+    @synchronized (map) {
+        NSHashTable *owners = [map objectForKey:scene];
+        BOOL hosted = owners.allObjects.count > 0;
+        if (!hosted) [map removeObjectForKey:scene];
+        return hosted;
     }
-    if (!identifier.length) return NO;
-    NSSet *hosted = nil;
-    @synchronized (SPHostedBundleIDs()) { hosted = [SPHostedBundleIDs() copy]; }
-    for (NSString *bid in hosted) {
-        if ([identifier containsString:bid]) return YES;
-    }
-    return NO;
 }
 
-// 把 settings 改成「前台、不后台、无停用理由」
+// 只识别登记表用于诊断，不强行把 scene 推回前台。
+// 强写 foreground/backgrounded 会和系统转场争抢，产生闪回与抖动；分屏窗口层级与宿主视图本地布局已足够保持呈现。
 static id SPPinSceneForeground(id scene, id settings) {
-    if (!settings || !SPSceneIsHosted(scene)) return settings;
-    @try {
-        id m = [settings respondsToSelector:@selector(mutableCopy)] ? [settings mutableCopy] : nil;
-        if (!m) return settings;
-        SEL s1 = NSSelectorFromString(@"setForeground:");
-        if ([m respondsToSelector:s1]) ((void (*)(id, SEL, BOOL))objc_msgSend)(m, s1, YES);
-        SEL s2 = NSSelectorFromString(@"setBackgrounded:");
-        if ([m respondsToSelector:s2]) ((void (*)(id, SEL, BOOL))objc_msgSend)(m, s2, NO);
-        SEL s3 = NSSelectorFromString(@"setDeactivationReasons:");
-        if ([m respondsToSelector:s3]) ((void (*)(id, SEL, unsigned long long))objc_msgSend)(m, s3, 0ULL);
-        return m;
-    } @catch (NSException *e) {
-        SPLog(@"pin scene ex %@", e.reason);
-    }
+    (void)scene;
     return settings;
 }
 
@@ -112,7 +108,13 @@ static BOOL SPTryHookFBScene(NSString *selName, IMP imp, IMP *orig) {
     Class cls = NSClassFromString(@"FBScene");
     if (!cls) { SPLog(@"fbs: FBScene 不存在"); return NO; }
     SEL sel = NSSelectorFromString(selName);
-    if (![cls instancesRespondToSelector:sel]) return NO;
+    Method method = class_getInstanceMethod(cls, sel);
+    if (!method) return NO;
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    NSUInteger count = [selName hasSuffix:@"completion:"] ? 5 : 4;
+    if (sig.numberOfArguments != count || !SPType(sig.methodReturnType, "v")) return NO;
+    for (NSUInteger i = 2; i < count; i++)
+        if (!SPType([sig getArgumentTypeAtIndex:i], "@")) return NO;
     SPHookMsgExFn hook = (SPHookMsgExFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
     if (!hook) return NO;
     hook(cls, sel, imp, orig);
@@ -120,11 +122,14 @@ static BOOL SPTryHookFBScene(NSString *selName, IMP imp, IMP *orig) {
 }
 
 void SPInstallSceneForegroundHook(void) {
-    int n = 0;
-    n += SPTryHookFBScene(@"updateSettings:withTransitionContext:completion:",
-                          (IMP)SPIUpdateSettings3, (IMP *)&gOrigUS3);
-    n += SPTryHookFBScene(@"updateSettings:withTransitionContext:",
-                          (IMP)SPIUpdateSettings2, (IMP *)&gOrigUS2);
-    SPLog(@"fbs: updateSettings hooked %d/2 (3arg=%p 2arg=%p)", n,
-          (void *)gOrigUS3, (void *)gOrigUS2);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        int n = 0;
+        n += SPTryHookFBScene(@"updateSettings:withTransitionContext:completion:",
+                              (IMP)SPIUpdateSettings3, (IMP *)&gOrigUS3);
+        n += SPTryHookFBScene(@"updateSettings:withTransitionContext:",
+                              (IMP)SPIUpdateSettings2, (IMP *)&gOrigUS2);
+        SPLog(@"fbs: updateSettings hooked %d/2 (3arg=%p 2arg=%p)", n,
+              (void *)gOrigUS3, (void *)gOrigUS2);
+    });
 }

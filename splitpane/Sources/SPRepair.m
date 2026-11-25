@@ -3,76 +3,115 @@
 #import "SPLog.h"
 #import <UIKit/UIKit.h>
 #import <math.h>
+#import "SPHost.h"
 
 static NSString *gReport = nil;
 
-// 只修「宽度等于屏幕宽、但高度不到屏幕一半」的 scene ——
-// 这是我们半屏分屏留下的特征，横屏/合法小窗不会命中，避免误伤。
+// 只有 SPHost 在首次改动前保存过的 scene 才有恢复资格；不再凭宽高猜全系统半屏。
+// scene 弱引用，避免修复台账反过来使已失效的 scene 常驻。
+static NSMapTable *SPRepairRecords(void) {
+    static NSMapTable *records;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        records = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality
+                                       valueOptions:NSPointerFunctionsStrongMemory];
+    });
+    return records;
+}
+
+NSDictionary *SPRepairOriginalSettingsForScene(id scene) {
+    if (!scene) return nil;
+    NSMapTable *records = SPRepairRecords();
+    @synchronized (records) { return [records objectForKey:scene]; }
+}
+
+void SPRepairRecordSceneSettings(id scene, NSDictionary *settings) {
+    if (!scene || !settings[@"frame"]) return;
+    NSMapTable *records = SPRepairRecords();
+    @synchronized (records) {
+        // 多 owner 共享同一 scene 时必须保留第一份基准，不能记录已被托管改过的设置。
+        if (![records objectForKey:scene]) [records setObject:[settings copy] forKey:scene];
+    }
+}
+
+void SPRepairForgetScene(id scene) {
+    if (!scene) return;
+    NSMapTable *records = SPRepairRecords();
+    @synchronized (records) { [records removeObjectForKey:scene]; }
+}
+
+BOOL SPRepairRestoreSceneGeometry(id scene, NSDictionary *original, NSString **diag) {
+    if (diag) *diag = @"not-restored";
+    if (![NSThread isMainThread] || !scene || !original[@"frame"]) return NO;
+    // 不允许迟到的旧 host 覆盖新 host 的 frame/orientation。
+    if (SPHostSceneIsHosted(scene)) { if (diag) *diag = @"still-hosted"; return NO; }
+    @try {
+        CGRect frame = [original[@"frame"] CGRectValue];
+        if (!isfinite(frame.origin.x) || !isfinite(frame.origin.y) ||
+            !isfinite(frame.size.width) || !isfinite(frame.size.height) ||
+            frame.size.width < 2 || frame.size.height < 2) return NO;
+        id settings = SPMsg0(scene, @"settings");
+        id desired = SPMsg0(settings, @"mutableCopy");
+        if (!SPABI(desired, @"setFrame:", "v", 1, @encode(CGRect))) return NO;
+        SPVoidRect1(desired, @"setFrame:", frame);
+        NSNumber *orientation = original[@"orientation"];
+        if (orientation) {
+            if (!SPABI(desired, @"setInterfaceOrientation:", "v", 1, @encode(NSInteger))) return NO;
+            SPVoid1I(desired, @"setInterfaceOrientation:", orientation.integerValue);
+        }
+        // 不写 foreground/backgrounded/deactivationReasons/deviceOrientation；由系统决定前后台。
+        id immutable = SPMsg0(desired, @"copy");
+        if (!immutable) return NO;
+        NSString *three = @"updateSettings:withTransitionContext:completion:";
+        NSString *two = @"updateSettings:withTransitionContext:";
+        if (SPABI(scene, three, "v", 3, "@", "@", "@")) {
+            ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, NSSelectorFromString(three), immutable, nil, nil);
+            if (diag) *diag = @"sent3";
+            return YES;
+        }
+        if (SPABI(scene, two, "v", 2, "@", "@")) {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(scene, NSSelectorFromString(two), immutable, nil);
+            if (diag) *diag = @"sent2";
+            return YES;
+        }
+        if (diag) *diag = @"no-update-ABI";
+    } @catch (NSException *e) {
+        if (diag) *diag = [NSString stringWithFormat:@"ex %@", e.reason];
+    }
+    return NO;
+}
+
 @implementation SPRepair
 
-+ (NSString *)lastReport { return gReport ?: @"(none)"; }
++ (NSString *)lastReport {
+    @synchronized (self) { return gReport ?: @"(none)"; }
+}
 
 + (void)restoreAllScenes {
-    NSMutableString *r = [NSMutableString string];
-    @try {
-        Class mgrCls = NSClassFromString(@"FBSceneManager");
-        id mgr = mgrCls ? SPMsg0(mgrCls, @"sharedInstance") : nil;
-        SEL enumSel = NSSelectorFromString(@"enumerateScenesWithBlock:");
-        if (!mgr || ![mgr respondsToSelector:enumSel]) {
-            gReport = @"no FBSceneManager";
-            return;
-        }
-        CGRect screen = [UIScreen mainScreen].bounds;
-        __block NSUInteger fixed = 0, scanned = 0;
-        void (^block)(id) = ^(id scene) {
-            @try {
-                scanned++;
-                if (!scene) return;
-                id settings = SPMsg0(scene, @"settings");
-                if (!settings) return;
-                SEL fGet = NSSelectorFromString(@"frame");
-                if (![settings respondsToSelector:fGet]) return;
-                CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fGet);
-                // 特征匹配：宽度≈屏幕宽，高度只有屏幕的 25%~60%（半屏分屏的痕迹）
-                if (f.size.width < 2) return;
-                if (fabs(f.size.width - screen.size.width) > 40) return;
-                CGFloat ratio = f.size.height / screen.size.height;
-                if (ratio >= 0.75 || ratio < 0.20) return;
-                id desired = SPMsg0(settings, @"mutableCopy");
-                if (!desired) return;
-                SEL setF = NSSelectorFromString(@"setFrame:");
-                if (![desired respondsToSelector:setF]) return;
-                ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setF,
-                    CGRectMake(0, 0, screen.size.width, screen.size.height));
-                SEL ioGet = NSSelectorFromString(@"interfaceOrientation");
-                if ([settings respondsToSelector:ioGet]) {
-                    NSInteger ori = ((NSInteger (*)(id, SEL))objc_msgSend)(settings, ioGet);
-                    SEL setIO = NSSelectorFromString(@"setInterfaceOrientation:");
-                    if ([desired respondsToSelector:setIO])
-                        ((void (*)(id, SEL, NSInteger))objc_msgSend)(desired, setIO, ori);
-                }
-                // 同样不动前台状态：修复只修尺寸
-                id imm = SPMsg0(desired, @"copy");
-                SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
-                SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
-                if (imm && [scene respondsToSelector:upd]) {
-                    ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, imm, nil, nil);
-                    fixed++;
-                } else if (imm && [scene respondsToSelector:upd2]) {
-                    ((void (*)(id, SEL, id, id))objc_msgSend)(scene, upd2, imm, nil);
-                    fixed++;
-                }
-                [r appendFormat:@"%@ %.0fx%.0f→full ", NSStringFromClass([scene class]),
-                 f.size.width, f.size.height];
-            } @catch (__unused NSException *e) {}
-        };
-        ((void (*)(id, SEL, id))objc_msgSend)(mgr, enumSel, block);
-        SPLog(@"repair: scanned=%lu fixed=%lu %@", (unsigned long)scanned, (unsigned long)fixed, r);
-        gReport = [NSString stringWithFormat:@"scanned=%lu fixed=%lu %@", (unsigned long)scanned, (unsigned long)fixed, r];
-    } @catch (NSException *e) {
-        gReport = [NSString stringWithFormat:@"ex %@", e.reason];
-        SPLog(@"repair ex %@", e.reason);
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self restoreAllScenes]; });
+        return;
     }
+    NSMapTable *records = SPRepairRecords();
+    NSArray *scenes;
+    @synchronized (records) { scenes = records.keyEnumerator.allObjects; }
+    NSUInteger fixed = 0, skipped = 0;
+    NSMutableArray *rows = [NSMutableArray array];
+    for (id scene in scenes) {
+        if (SPHostSceneIsHosted(scene)) { skipped++; continue; }
+        NSDictionary *original = SPRepairOriginalSettingsForScene(scene);
+        NSString *diag = nil;
+        if (SPRepairRestoreSceneGeometry(scene, original, &diag)) {
+            fixed++;
+            SPRepairForgetScene(scene);
+        }
+        [rows addObject:[NSString stringWithFormat:@"%@:%@", NSStringFromClass([scene class]), diag ?: @"failed"]];
+    }
+    NSString *report = [NSString stringWithFormat:@"tracked=%lu fixed=%lu hosted-skipped=%lu %@",
+                        (unsigned long)scenes.count, (unsigned long)fixed, (unsigned long)skipped,
+                        [rows componentsJoinedByString:@" "]];
+    @synchronized (self) { gReport = report; }
+    SPLog(@"repair: %@", report);
 }
 
 @end

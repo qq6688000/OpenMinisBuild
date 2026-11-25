@@ -8,6 +8,8 @@
 #import "SPSettings.h"
 #import "SPRepair.h"
 #import "SPPaneController.h"
+#import "SPAppPicker.h"
+#import "SPWindowRegistry.h"
 
 // 版本号从 dylib 所在包的 control 里读不到，这里直接把编译期版本写进常量，
 // 由 build 脚本替换 __SP_VERSION__。找不到就退回 @"dev"。
@@ -43,17 +45,12 @@ typedef void (*SPHookMsgExFn)(Class, SEL, IMP, IMP *);
 // （日志实证：点 × 时记到 pan up=-0 startY=9，全程没有一次 closeTapped）。
 static BOOL SPPointInOurPaneWindow(CGPoint p) {
     @try {
-        // 只要 SPWindowRegistry 里有活着的窗口，且这一点命中它，就让开。
-        // 用登记表判断比猜类名可靠：所有自建窗口都在册。
-        Class reg = NSClassFromString(@"SPWindowRegistry");
-        if (!reg || ![reg respondsToSelector:NSSelectorFromString(@"count")]) return NO;
-        NSUInteger n = ((NSUInteger (*)(id, SEL))objc_msgSend)(reg, NSSelectorFromString(@"count"));
-        if (n == 0) return NO;
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            if (w.isHidden || w.alpha < 0.01) continue;
+        NSArray<UIWindow *> *owned = [SPWindowRegistry registeredWindows];
+        if (!owned.count) return NO;
+        for (UIWindow *w in owned) {
+            if (w.isHidden || w.alpha < 0.01 || !w.windowScene) continue;
             CGPoint lp = [w convertPoint:p fromWindow:nil];
             if (!CGRectContainsPoint(w.bounds, lp)) continue;
-            // 命中测试：这个点上有我们窗口的视图吗
             UIView *hit = [w hitTest:lp withEvent:nil];
             if (hit) return YES;
         }
@@ -74,6 +71,7 @@ void SPInstallIconMenuHook(void);
 void SPInstallSceneForegroundHook(void);
 @interface SPParked : NSObject
 + (void)install;
++ (void)cancelPendingSession;
 @end
 void SPProbeForegroundAPI(void);
 
@@ -82,21 +80,15 @@ static void SPRepairCallback(CFNotificationCenterRef center, void *observer,
     (void)center; (void)observer; (void)name; (void)object; (void)info;
     dispatch_async(dispatch_get_main_queue(), ^{
         SPLog(@"repair requested via darwin notify");
-        // 这个通知是「卡住了」的自救通道：先把分屏强制关掉，再修 scene
+        // repair 必须同时取消尚未建 pane 的挂起交接和手势轨迹，避免旧回调复活。
+        @try { [SPParked cancelPendingSession]; [[SPGesture shared] cancelTracking]; } @catch (__unused NSException *e) {}
         @try {
             SPLog(@"repair: force stop pane if active");
             [SPPaneController.shared stopWithCompletion:nil];
         } @catch (NSException *e) { SPLog(@"force stop ex %@", e.reason); }
         @try {
-            for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                if (w.isHidden) continue;
-                if (w.windowLevel > UIWindowLevelNormal && w.windowLevel < 100) {
-                    w.hidden = YES;
-                    w.rootViewController = nil;
-                    w.windowScene = nil;
-                    [w removeFromSuperview];
-                }
-            }
+            [SPAppPicker cancelIfPresent];
+            [SPWindowRegistry killAll];
         } @catch (__unused NSException *e) {}
         @try { [SPRepair restoreAllScenes]; SPLog(@"repair done: %@", [SPRepair lastReport]); }
         @catch (NSException *e) { SPLog(@"repair ex %@", e.reason); }
@@ -158,6 +150,7 @@ static void SPHookedTouchesMoved(id self, SEL _cmd, NSSet *touches, UIEvent *eve
 }
 
 static void SPHookedTouchesCancelled(id self, SEL _cmd, NSSet *touches, UIEvent *event) {
+    @try { [[SPGesture shared] cancelTracking]; } @catch (__unused NSException *e) {}
     if (gOrigTouchesCancelled)
         ((void (*)(id, SEL, NSSet *, UIEvent *))gOrigTouchesCancelled)(self, _cmd, touches, event);
 }

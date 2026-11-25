@@ -12,6 +12,9 @@
 @property (nonatomic, strong) UIImageView *snapshot;
 @property (nonatomic, strong) UILabel *title;
 @property (nonatomic, strong) UIWindow *overlayWindow;
+@property (nonatomic, assign) NSUInteger presentationGeneration;
+@property (nonatomic, assign) BOOL dismissing;
+@property (nonatomic, strong) NSMutableArray *dismissCompletions;
 @end
 
 static NSHashTable *SPCards(void) {
@@ -29,16 +32,23 @@ static NSHashTable *SPCards(void) {
     for (SPParkCard *c in all) {
         @try { [c removeNow]; } @catch (NSException *e) { SPLog(@"card remove ex %@", e.reason); }
     }
-    [SPCards() removeAllObjects];
+    // removeNow 自己注销；回调里新建的卡片不属于本次清理快照。
 }
 
 - (void)removeNow {
-    [self.layer removeAllAnimations];
-    [self removeFromSuperview];
+    ++_presentationGeneration;
     UIWindow *w = _overlayWindow;
     _overlayWindow = nil;
+    _dismissing = NO;
+    self.userInteractionEnabled = NO;
+    NSArray *callbacks = [_dismissCompletions copy];
+    _dismissCompletions = nil;
+    [SPCards() removeObject:self];
+    [self.layer removeAllAnimations];
+    [self removeFromSuperview];
     [SPWindowRegistry releaseWindow:w];
     SPLog(@"park card removed (%@)", self.bundleID ?: @"?");
+    for (void (^callback)(void) in callbacks) callback();
 }
 
 - (instancetype)initWithSnapshot:(UIImage *)image bundleID:(NSString *)bundleID name:(NSString *)name {
@@ -82,6 +92,8 @@ static NSHashTable *SPCards(void) {
 }
 
 - (void)tapped:(UITapGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateEnded || !_overlayWindow || _dismissing) return;
+    self.userInteractionEnabled = NO; // 同一卡片只交接一次
     [self.delegate parkCardDidTap:self];
 }
 
@@ -98,7 +110,13 @@ static NSHashTable *SPCards(void) {
 - (void)presentInWindowScene:(UIWindowScene *)scene fromRect:(CGRect)fromRect completion:(void (^)(void))completion {
     if (!scene && self.window.windowScene) scene = self.window.windowScene;
     if (!scene) return;
+    NSUInteger generation = _presentationGeneration + 1;
+    [self removeNow];
+    if (_presentationGeneration != generation || _overlayWindow) return;
+    self.transform = CGAffineTransformIdentity;
+    self.userInteractionEnabled = YES;
     UIWindow *overlay = [SPWindowRegistry makeWindowWithScene:scene level:UIWindowLevelNormal + 2];
+    if (!overlay) return;
     overlay.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.clearColor;
@@ -111,7 +129,7 @@ static NSHashTable *SPCards(void) {
     __weak typeof(self) wself = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
-        if (!self || !self->_overlayWindow) return;
+        if (!self || !self->_overlayWindow || self.presentationGeneration != generation) return;
         SPLog(@"park card auto-expired (%@)", self.bundleID ?: @"?");
         [self removeNow];
     });
@@ -124,16 +142,27 @@ static NSHashTable *SPCards(void) {
                         options:UIViewAnimationOptionAllowUserInteraction animations:^{
         self.frame = rest;
         self.alpha = 1.0;
-    } completion:^(BOOL finished) { if (completion) completion(); }];
+    } completion:^(BOOL finished) {
+        if (finished && self.presentationGeneration == generation && self.overlayWindow == overlay &&
+            !self.dismissing && completion) completion();
+    }];
 }
 
 - (void)dismissAnimated:(void (^)(void))completion {
+    if (!_overlayWindow) { if (completion) completion(); return; }
+    if (completion) {
+        if (!_dismissCompletions) _dismissCompletions = [NSMutableArray array];
+        [_dismissCompletions addObject:[completion copy]];
+    }
+    if (_dismissing) return;
+    _dismissing = YES;
+    self.userInteractionEnabled = NO;
+    NSUInteger generation = _presentationGeneration;
     [UIView animateWithDuration:0.2 animations:^{
         self.alpha = 0;
         self.transform = CGAffineTransformMakeTranslation(0, 36);
     } completion:^(BOOL finished) {
-        [self removeNow];
-        if (completion) completion();
+        if (self.presentationGeneration == generation) [self removeNow];
     }];
 }
 
