@@ -249,6 +249,22 @@ void SPHostClearHostedBundleIDs(void);
     SPLog(@"home bar added y=%.0f h=%.0f w=%.0f", height - barH, barH, width);
 }
 
+- (void)spOrientationChanged:(NSNotification *)n {
+    if (!_window) return;
+    CGRect b = _window.windowScene ? _window.windowScene.coordinateSpace.bounds : [UIScreen mainScreen].bounds;
+    SPLog(@"orientation changed -> window %@", NSStringFromCGRect(b));
+    _window.frame = b;
+    _window.rootViewController.view.frame = b;
+    _split.frame = CGRectMake(0, kChromeHeight, b.size.width, b.size.height - kChromeHeight);
+    [_split setNeedsLayout];
+    [_split layoutIfNeeded];
+    // 两块按新容器尺寸重排
+    [_topHost setFrameSize:_split.topContainer.bounds.size];
+    [_bottomHost setFrameSize:_split.bottomContainer.bounds.size];
+    // home 条也要挪到新的底部
+    _homeBar.frame = CGRectMake(0, b.size.height - 60, b.size.width, 60);
+}
+
 - (void)homeBarTapped {
     // 用户决定：上划 Home / 点 Home 条 = 直接拆窗回桌面，不做挂起。
     SPLog(@"homeBarTapped -> 直接拆窗回桌面");
@@ -361,12 +377,16 @@ void SPHostClearHostedBundleIDs(void);
     CGFloat bottomInset = 0.0;
     // 铺满全屏：宽度/高度都取窗口真实 bounds，且关掉安全区域内边距（否则左右会被 insets 缩进）
     vc.view.frame = w.bounds;
+    // 旋转后窗口尺寸会变，vc.view 和里面的 split 都要跟着
+    vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    w.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     if (@available(iOS 11.0, *)) {
         vc.view.insetsLayoutMarginsFromSafeArea = NO;
         vc.view.directionalLayoutMargins = NSDirectionalEdgeInsetsZero;
     }
     SPSplitView *split = [[SPSplitView alloc] initWithFrame:CGRectMake(0, kChromeHeight, w.bounds.size.width,
                                                                        w.bounds.size.height - kChromeHeight - bottomInset)];
+    split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     split.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     __weak typeof(self) wself = self;
     split.onSeamMoved = ^{ [wself resizePanes]; };
@@ -384,6 +404,11 @@ void SPHostClearHostedBundleIDs(void);
     [w addGestureRecognizer:dbl];
     _doubleTapExit = dbl;
     SPLog(@"double-tap exit installed");
+
+    // 旋转：窗口跟着设备方向走，两块重新排版
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(spOrientationChanged:)
+                                                 name:UIDeviceOrientationDidChangeNotification object:nil];
+    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
 
     // 出口 1：三指下滑
     // 单指从底部上划 → 挂起成任务卡片（不退出分屏）

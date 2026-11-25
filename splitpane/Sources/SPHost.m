@@ -585,6 +585,23 @@ static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
     }
 }
 
+
+// 取设备真实方向：横屏时根视图宽 > 高，用它推给 scene 才对得上。
+// 之前固定竖屏 → 横屏下画面被压扁；按容器宽高比 → 竖屏下被误判横屏。
+// 唯一可靠的是「整个窗口场景的坐标空间尺寸」。
+static NSInteger SPDeviceOrientation(void) {
+    CGSize s = CGSizeZero;
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        if ([NSStringFromClass([sc class]) containsString:@"Aperture"]) continue;
+        s = ((UIWindowScene *)sc).coordinateSpace.bounds.size;
+        break;
+    }
+    if (s.width < 2) s = [UIScreen mainScreen].bounds.size;
+    // UIInterfaceOrientation: 1=Portrait 4=PortraitUpsideDown 3=LandscapeRight 2=LandscapeLeft
+    return (s.width > s.height) ? 3 : 1;
+}
+
 static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOOL touchForeground, NSString **diag) {
     if (diag) *diag = nil;
     if (!scene) { if (diag) *diag = @"no-scene"; return NO; }
@@ -597,11 +614,9 @@ static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOO
         if (![desired respondsToSelector:setFrameSel]) { if (diag) *diag = @"no-setFrame"; return NO; }
         ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setFrameSel,
             CGRectMake(0, 0, pane.width, pane.height));
-        // ⚠️ 这里绝不能设 interfaceOrientation / deviceOrientation！
-        // 每次推尺寸都写一次方向字段，系统会判定为「发生转屏」，
-        // 于是把整个界面转 90 度，并把我们容器的 bounds 交换成 932x309
-        // （0.7.6 日志实证：attach 时 430x453，拖动后 resize 变成 932x309）。
-        // 方向保持系统原值即可，分屏容器只是屏幕的一部分，不构成转屏。
+        // 方向跟随设备：横屏时容器是 932x430，推 3/2 让 App 按横屏排版；
+        // 竖屏推 1。这样两种方向下画面都能完整显示。
+        SPSetI(desired, @"setInterfaceOrientation:", orient);
         // 前台化，否则后台 scene 停渲染。恢复时绝不做 ——
         // 退出后把 App 推进前台会把桌面挡在后面，表现就是「桌面点不了」。
         SEL fgGet = NSSelectorFromString(@"isForeground");
@@ -788,7 +803,7 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 分屏容器是 430x453（宽 > 高），会被判成横屏 → App 整个界面旋转 90 度，
     // 画面就"丢失"了（用户截图实证：标题竖排、内容跑到左上角）。
     // 屏幕本身是竖屏，就永远按竖屏推。
-    NSInteger orient = 1;   // UIInterfaceOrientationPortrait
+    NSInteger orient = SPDeviceOrientation();   // 跟随设备真实方向
 
     // 1) 真 FBScene
     id scene = [SPHost fbSceneForBundleID:_bundleID];
@@ -954,7 +969,7 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 用户要求画面按容器 1:1 显示，所以尺寸变化时必须把新尺寸推给 scene，
     // 让它重新按新高度排版本（否则拖动后画面和容器对不上）。
     _referenceSize = r;
-    NSInteger orient = 1;   // 永远竖屏，理由同上
+    NSInteger orient = SPDeviceOrientation();
     NSString *sub = nil;
     SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
     SPLog(@"resize %@ -> %@ (%@)", _bundleID, NSStringFromCGSize(r), sub ?: @"-");
@@ -1048,7 +1063,8 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 原值是半屏尺寸（我们接管后才记录的）就改用屏幕尺寸
     if (target.width < 2 || target.height < screen.size.height * 0.9) target = screen.size;
     NSString *sub = nil;
-    SPSubmitSceneSettingsEx(_scene, target, oriVal ? oriVal.integerValue : 1, NO, &sub);
+    // 方向一律不写：捕获到的 oriVal 可能是被我们改过的脏值，写回去会让 App 永久横屏
+    SPSubmitSceneSettingsEx(_scene, target, 1, NO, &sub);
     SPLog(@"scene %@ restore target=%.0fx%.0f (orig=%.0fx%.0f)", _bundleID,
           target.width, target.height, orig.size.width, orig.size.height);
     SPLog(@"scene %@ restored to %.0fx%.0f (%@)", _bundleID, screen.size.width, screen.size.height, sub ?: @"-");
@@ -1068,7 +1084,6 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
                 if (desired && [desired respondsToSelector:setF]) {
                     ((void (*)(id, SEL, CGRect))objc_msgSend)(desired, setF,
                         CGRectMake(0, 0, screen.size.width, screen.size.height));
-                    SPSetI(desired, @"setInterfaceOrientation:", oriVal ? oriVal.integerValue : 1);
                     id imm = SPMsg0(desired, @"copy");
                     if (imm && [_scene respondsToSelector:upd2])
                         ((void (*)(id, SEL, id, id))objc_msgSend)(_scene, upd2, imm, nil);
