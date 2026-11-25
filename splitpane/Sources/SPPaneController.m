@@ -66,7 +66,7 @@ static const BOOL kRatioSnap = YES;      // 拖动时在两档之间吸附
 
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
         [_seam addGestureRecognizer:pan];
-        _splitRatio = 0.35;   // 默认 35/65：看图 3 那种效果，窄块仍能显示完整界面
+        _splitRatio = 0.85;   // 默认 85/15：主画面占大头，保证完整可用；副画面缩小但保留
     }
     return self;
 }
