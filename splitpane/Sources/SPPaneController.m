@@ -292,7 +292,9 @@ void SPHostClearHostedBundleIDs(void);
     homeUp.delaysTouchesBegan = NO;
     homeUp.delaysTouchesEnded = NO;
     homeUp.delegate = (id<UIGestureRecognizerDelegate>)self;
-    [vc.view addGestureRecognizer:homeUp];
+    // ⚠️ 必须挂在 window 上而不是 vc.view：vc.view 里全是 App 的 sceneView，
+    // 触摸先被它们接住，我们的 pan 根本收不到（0.5.21 日志实证：一次 homePan 都没有）。
+    [w addGestureRecognizer:homeUp];
 
     UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
     escape.numberOfTouchesRequired = 3;
@@ -515,11 +517,20 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // 只认「从底部区域起手 + 明显往上」的那一下，避免和 App 内滚动打架
     UIWindow *win = _window;
     if (!win) return;
+    // 统一用屏幕坐标，window 自己的 bounds 在缩小态下会变
+    CGSize screen = [UIScreen mainScreen].bounds.size;
     CGPoint p0 = [g locationInView:win];
+    if (win.windowScene) {
+        p0 = [g locationInView:nil];
+        CGPoint inWin = [win convertPoint:p0 fromWindow:nil];
+        p0 = inWin;
+    }
     switch (g.state) {
         case UIGestureRecognizerStateBegan: {
             _homePanStartY = p0.y;
-            _homePanArmed = (p0.y >= win.bounds.size.height - 120);
+            // 从屏幕底部 140pt 内起手才算「上划回桌面」
+            _homePanArmed = (p0.y >= win.bounds.size.height - 140);
+            SPLog(@"homePan began y=%.0f h=%.0f armed=%d", p0.y, win.bounds.size.height, (int)_homePanArmed);
             break;
         }
         case UIGestureRecognizerStateChanged: {
@@ -679,6 +690,9 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 - (void)stopWithCompletion:(void (^)(void))completion {
     if (!_active) { if (completion) completion(); return; }
     NSString *main = _topBundleID ?: _bottomBundleID;
+    // teardown 会清空这两个，先存下来给「推后台」用
+    NSString *savedTop = _topBundleID;
+    NSString *savedBottom = _bottomBundleID;
     _active = NO;
     [self teardown];          // 内部先摘视图、再恢复 scene 尺寸、最后释放窗口
     SPLog(@"stop: window torn down, main=%@", main);
@@ -690,7 +704,16 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     @try { wentHome = [SPHost homePress]; } @catch (__unused NSException *e) {}
     SPLog(@"stop: homePress=%d (diag=%@)", (int)wentHome, [SPHost homePressDiag]);
 
-    // 兜底：homePress 失败才去 reactivate 主 App，至少不是全黑
+    // 兜底 1：直接把两个 App 的 scene 推成后台，SpringBoard 自会显示桌面。
+    // （这台机器 homePress 全链路不可用，这是唯一验证有效的方式）
+    if (!wentHome) {
+        BOOL a = savedTop.length ? [SPHost pushSceneToBackground:savedTop] : NO;
+        BOOL b2 = savedBottom.length ? [SPHost pushSceneToBackground:savedBottom] : NO;
+        SPLog(@"stop: pushToBackground top=%d bottom=%d", (int)a, (int)b2);
+        wentHome = a || b2;
+    }
+
+    // 兜底 2：还失败才 reactivate 主 App，至少不是全黑
     if (!wentHome && main.length) {
         [SPHost reactivateApp:main];
         // 再补一次 settings 恢复：activate 之后系统会重新计算全屏布局

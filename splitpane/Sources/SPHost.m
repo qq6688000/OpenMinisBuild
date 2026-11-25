@@ -328,6 +328,56 @@ static NSMutableSet *gHomeTried = nil;
 
 // 把 App 退到后台：让它自己的 scene「收起」，SpringBoard 自然回桌面。
 // 不杀进程 —— SIGKILL 会让 SpringBoard 认为 App 崩溃，可能触发重启。
+
+// 真正把 App 退到后台（回桌面）。
+// 这台机器 SBUIController / SBMainWorkspace 的 home 入口全部不可用（日志 homePress=n），
+// 唯一可靠的做法是直接把它的 FBScene 推成 backgrounded=YES / foreground=NO，
+// SpringBoard 看到前台 scene 全部退场，自然显示桌面。
++ (BOOL)pushSceneToBackground:(NSString *)bundleID {
+    if (!bundleID.length) return NO;
+    id scene = [self fbSceneForBundleID:bundleID];
+    if (!scene) { SPLog(@"bg: %@ no scene", bundleID); return NO; }
+    @try {
+        id settings = SPGet(scene, @"settings");
+        if (!settings) return NO;
+        id desired = SPMsg0(settings, @"mutableCopy");
+        if (!desired) return NO;
+
+        BOOL did = NO;
+        SEL bgSet = NSSelectorFromString(@"setBackgrounded:");
+        if ([desired respondsToSelector:bgSet]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(desired, bgSet, YES);
+            did = YES;
+        }
+        SEL fgSet = NSSelectorFromString(@"setForeground:");
+        if ([desired respondsToSelector:fgSet]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(desired, fgSet, NO);
+            did = YES;
+        }
+        SEL rsSet = NSSelectorFromString(@"setDeactivationReasons:");
+        if ([desired respondsToSelector:rsSet]) {
+            ((void (*)(id, SEL, unsigned long long))objc_msgSend)(desired, rsSet, 1ULL);
+        }
+        if (!did) { SPLog(@"bg: %@ no setter", bundleID); return NO; }
+
+        id immutable = SPMsg0(desired, @"copy");
+        if (!immutable) return NO;
+        SEL upd = NSSelectorFromString(@"updateSettings:withTransitionContext:completion:");
+        if ([scene respondsToSelector:upd]) {
+            ((void (*)(id, SEL, id, id, id))objc_msgSend)(scene, upd, immutable, nil, nil);
+            SPLog(@"bg: %@ sent3", bundleID);
+            return YES;
+        }
+        SEL upd2 = NSSelectorFromString(@"updateSettings:withTransitionContext:");
+        if ([scene respondsToSelector:upd2]) {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(scene, upd2, immutable, nil);
+            SPLog(@"bg: %@ sent2", bundleID);
+            return YES;
+        }
+    } @catch (NSException *e) { SPLog(@"bg ex %@", e.reason); }
+    return NO;
+}
+
 + (BOOL)suspendAppToBackground:(NSString *)bundleID {
     if (!bundleID.length) return NO;
     // 优先：SBMainWorkspace 的 home 请求

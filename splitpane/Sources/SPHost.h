@@ -33,6 +33,7 @@
 // 把 App 退到后台（不杀进程）
 + (BOOL)suspendAppToBackground:(NSString *)bundleID;
 + (BOOL)homePress;
++ (BOOL)pushSceneToBackground:(NSString *)bundleID;
 // 只做激活（毫秒级，不启动进程），用来让 App 自己重排成全屏
 + (void)reactivateApp:(NSString *)bundleID;
 + (void)forceRecycleApp:(NSString *)bundleID;
