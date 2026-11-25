@@ -333,12 +333,18 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     // ===== 分屏中上划：从底部起手 → 把分屏缩成桌面悬浮小窗（不死锁在容器里） =====
     if (SPPaneController.shared.active) {
         if (!fromBottom) return NO;
-        if (SPPaneController.shared.suspended) {
-            SPLog(@"pan: 已缩成小窗，放行系统手势");
-            return NO;
+        // 用户要求：分屏中上划直接拆窗回桌面，不做任何挂起/缩窗。
+        SPLog(@"pan: 分屏中上划 -> 直接拆窗回桌面");
+        NSString *t = SPPaneController.shared.topBundleID;
+        NSString *b = SPPaneController.shared.bottomBundleID;
+        UIWindowScene *ws = nil;
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            if ([NSStringFromClass([sc class]) containsString:@"Aperture"]) continue;
+            ws = (UIWindowScene *)sc; break;
         }
-        SPLog(@"pan: 分屏中上划 -> 缩成桌面小窗");
-        [SPPaneController.shared suspendToCardWithCompletion:nil];
+        (void)t; (void)b; (void)ws;
+        [SPPaneController.shared stopWithCompletion:nil];
         return YES;
     }
 

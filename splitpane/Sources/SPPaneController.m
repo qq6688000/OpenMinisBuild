@@ -232,10 +232,9 @@ void SPHostClearHostedBundleIDs(void);
 }
 
 - (void)homeBarTapped {
-    // 回滚：挂起这条路（窗口下沉/hidden/推后台）在这台机器上都会把 SpringBoard 弄黑。
-    // 改回唯一验证稳定不卡死的做法：缩成桌面悬浮小窗（scene 不动，只改窗口尺寸）。
-    SPLog(@"homeBarTapped -> 缩成悬浮小窗");
-    [self suspendToFloatingWindow:nil];
+    // 用户决定：上划 Home / 点 Home 条 = 直接拆窗回桌面，不做挂起。
+    SPLog(@"homeBarTapped -> 直接拆窗回桌面");
+    [self stopWithCompletion:nil];
 }
 
 - (void)closePaneTapped {
