@@ -830,7 +830,9 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 注意顺序：先设 identity + bounds，再设 transform，最后设 center，否则居中会算错。
     CGFloat sx = target.width / reference.width;
     CGFloat sy = target.height / reference.height;
-    CGFloat scale = MIN(sx, sy);
+    // PV 用 cover：铺满容器、超出裁掉。这样 45pt 宽的容器里看到的是完整画面的
+    // 一块裁切区域，而不是把 App 压成一条。
+    CGFloat scale = MAX(sx, sy);
 
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0, 0, reference.width, reference.height);
@@ -914,11 +916,16 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     //   "a half-screen setFrame is invalid on iOS 16 and kills the hosted pid"
     // 推半屏尺寸 = 系统判定非法帧 → 杀掉托管进程 → 拖动时黑屏 + 卡顿。
     // 正确做法：scene 保持全屏渲染，拖动时只改 hostView 的 scale/center。
-    // 用户要求：两块各自按「全屏」显示 —— 宽度占满、不缩放、不压缩。
-    // 做法：把容器真实尺寸推给 scene，让 App 自己按这个尺寸重排版（0.5.2 的做法）。
-    // 这样画面 1:1 贴满容器，两侧没有边，底栏也完整。
-    CGSize ref = container.bounds.size;
-    if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
+    // PV 的做法：scene 按「真实屏幕宽度 × 容器高度」渲染，
+    // 既不改成容器那种极端宽高比（45×430 会把 App 压成一条），
+    // 也不保持全屏（那样内容会被裁）。然后再等比缩放进容器。
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGSize ref = CGSizeMake(screen.width, MAX(container.bounds.size.height, 120));
+    if (container.bounds.size.width > container.bounds.size.height) {
+        // 横屏容器：高度是屏幕高，宽度取屏幕宽
+        ref = CGSizeMake(MAX(container.bounds.size.width, 120), screen.height);
+    }
+    if (ref.width < 2 || ref.height < 2) ref = screen;
     _referenceSize = ref;
     _lastSize = ref;
     // ⚠️ 绝不能按容器宽高比推方向！
@@ -1088,16 +1095,24 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (r.width < 2 || r.height < 2) return;
     if (CGSizeEqualToSize(r, _lastSize)) return;
     _lastSize = r;
-    // 用户要求画面按容器 1:1 显示，所以尺寸变化时必须把新尺寸推给 scene，
-    // 让它重新按新高度排版本（否则拖动后画面和容器对不上）。
-    _referenceSize = r;
+    // 和 attach 用同一套参考尺寸规则：按「屏幕宽 × 容器高」推，
+    // 不把容器那种极端宽高比直接给 scene（45×430 会把 App 压成一条）。
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGSize ref = r;
+    if (r.width > r.height) {
+        // 横屏容器：宽度取屏幕宽、高度按容器
+        ref = CGSizeMake(MAX(r.width, 120), screen.height);
+    } else {
+        ref = CGSizeMake(screen.width, MAX(r.height, 120));
+    }
+    _referenceSize = ref;
     NSInteger orient = SPDeviceOrientation();
     NSString *sub = nil;
-    SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
-    SPLog(@"resize %@ -> %@ (%@)", _bundleID, NSStringFromCGSize(r), sub ?: @"-");
+    SPSubmitSceneSettingsEx(_scene, ref, orient, NO, &sub);
+    SPLog(@"resize %@ -> %@ (ref=%@ %@)", _bundleID, NSStringFromCGSize(r), NSStringFromCGSize(ref), sub ?: @"-");
 
     if (_hostView && _containerView) {
-        SPFitHostView(_hostView, _containerView, r);
+        SPFitHostView(_hostView, _containerView, ref);
     }
     _snapshotView.frame = _containerView.bounds;
 }
