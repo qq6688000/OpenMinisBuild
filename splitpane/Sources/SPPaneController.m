@@ -232,10 +232,10 @@ void SPHostClearHostedBundleIDs(void);
 }
 
 - (void)homeBarTapped {
-    // 新架构：点 Home 条 = 把分屏缩成桌面小窗，不拆窗口、不惊动系统。
-    // 这样桌面立刻可见（窗口本身变小了），而且分屏会话完整保留，点小窗就能回来。
-    SPLog(@"homeBarTapped -> suspend to floating card");
-    [self suspendToCardWithCompletion:nil];
+    // 回滚：挂起这条路（窗口下沉/hidden/推后台）在这台机器上都会把 SpringBoard 弄黑。
+    // 改回唯一验证稳定不卡死的做法：缩成桌面悬浮小窗（scene 不动，只改窗口尺寸）。
+    SPLog(@"homeBarTapped -> 缩成悬浮小窗");
+    [self suspendToFloatingWindow:nil];
 }
 
 - (void)closePaneTapped {
@@ -496,6 +496,48 @@ void SPHostClearHostedBundleIDs(void);
 }
 
 
+
+#pragma mark - 悬浮小窗（唯一验证稳定不卡死的挂起方式）
+
+- (void)suspendToFloatingWindow:(void (^)(void))completion {
+    if (!_active || !_window) {
+        SPLog(@"float abort: active=%d window=%@", (int)_active, _window ? @"Y" : @"nil");
+        if (completion) completion();
+        return;
+    }
+    if (_suspended) { if (completion) completion(); return; }
+    _suspended = YES;
+
+    CGRect screen = _window.windowScene ? _window.windowScene.coordinateSpace.bounds
+                                        : [UIScreen mainScreen].bounds;
+    CGFloat cw = screen.size.width * 0.42;
+    CGFloat ch = screen.size.height * 0.40;
+    CGRect f = CGRectMake(screen.size.width - cw - 18, screen.size.height - ch - 130, cw, ch);
+    SPLog(@"float: 缩成悬浮小窗 %@", NSStringFromCGRect(f));
+
+    UIView *v = _window.rootViewController.view;
+    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+        self->_window.frame = f;
+        v.frame = self->_window.bounds;
+        v.transform = CGAffineTransformIdentity;
+        v.layer.cornerRadius = 20;
+        v.layer.cornerCurve = kCACornerCurveContinuous;
+        v.clipsToBounds = YES;
+        self->_homeBar.hidden = YES;
+        self->_split.singlePaneMode = YES;
+        [self->_split setNeedsLayout];
+        [self->_split layoutIfNeeded];
+    } completion:^(BOOL finished) {
+        if (!self->_cardTap) {
+            self->_cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
+            [v addGestureRecognizer:self->_cardTap];
+        }
+        self->_cardTap.enabled = YES;
+        SPLog(@"float done");
+        if (completion) completion();
+    }];
+}
+
 #pragma mark - 挂起 / 恢复（分屏 → 任务卡片 → 分屏）
 
 // 设计说明：
@@ -515,35 +557,10 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 }
 
 - (BOOL)suspendToCardWithCompletion:(void (^)(void))completion {
-    SPLog(@"suspend enter: active=%d window=%@ suspended=%d",
-          (int)_active, _window ? @"Y" : @"nil", (int)_suspended);
-    if (!_active || !_window) { SPLog(@"suspend abort: 条件不满足"); return NO; }
-    if (_suspended) { SPLog(@"suspend: 已经在小窗态"); if (completion) completion(); return YES; }
-
-    // ===== 最稳的「挂起」：把窗口沉到桌面窗口之下 =====
-    // 试过但不行的两条路：
-    //   · 做成悬浮卡片挂上去 → 挡桌面视野（用户否定）
-    //   · 窗口 hidden + 把 App 推后台 → SpringBoard 直接卡死
-    //
-    // 现在这条路不碰 App、不碰 scene、不碰系统状态，只调一个窗口层级：
-    //   窗口降到 SBHomeScreenWindow 下层 → 桌面完整盖住它，用户看到的就是干净桌面；
-    //   分屏内容仍在内存里实时渲染，恢复时把层级提回来即可，零重建。
-    _suspended = YES;
-    _supersededWindowLevel = _window.windowLevel;
-    SPLog(@"suspend: 窗口下沉到桌面之下 (原层级=%.0f)", _supersededWindowLevel);
-
-    UIView *v = _window.rootViewController.view;
-    [UIView animateWithDuration:0.15 delay:0
-                        options:UIViewAnimationOptionCurveEaseIn
-                     animations:^{ v.alpha = 0.0; }
-                     completion:^(BOOL finished) {
-        // 关键：降到 Normal - 10。桌面窗口是 -2，我们的窗口在它下面，
-        // 系统桌面自然完整可见，不需要任何额外操作。
-        self->_window.windowLevel = UIWindowLevelNormal - 10.0;
-        SPLog(@"suspend done: 桌面已完整可见");
-        if (completion) completion();
-    }];
-    return YES;
+    // 统一走悬浮小窗实现：只有这条路在这台机器上不卡死、不黑屏。
+    // （窗口下沉 / hidden / 推 scene 后台 三种都试过，都会让 SpringBoard 发黑。）
+    [self suspendToFloatingWindow:completion];
+    return _suspended;
 }
 
 - (void)resumeFromCardWithCompletion:(void (^)(void))completion {
@@ -553,25 +570,23 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 
     CGRect full = _window.windowScene ? _window.windowScene.coordinateSpace.bounds
                                       : [UIScreen mainScreen].bounds;
-    SPLog(@"resume: 从后台恢复分屏");
+    SPLog(@"resume: 小窗展开回全屏");
 
-    _window.frame = full;
-    v.frame = _window.bounds;
-    v.transform = CGAffineTransformIdentity;
-    v.layer.cornerRadius = 0;
-    v.alpha = 0.0;
-    _window.windowLevel = _supersededWindowLevel > 0 ? _supersededWindowLevel : (UIWindowLevelStatusBar + 10);
-    _window.hidden = NO;
-    _homeBar.hidden = NO;
-    _split.singlePaneMode = NO;
-    [_split setNeedsLayout];
-    [_split layoutIfNeeded];
+    // 窗口层级固定，不动（之前随状态改层级导致闪屏）
+    _window.windowLevel = UIWindowLevelStatusBar + 10;
 
-    [UIView animateWithDuration:0.22 delay:0
-                        options:UIViewAnimationOptionCurveEaseOut
-                     animations:^{ v.alpha = 1.0; }
-                     completion:^(BOOL finished) {
+    [UIView animateWithDuration:0.24 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_window.frame = full;
+        v.frame = self->_window.bounds;
+        v.transform = CGAffineTransformIdentity;
+        v.layer.cornerRadius = 0;
+        self->_homeBar.hidden = NO;
+        self->_split.singlePaneMode = NO;
+        [self->_split setNeedsLayout];
+        [self->_split layoutIfNeeded];
+    } completion:^(BOOL finished) {
         self->_suspended = NO;
+        self->_cardTap.enabled = NO;
         [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
         [self->_bottomHost setFrameSize:self->_split.bottomContainer.bounds.size];
         SPLog(@"resume done");
