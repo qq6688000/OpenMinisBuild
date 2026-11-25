@@ -25,6 +25,9 @@
 // 给一个 pane 容器装上拖放能力
 + (void)attachToContainer:(UIView *)container label:(NSString *)label;
 
+// 给任意 view 装一个「拖出快照」的 drag 源（快照取自 snapshotFrom 这个视图）
++ (void)attachDragToView:(UIView *)view label:(NSString *)label snapshotFrom:(UIView *)snapshotFrom;
+
 // 我们当前是不是正在拖拽（分屏逻辑据此放行触摸）
 @property (class, readonly) BOOL dragging;
 
