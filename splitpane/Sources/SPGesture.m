@@ -377,15 +377,9 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
 }
 
 - (void)sendHomePress {
-    Class uic = NSClassFromString(@"SBUIController");
-    id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
-    SEL sel = NSSelectorFromString(@"handleHomeButtonSinglePressUp");
-    if (ui && [ui respondsToSelector:sel]) {
-        ((void (*)(id, SEL))objc_msgSend)(ui, sel);
-        SPLog(@"home pressed");
-    } else {
-        SPLog(@"home press unavailable");
-    }
+    // 统一走 SPHost 的真实实现（handleHomeButtonSinglePressUpForWindowScene:）
+    BOOL ok = [SPHost homePress];
+    SPLog(@"home pressed=%d (diag=%@)", (int)ok, [SPHost homePressDiag]);
 }
 
 #pragma mark - 卡片 / 面板

@@ -255,51 +255,50 @@ static NSMutableSet *gHomeTried = nil;
 }
 
 + (BOOL)homePress {
-    static NSArray *classes = nil;
-    static NSArray *sels = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        classes = @[@"SBUIController", @"SBMainWorkspace", @"SBHomeHardwareButton",
-                    @"SBHomeButtonController", @"SBMainDisplayPolicyAggregator"];
-        sels = @[@"handleHomeButtonSinglePressUp", @"clickedMenuButton",
-                 @"_handleMenuButtonDown", @"handleMenuButtonSinglePress",
-                 @"handleMenuButtonDownAndUp", @"pressHomeButton"];
-    });
+    // 名字来自 0.5.23 的实测 dump（日志 "homeAPI SBUIController(18)"）：
+    //   真正存在的是 handleHomeButtonSinglePressUpForWindowScene: 及带 sourceType 的变体，
+    //   之前一直调的 handleHomeButtonSinglePressUp（无参）在这台机器上根本不存在。
     gHomeTried = [NSMutableSet set];
-    for (NSString *cn in classes) {
-        Class c = NSClassFromString(cn);
-        if (!c) continue;
-        id inst = nil;
-        if ([c respondsToSelector:NSSelectorFromString(@"sharedInstance")])
-            inst = SPMsg0(c, @"sharedInstance");
-        if (!inst && [c respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")])
-            inst = SPMsg0(c, @"sharedInstanceIfExists");
-        id target = inst ?: (id)c;
-        for (NSString *sn in sels) {
-            SEL sel = NSSelectorFromString(sn);
-            if (![target respondsToSelector:sel]) continue;
-            @try {
-                ((void (*)(id, SEL))objc_msgSend)(target, sel);
-                [gHomeTried addObject:[NSString stringWithFormat:@"%@.%@", cn, sn]];
-                SPLog(@"homePress via %@.%@", cn, sn);
-                return YES;
-            } @catch (NSException *e) {
-                [gHomeTried addObject:[NSString stringWithFormat:@"%@.%@(ex)", cn, sn]];
-            }
+
+    Class uic = NSClassFromString(@"SBUIController");
+    id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
+    if (!ui) { SPLog(@"homePress: SBUIController 无实例"); return NO; }
+
+    // 取一个前台 UIWindowScene
+    UIWindowScene *ws = nil;
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if ([sc isKindOfClass:[UIWindowScene class]] &&
+            sc.activationState == UISceneActivationStateForegroundActive) { ws = (UIWindowScene *)sc; break; }
+    }
+    if (!ws) {
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if ([sc isKindOfClass:[UIWindowScene class]]) { ws = (UIWindowScene *)sc; break; }
         }
     }
-    // 最后一招：把 springboard 托管的「回桌面」请求交给 workspace
-    Class wsCls = NSClassFromString(@"SBMainWorkspace");
-    id ws = wsCls ? SPMsg0(wsCls, @"sharedInstance") : nil;
-    SEL req = NSSelectorFromString(@"requestForTransitionToHomeScreen");
-    if (ws && [ws respondsToSelector:req]) {
+
+    // 1) handleHomeButtonSinglePressUpForWindowScene:
+    SEL s1 = NSSelectorFromString(@"handleHomeButtonSinglePressUpForWindowScene:");
+    if (ws && [ui respondsToSelector:s1]) {
         @try {
-            id r = ((id (*)(id, SEL))objc_msgSend)(ws, req);
-            SPLog(@"homePress via workspace request=%@", r);
+            ((void (*)(id, SEL, id))objc_msgSend)(ui, s1, ws);
+            [gHomeTried addObject:@"SBUIController.handleHomeButtonSinglePressUpForWindowScene:"];
+            SPLog(@"homePress via SPressUpForWindowScene");
             return YES;
-        } @catch (__unused NSException *e) {}
+        } @catch (NSException *e) { SPLog(@"homePress ex1 %@", e.reason); }
     }
-    SPLog(@"homePress: none available");
+
+    // 2) handleHomeButtonSinglePressUpForWindowScene:withSourceType:
+    SEL s2 = NSSelectorFromString(@"handleHomeButtonSinglePressUpForWindowScene:withSourceType:");
+    if (ws && [ui respondsToSelector:s2]) {
+        @try {
+            ((void (*)(id, SEL, id, NSInteger))objc_msgSend)(ui, s2, ws, 0);
+            [gHomeTried addObject:@"SBUIController.handleHomeButtonSinglePressUpForWindowScene:withSourceType:"];
+            SPLog(@"homePress via SPressUpForWindowScene:withSourceType:");
+            return YES;
+        } @catch (NSException *e) { SPLog(@"homePress ex2 %@", e.reason); }
+    }
+
+    SPLog(@"homePress: none available (ws=%@)", ws ? @"Y" : @"n");
     return NO;
 }
 
