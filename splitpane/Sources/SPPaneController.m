@@ -103,12 +103,42 @@ static const CGFloat kMaxPaneRatio = 0.95;
 
 // ---------------------------------------------------------------- 引擎
 
+// 参考 InteractivePiP Duo 0.7.50 的 DPPassthroughWindow：
+//   1) hitTest 命中空白 → 返回 nil，事件穿透给系统界面
+//   2) 命中真实控件 → 正常分发，不惊动系统窗口栈
+//   3) 不抢 keyWindow（Duo 里 canBecomeKeyWindow 是 YES，但它的 sendEvent
+//      在触摸开始时只做「聚焦浮窗」，从不向系统推送前台状态）
+// 之前我们的窗口是普通 UIWindow 且 canBecomeWindow=YES，
+// 每次点击都会让系统重排窗口栈 → 分屏被压到后台 → 露出桌面 → 再回来 = 闪。
 @interface SPOverlayWindow : UIWindow
 @end
 @implementation SPOverlayWindow
-// 必须能成为 key window，否则里面的 App 弹不出键盘、点进去也没光标
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    // 点到自己（没有任何子视图接住）→ 穿透，交给系统
+    if (hit == self || hit == self.rootViewController.view) return nil;
+    return hit;
+}
+
 - (BOOL)canBecomeKeyWindow { return YES; }
-- (BOOL)becomeFirstResponder { return YES; }
+
+// 触摸一开始就把自己提到最前，别等系统把窗口栈重排完再补
+- (void)sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches) {
+        for (UITouch *touch in event.allTouches) {
+            if (touch.phase == UITouchPhaseBegan && touch.window == self) {
+                if (self.windowScene) {
+                    @try { [self setWindowLevel:UIWindowLevelStatusBar + 10]; }
+                    @catch (__unused NSException *e) {}
+                }
+                break;
+            }
+        }
+    }
+    [super sendEvent:event];
+}
+
 @end
 
 @interface SPPaneController ()
@@ -371,14 +401,36 @@ void SPHostClearHostedBundleIDs(void);
 }
 
 - (void)swapTapped {
-    if (!_bottomBundleID.length) return;
-    NSString *t = _topBundleID, *b = _bottomBundleID;
-    UIWindowScene *scene = _window.windowScene;
-    [self stopWithCompletion:^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self startWithTop:b bottom:t windowScene:scene topSnapshot:nil];
-        });
-    }];
+    if (!_bottomBundleID.length || !_topBundleID.length) return;
+    SPLog(@"swapTapped: 原地交换（不拆窗口）");
+
+    // ⚠️ 绝不能 stop → 重建。那样窗口会消失 0.45 秒，屏幕必然闪一下
+    // （用户实测：点交互就闪回桌面）。
+    // 正确做法：把两个宿主视图各自从容器里摘下来，互换后重新 attach 到对方容器。
+    SPHost *t = _topHost;
+    SPHost *b = _bottomHost;
+    _topHost = b;
+    _bottomHost = t;
+
+    NSString *tb = _topBundleID;
+    _topBundleID = _bottomBundleID;
+    _bottomBundleID = tb;
+
+    // 先摘（detach 内部会保持 scene 不销毁，只是换容器）
+    @try { [t detach]; } @catch (__unused NSException *e) {}
+    @try { [b detach]; } @catch (__unused NSException *e) {}
+
+    [_split setNeedsLayout];
+    [_split layoutIfNeeded];
+
+    @try { [_topHost attachToContainer:_split.topContainer inWindowScene:_window.windowScene]; }
+    @catch (NSException *e) { SPLog(@"swap top attach ex %@", e.reason); }
+    @try { [_bottomHost attachToContainer:_split.bottomContainer inWindowScene:_window.windowScene]; }
+    @catch (NSException *e) { SPLog(@"swap bottom attach ex %@", e.reason); }
+
+    [_topHost setFrameSize:_split.topContainer.bounds.size];
+    [_bottomHost setFrameSize:_split.bottomContainer.bounds.size];
+    SPLog(@"swap done top=%@ bottom=%@", _topBundleID, _bottomBundleID);
 }
 
 - (void)replaceBundleID:(NSString *)bundleID {
