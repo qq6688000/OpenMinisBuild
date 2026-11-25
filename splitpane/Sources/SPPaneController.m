@@ -145,6 +145,8 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, strong) SPOverlayWindow *window;
 @property (nonatomic, strong) SPSplitView *split;
 @property (nonatomic, strong) UIView *chrome;
+@property (nonatomic, assign) BOOL suspended;
+@property (nonatomic, strong) UITapGestureRecognizer *cardTap;
 @property (nonatomic, strong) SPHost *topHost;
 @property (nonatomic, strong) SPHost *bottomHost;
 @property (nonatomic, copy, readwrite) NSString *topBundleID;
@@ -379,6 +381,99 @@ void SPHostClearHostedBundleIDs(void);
     [_split layoutIfNeeded];   // 先让容器拿到新 bounds，再让宿主按它重排
     [_topHost setFrameSize:_split.topContainer.bounds.size];
     [_bottomHost setFrameSize:_split.bottomContainer.bounds.size];
+}
+
+
+#pragma mark - 挂起 / 恢复（分屏 → 任务卡片 → 分屏）
+
+// 设计说明：
+//   不能拆窗口、不能摘 scene —— 一拆就黑屏（0.5.13 的血泪）。
+//   做法是把 window.rootViewController.view 整体缩放并挪到桌面底部，
+//   窗口本身尺寸/层级都不动。scene 一直在这块视图里实时渲染，
+//   所以卡片上看到的就是活画面，点回来也不过是把这个变换还原。
+
+static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
+
+- (CGRect)cardRectInWindow {
+    CGRect b = _window.bounds;
+    CGFloat w = b.size.width * kCardScale;
+    CGFloat h = b.size.height * kCardScale;
+    // 停在底部偏上，露出桌面图标
+    return CGRectMake((b.size.width - w) / 2.0, b.size.height - h - 90, w, h);
+}
+
+- (BOOL)suspendToCardWithCompletion:(void (^)(void))completion {
+    if (!_active || !_window) return NO;
+    if (_suspended) { if (completion) completion(); return YES; }
+    UIView *v = _window.rootViewController.view;
+    if (!v) return NO;
+
+    _suspended = YES;
+    SPLog(@"suspend: 分屏缩成卡片");
+
+    CGRect target = [self cardRectInWindow];
+    CGFloat scale = kCardScale;
+
+    [UIView animateWithDuration:0.32 delay:0
+                        options:UIViewAnimationOptionCurveEaseInOut
+                     animations:^{
+        v.transform = CGAffineTransformIdentity;
+        v.frame = self->_window.bounds;
+        v.transform = CGAffineTransformMakeScale(scale, scale);
+        v.center = CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target));
+        v.layer.cornerRadius = 26;
+        v.layer.cornerCurve = kCACornerCurveContinuous;
+        v.clipsToBounds = YES;
+        v.layer.borderWidth = 2.0;
+        v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
+    } completion:^(BOOL finished) {
+        SPLog(@"suspend done rect=%@", NSStringFromCGRect(target));
+        // 卡片态：点一下回到分屏
+        if (!self->_cardTap) {
+            self->_cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
+            [v addGestureRecognizer:self->_cardTap];
+        }
+        self->_cardTap.enabled = YES;
+        if (completion) completion();
+    }];
+    return YES;
+}
+
+- (void)resumeFromCardWithCompletion:(void (^)(void))completion {
+    if (!_suspended || !_window) { if (completion) completion(); return; }
+    UIView *v = _window.rootViewController.view;
+    if (!v) { if (completion) completion(); return; }
+
+    SPLog(@"resume: 卡片展开回分屏");
+    CGRect b = _window.bounds;
+
+    [UIView animateWithDuration:0.30 delay:0
+                        options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{
+        v.transform = CGAffineTransformIdentity;
+        v.frame = b;
+        v.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
+        v.layer.cornerRadius = 0;
+        v.layer.borderWidth = 0;
+    } completion:^(BOOL finished) {
+        v.transform = CGAffineTransformIdentity;
+        v.frame = b;
+        self->_suspended = NO;
+        self->_cardTap.enabled = NO;
+        [self->_split setNeedsLayout];
+        [self->_split layoutIfNeeded];
+        [self->_topHost setFrameSize:self->_split.topContainer.bounds.size];
+        [self->_bottomHost setFrameSize:self->_split.bottomContainer.bounds.size];
+        SPLog(@"resume done");
+        if (completion) completion();
+    }];
+}
+
+- (BOOL)suspended { return _suspended; }
+
+- (void)cardTapped:(UITapGestureRecognizer *)g {
+    SPLog(@"cardTapped -> resume");
+    [self resumeFromCardWithCompletion:nil];
 }
 
 #pragma mark 操作

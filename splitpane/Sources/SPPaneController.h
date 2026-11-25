@@ -19,4 +19,14 @@
 
 // 收工：恢复原布局、拆掉窗口、归还 scene
 - (void)stopWithCompletion:(void (^)(void))completion;
+
+// 分屏挂起：把整个分屏窗口缩成桌面上的一张卡片（画面保持实时，不拆 scene）
+// 用户上划 home 时调用。返回 NO 表示没在分屏里。
+- (BOOL)suspendToCardWithCompletion:(void (^)(void))completion;
+
+// 点卡片恢复分屏（从卡片位置动画展开回全屏）
+- (void)resumeFromCardWithCompletion:(void (^)(void))completion;
+
+// 是否处于挂起（缩成卡片）状态
+@property (nonatomic, readonly) BOOL suspended;
 @end

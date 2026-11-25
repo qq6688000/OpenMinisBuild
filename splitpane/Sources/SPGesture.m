@@ -322,10 +322,24 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
 
-    // 0.5.3：入口统一走「长按图标 → 上下分屏」。
-    // 上滑不再自己弹 picker（日志实证：弹了就 1 秒被 cancel，纯属打扰），
-    // 只在需要换 App 时交由长按入口处理；这里一律放行系统手势。
-    SPLog(@"pan: 上滑已禁用自动弹面板（入口改成长按图标）");
+    // 分屏中上滑 → 把分屏缩成桌面上的任务卡片（画面保持实时，点卡片可回来）。
+    // 这是用户明确要的交互：上划 home 不退出分屏，只是暂时收起来。
+    if (SPPaneController.shared.active) {
+        if (SPPaneController.shared.suspended) {
+            // 已挂起成卡片：放行系统手势，让用户正常回桌面 / 打开别的 App
+            SPLog(@"pan: 已挂起，放行系统手势");
+            return NO;
+        }
+        SPLog(@"pan: 分屏中上滑 -> suspend to card");
+        [SPPaneController.shared suspendToCardWithCompletion:^{
+            SPLog(@"suspend completion");
+        }];
+        return YES;
+    }
+
+    // 非分屏状态：入口统一走「长按图标 → 上下分屏」。
+    // 上滑不再自己弹 picker（日志实证：弹了就 1 秒被 cancel，纯属打扰）。
+    SPLog(@"pan: 上滑不触发（入口是长按图标）");
     return NO;
 }
 
