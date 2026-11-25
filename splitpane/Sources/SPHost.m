@@ -777,7 +777,11 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     if (ref.width < 2 || ref.height < 2) ref = [UIScreen mainScreen].bounds.size;
     _referenceSize = ref;
     _lastSize = ref;
-    NSInteger orient = (ref.width > ref.height) ? 4 : 1;
+    // ⚠️ 绝不能按容器宽高比推方向！
+    // 分屏容器是 430x453（宽 > 高），会被判成横屏 → App 整个界面旋转 90 度，
+    // 画面就"丢失"了（用户截图实证：标题竖排、内容跑到左上角）。
+    // 屏幕本身是竖屏，就永远按竖屏推。
+    NSInteger orient = 1;   // UIInterfaceOrientationPortrait
 
     // 1) 真 FBScene
     id scene = [SPHost fbSceneForBundleID:_bundleID];
@@ -943,7 +947,7 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     // 用户要求画面按容器 1:1 显示，所以尺寸变化时必须把新尺寸推给 scene，
     // 让它重新按新高度排版本（否则拖动后画面和容器对不上）。
     _referenceSize = r;
-    NSInteger orient = (r.width > r.height) ? 4 : 1;
+    NSInteger orient = 1;   // 永远竖屏，理由同上
     NSString *sub = nil;
     SPSubmitSceneSettingsEx(_scene, r, orient, NO, &sub);
     SPLog(@"resize %@ -> %@ (%@)", _bundleID, NSStringFromCGSize(r), sub ?: @"-");
