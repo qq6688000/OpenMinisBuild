@@ -353,12 +353,12 @@ void SPHostClearHostedBundleIDs(void);
 
 #pragma mark 操作
 
-- (void)spKeyboardShow:(NSNotification *)n {
-    if (_window) _window.windowLevel = UIWindowLevelNormal + 1;
-}
-- (void)spKeyboardHide:(NSNotification *)n {
-    if (_window) _window.windowLevel = UIWindowLevelStatusBar + 10;
-}
+// ⚠️ 窗口层级绝不能在键盘弹出/收起时切换。
+// 之前这里在 Normal+1 和 StatusBar+10 之间来回跳，点输入框就会触发一次层级变更，
+// 系统要重建窗口顺序 → 画面闪一下（视频实证：一帧分屏一帧桌面）。
+// 固定在一个层级，键盘靠 SBMedusaHostedKeyboardWindow（层级 20）自己盖上来。
+- (void)spKeyboardShow:(NSNotification *)n { (void)n; }
+- (void)spKeyboardHide:(NSNotification *)n { (void)n; }
 
 - (void)escapeSwipe:(UIGestureRecognizer *)g {
     SPLog(@"escape swipe -> stop");

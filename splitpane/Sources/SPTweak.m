@@ -210,7 +210,6 @@ static void SPBootstrapWhenReady(int tries) {
 
     // 装图标长按菜单：这是现在唯一的分屏入口
     @try { SPInstallIconMenuHook(); } @catch (NSException *e) { SPLog(@"icon hook ex %@", e.reason); }
-    @try { SPInstallSceneForegroundHook(); } @catch (NSException *e) { SPLog(@"fbs hook ex %@", e.reason); }
 
     BOOL hooked = NO;
     if ([SPSettings hooksEnabled]) hooked = SPInstallGestureHooks();
