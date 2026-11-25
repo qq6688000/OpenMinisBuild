@@ -254,6 +254,21 @@ static NSMutableSet *gHomeTried = nil;
     }
 }
 
++ (BOOL)homePressInWindowScene:(UIWindowScene *)ws {
+    if (!ws) return NO;
+    Class uic = NSClassFromString(@"SBUIController");
+    id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
+    if (!ui) return NO;
+    SEL s = NSSelectorFromString(@"handleHomeButtonSinglePressUpForWindowScene:");
+    if (![ui respondsToSelector:s]) return NO;
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(ui, s, ws);
+        SPLog(@"homePress via own scene (%@)", NSStringFromClass([ws class]));
+        return YES;
+    } @catch (NSException *e) { SPLog(@"homePress(own) ex %@", e.reason); }
+    return NO;
+}
+
 + (BOOL)homePress {
     // 名字来自 0.5.23 的实测 dump（日志 "homeAPI SBUIController(18)"）：
     //   真正存在的是 handleHomeButtonSinglePressUpForWindowScene: 及带 sourceType 的变体，
@@ -264,17 +279,32 @@ static NSMutableSet *gHomeTried = nil;
     id ui = uic ? SPMsg0(uic, @"sharedInstance") : nil;
     if (!ui) { SPLog(@"homePress: SBUIController 无实例"); return NO; }
 
-    // 取一个前台 UIWindowScene
+    // 取一个「正式显示」的 UIWindowScene。
+    // ⚠️ 必须跳过 SBSystemApertureWindowScene（灵动岛）：
+    // 它缺少 isExternalDisplayWindowScene 等方法，传给 SBUIController 会抛
+    // unrecognized selector（0.5.25 日志实证：homePress ex1/ex2 都是这个异常）。
     UIWindowScene *ws = nil;
+    NSMutableArray *dump = [NSMutableArray array];
     for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-        if ([sc isKindOfClass:[UIWindowScene class]] &&
-            sc.activationState == UISceneActivationStateForegroundActive) { ws = (UIWindowScene *)sc; break; }
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        NSString *cn = NSStringFromClass([sc class]);
+        [dump addObject:[NSString stringWithFormat:@"%@(%ld)", cn, (long)sc.activationState]];
+        if ([cn containsString:@"Aperture"]) continue;          // 灵动岛，跳过
+        if ([cn containsString:@"TouchVisualizer"]) continue;
+        if (sc.activationState == UISceneActivationStateForegroundActive) {
+            if (!ws) ws = (UIWindowScene *)sc;
+        }
     }
     if (!ws) {
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
-            if ([sc isKindOfClass:[UIWindowScene class]]) { ws = (UIWindowScene *)sc; break; }
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            NSString *cn = NSStringFromClass([sc class]);
+            if ([cn containsString:@"Aperture"] || [cn containsString:@"TouchVisualizer"]) continue;
+            if (!ws) ws = (UIWindowScene *)sc;
         }
     }
+    SPLog(@"homePress scenes: %@ -> picked=%@", [dump componentsJoinedByString:@","],
+          ws ? NSStringFromClass([ws class]) : @"nil");
 
     // 1) handleHomeButtonSinglePressUpForWindowScene:
     SEL s1 = NSSelectorFromString(@"handleHomeButtonSinglePressUpForWindowScene:");

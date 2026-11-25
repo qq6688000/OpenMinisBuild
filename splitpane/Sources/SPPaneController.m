@@ -690,6 +690,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // teardown 会清空这两个，先存下来给「推后台」用
     NSString *savedTop = _topBundleID;
     NSString *savedBottom = _bottomBundleID;
+    UIWindowScene *savedWindowScene = _window.windowScene;   // 拆窗前存下来
     _active = NO;
 
     // ⚠️ 先立刻 hidden，让屏幕立刻露出底下的东西。
@@ -709,7 +710,11 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     // SPHost homePress 有多条兜底链，比 SBUIController 单点可靠。
     @try { [SPHost dumpHomeAPIs]; } @catch (__unused NSException *e) {}
     BOOL wentHome = NO;
-    @try { wentHome = [SPHost homePress]; } @catch (__unused NSException *e) {}
+    // 优先用我们自己的 windowScene：它必然是正常 App 场景，
+    // 不会是 SBSystemApertureWindowScene（灵动岛，缺方法会抛异常）。
+    UIWindowScene *ownScene = savedWindowScene;
+    @try { wentHome = [SPHost homePressInWindowScene:ownScene]; } @catch (__unused NSException *e) {}
+    if (!wentHome) @try { wentHome = [SPHost homePress]; } @catch (__unused NSException *e) {}
     SPLog(@"stop: homePress=%d (diag=%@)", (int)wentHome, [SPHost homePressDiag]);
 
     // 兜底 1：直接把两个 App 的 scene 推成后台，SpringBoard 自会显示桌面。
