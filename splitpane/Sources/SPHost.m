@@ -888,6 +888,12 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
 
 // 等 scene 真正渲染出内容再换上活画面（首次分屏时下面那个 App 常还在启动）
 - (void)waitForContentReady:(int)tries {
+    // ⚠️ 窗口已经隐藏 / 已 detach 时立刻停手。
+    // 否则会一直空转等一个永远不会就绪的 scene（0.6.5 日志：contentState=0 卡到 SpringBoard 假死）。
+    if (!_attached || !_hostView || _hostView.window == nil) {
+        SPLog(@"content poll stopped: %@ (attached=%d)", _bundleID, (int)_attached);
+        return;
+    }
     if (tries <= 0) { SPLog(@"content never ready: %@", _bundleID); return; }
     __weak typeof(self) wself = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
