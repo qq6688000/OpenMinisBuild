@@ -916,14 +916,20 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     //   "a half-screen setFrame is invalid on iOS 16 and kills the hosted pid"
     // 推半屏尺寸 = 系统判定非法帧 → 杀掉托管进程 → 拖动时黑屏 + 卡顿。
     // 正确做法：scene 保持全屏渲染，拖动时只改 hostView 的 scale/center。
-    // PV 的做法：scene 按「真实屏幕宽度 × 容器高度」渲染，
-    // 既不改成容器那种极端宽高比（45×430 会把 App 压成一条），
-    // 也不保持全屏（那样内容会被裁）。然后再等比缩放进容器。
+    // ref 必须保持真实屏幕的宽高比，只缩放大小 —— 绝不改成容器那种极端比例。
+    // 日志实证：容器 45x430 时给 ref={430,430}（正方形），App 按正方形排版，
+    // cover 缩进 45pt 细条后就只剩中间一块，画面完全对不上。
     CGSize screen = [UIScreen mainScreen].bounds.size;
-    CGSize ref = CGSizeMake(screen.width, MAX(container.bounds.size.height, 120));
-    if (container.bounds.size.width > container.bounds.size.height) {
-        // 横屏容器：高度是屏幕高，宽度取屏幕宽
-        ref = CGSizeMake(MAX(container.bounds.size.width, 120), screen.height);
+    BOOL landscape = ([UIScreen mainScreen].bounds.size.width > screen.height) ||
+                     (container.bounds.size.width > container.bounds.size.height);
+    CGSize ref = screen;
+    if (!landscape && container.bounds.size.height > 2) {
+        // 竖屏：按容器高度等比缩放屏幕尺寸（保持 430:932 的比例）
+        CGFloat h = MAX(container.bounds.size.height, 200);
+        ref = CGSizeMake(round(screen.width * (h / screen.height)), h);
+    } else if (landscape && container.bounds.size.width > 2) {
+        CGFloat w = MAX(container.bounds.size.width, 200);
+        ref = CGSizeMake(w, round(screen.height * (w / screen.width)));
     }
     if (ref.width < 2 || ref.height < 2) ref = screen;
     _referenceSize = ref;
