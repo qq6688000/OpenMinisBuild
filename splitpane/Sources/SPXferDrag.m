@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static BOOL gDragging = NO;
 
@@ -21,6 +22,19 @@ static BOOL gDragging = NO;
 @implementation SPXferDrag_DragSource
 
 - (NSArray<UIDragItem *> *)dragInteraction:(UIDragInteraction *)interaction itemsForBeginningSession:(id<UIDragSession>)session {
+    // 剪贴板里如果有文件 URL，优先拖文件而不是截图
+    NSArray *pbURLs = [UIPasteboard generalPasteboard].URLs;
+    if (pbURLs.count) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSURL *u in pbURLs) {
+            NSItemProvider *p = [[NSItemProvider alloc] initWithContentsOfURL:u];
+            if (p) {
+                [items addObject:[[UIDragItem alloc] initWithItemProvider:p]];
+                SPLog(@"xfer-drag[%@]: 拖出文件 %@", self.label, u);
+            }
+        }
+        if (items.count) return items;
+    }
     UIView *src = self.snapshotFrom ?: self.container;
     if (!src) return @[];
     UIImage *shot = nil;
@@ -180,14 +194,51 @@ static const void *kDragSrcKey = &kDragSrcKey;
     gDragging = NO;
     SPLog(@"xfer-drag[%@]: 落下 items=%lu", _label, (unsigned long)session.items.count);
 
-    // 把落点坐标交给容器里的 App，让它按自己的方式接收
-    UIView *target = [self deepestViewInContainerAtPoint:[session locationInView:_container]];
-    SPLog(@"xfer-drag[%@]: 目标视图=%@", _label, target ? NSStringFromClass([target class]) : @"nil");
-
-    if (target) {
-        // 转发给系统：让 sceneView 内部的 UIDropInteraction 处理
-        [self forwardDropToView:target session:session];
+    // ===== 全 App 通用落地 =====
+    // 1) 把 session 里的每个 item 读出来，全部转成「文件 URL / 图片 / 文本」
+    //    存进剪贴板 —— 任何 App 都能通过粘贴拿到，不依赖目标 App 实现 drop。
+    UIPasteboard *pb = [UIPasteboard generalPasteboard];
+    NSMutableArray *imgs = [NSMutableArray array];
+    NSMutableArray *strs = [NSMutableArray array];
+    NSMutableArray *urls = [NSMutableArray array];
+    for (UIDragItem *item in session.items) {
+        NSItemProvider *p = item.itemProvider;
+        if (!p) continue;
+        // 文件 URL（最高优先级，Filza/文件 App 拖出的是这个）
+        if ([p hasItemConformingToTypeIdentifier:@"public.file-url"]) {
+            [p loadItemForTypeIdentifier:@"public.file-url" options:nil
+                       completionHandler:^(id url, NSError *err) {
+                if ([url isKindOfClass:[NSURL class]]) {
+                    SPLog(@"xfer-drag: 拿到文件 %@", url);
+                    [urls addObject:url];
+                }
+            }];
+            continue;
+        }
+        if ([p hasItemConformingToTypeIdentifier:(NSString *)UTTypeImage.identifier]) {
+            [p loadItemForTypeIdentifier:(NSString *)UTTypeImage.identifier options:nil
+                       completionHandler:^(id img, NSError *err) {
+                if (img) [imgs addObject:img];
+            }];
+            continue;
+        }
+        if ([p hasItemConformingToTypeIdentifier:(NSString *)UTTypePlainText.identifier]) {
+            [p loadItemForTypeIdentifier:(NSString *)UTTypePlainText.identifier options:nil
+                       completionHandler:^(id txt, NSError *err) {
+                if ([txt isKindOfClass:[NSString class]] && [(NSString *)txt length]) [strs addObject:txt];
+            }];
+        }
     }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (imgs.count) pb.images = imgs;
+        else if (strs.count) pb.strings = strs;
+        else if (urls.count) pb.URLs = urls;
+        else { SPLog(@"xfer-drag: 没解析出可落地内容"); return; }
+        SPLog(@"xfer-drag: 已落地 剪贴板 imgs=%lu strs=%lu urls=%lu", (unsigned long)imgs.count,
+              (unsigned long)strs.count, (unsigned long)urls.count);
+        // 2) 目标 App 已经能「粘贴」拿到文件。对支持 drop 的 App（QQ 等），
+        //    用户也可以直接在源 App 里继续系统拖拽 —— 两条路都通。
+    });
 }
 
 - (void)dropInteraction:(UIDropInteraction *)interaction concludeDrop:(id<UIDropSession>)session {
