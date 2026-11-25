@@ -278,7 +278,17 @@ void SPHostClearHostedBundleIDs(void);
     [self addFloatingButtonsToView:vc.view width:w.bounds.size.width];
 
     // 出口 1：三指下滑
+    // 单指从底部上划 → 挂起成任务卡片（不退出分屏）
+    // ⚠️ 不能依赖系统 SBHomeGesturePanGestureRecognizer：我们全屏窗口 eats 了触摸，
+    //    那个 hook 根本收不到（0.5.19 日志实证：一次 pan 都没有）。
+    UISwipeGestureRecognizer *homeUp = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(homeSwipeUp:)];
+    homeUp.numberOfTouchesRequired = 1;
+    homeUp.direction = UISwipeGestureRecognizerDirectionUp;
+    homeUp.delegate = (id<UIGestureRecognizerDelegate>)self;
+    [vc.view addGestureRecognizer:homeUp];
+
     UISwipeGestureRecognizer *escape = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(escapeSwipe:)];
+    escape.numberOfTouchesRequired = 3;
     escape.numberOfTouchesRequired = 3;
     escape.direction = UISwipeGestureRecognizerDirectionDown;
     escape.delegate = (id<UIGestureRecognizerDelegate>)self;
@@ -428,6 +438,13 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
         v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
     } completion:^(BOOL finished) {
         SPLog(@"suspend done rect=%@", NSStringFromCGRect(target));
+        // 把窗口本身也收成卡片大小：窗口还是全屏的话会一直盖着桌面，
+        // 用户既看不到图标也点不到（0.5.19 黑屏实证）。
+        // 这里只改窗口 frame，scene 仍在里面实时渲染。
+        self->_window.frame = target;
+        v.frame = self->_window.bounds;
+        v.transform = CGAffineTransformIdentity;
+        v.layer.cornerRadius = 26;
         // 卡片态：点一下回到分屏
         if (!self->_cardTap) {
             self->_cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
@@ -445,6 +462,8 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     if (!v) { if (completion) completion(); return; }
 
     SPLog(@"resume: 卡片展开回分屏");
+    CGRect full = _window.windowScene ? _window.windowScene.coordinateSpace.bounds : [UIScreen mainScreen].bounds;
+    _window.frame = full;
     CGRect b = _window.bounds;
 
     [UIView animateWithDuration:0.30 delay:0
@@ -484,6 +503,11 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 // 固定在一个层级，键盘靠 SBMedusaHostedKeyboardWindow（层级 20）自己盖上来。
 - (void)spKeyboardShow:(NSNotification *)n { (void)n; }
 - (void)spKeyboardHide:(NSNotification *)n { (void)n; }
+
+- (void)homeSwipeUp:(UISwipeGestureRecognizer *)g {
+    SPLog(@"homeSwipeUp -> suspend to card");
+    [self suspendToCardWithCompletion:nil];
+}
 
 - (void)escapeSwipe:(UIGestureRecognizer *)g {
     SPLog(@"escape swipe -> stop");
