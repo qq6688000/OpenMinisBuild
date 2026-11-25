@@ -697,13 +697,51 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
 
 
 // 纯快照：只贴图，零 scene 操作。
+
+- (BOOL)attachSnapshot:(UIImage *)image cropHalf:(NSInteger)half toContainer:(UIView *)container {
+    if (!container) return NO;
+    _containerView = container;
+    [self detach];
+
+    UIImage *use = image;
+    if (image && half >= 0 && half <= 1) {
+        // 把整张全屏图对半裁开：上半给上容器、下半给下容器
+        CGImageRef cg = image.CGImage;
+        if (cg) {
+            size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
+            CGRect r = CGRectMake(0, half == 0 ? 0 : h / 2.0, w, h / 2.0);
+            CGImageRef sub = CGImageCreateWithImageInRect(cg, r);
+            if (sub) { use = [UIImage imageWithCGImage:sub scale:image.scale orientation:image.imageOrientation]; CGImageRelease(sub); }
+        }
+    }
+
+    UIImageView *iv = [[UIImageView alloc] initWithImage:use];
+    iv.contentMode = UIViewContentModeScaleAspectFill;
+    iv.clipsToBounds = YES;
+    iv.userInteractionEnabled = NO;
+    iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [container addSubview:iv];
+    iv.frame = container.bounds;
+    _snapshotView = iv;
+    _snapshotActive = YES;
+    _attached = NO;
+    _live = NO;
+    SPLog(@"attach SNAPSHOT %@ half=%ld img=%@", _bundleID, (long)half,
+          use ? NSStringFromCGSize(use.size) : @"nil");
+    return YES;
+}
+
 - (BOOL)attachSnapshot:(UIImage *)image toContainer:(UIView *)container {
     if (!container) return NO;
     _containerView = container;
     [self detach];
 
     UIImageView *iv = [[UIImageView alloc] initWithImage:image];
-    iv.contentMode = UIViewContentModeScaleAspectFit;
+    // 快照是全屏 430x932，容器只有 430x453。
+    // AspectFit 会把整张图缩成中间一条（两侧黑边，用户截图实证）。
+    // 改成 AspectFill + 居中：铺满容器、超出部分裁掉，看起来才像真的分屏。
+    iv.contentMode = UIViewContentModeScaleAspectFill;
+    iv.clipsToBounds = YES;
     iv.userInteractionEnabled = NO;
     iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [container addSubview:iv];

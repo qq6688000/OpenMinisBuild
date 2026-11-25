@@ -433,13 +433,13 @@ void SPHostClearHostedBundleIDs(void);
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
         UIImage *topImg = snap ?: [self snapshotForBundleID:top];
-        [topHost attachSnapshot:topImg toContainer:split.topContainer];
+        [topHost attachSnapshot:topImg cropHalf:0 toContainer:split.topContainer];
         SPLog(@"top snapshot attach %@", topImg ? NSStringFromCGSize(topImg.size) : @"nil");
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
         UIImage *bottomImg = [self snapshotForBundleID:bottom];
-        [bottomHost attachSnapshot:bottomImg toContainer:split.bottomContainer];
+        [bottomHost attachSnapshot:bottomImg cropHalf:1 toContainer:split.bottomContainer];
         SPLog(@"bottom snapshot attach %@", bottomImg ? NSStringFromCGSize(bottomImg.size) : @"nil");
 
         [self resizePanes];
