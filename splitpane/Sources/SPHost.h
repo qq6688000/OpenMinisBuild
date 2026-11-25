@@ -16,6 +16,9 @@
 
 - (instancetype)initWithBundleID:(NSString *)bundleID;
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene;
+// 纯快照模式：只往容器里贴一张冻结图，完全不碰 scene（不抓 scene、不推 settings）。
+// SpringBoard 里这样最稳：不会因为 scene 状态变化导致黑屏/卡顿/崩溃。
+- (BOOL)attachSnapshot:(UIImage *)image toContainer:(UIView *)container;
 - (void)attachWhenReady:(UIView *)container inWindowScene:(UIWindowScene *)windowScene
                 attempts:(NSInteger)attempts interval:(NSTimeInterval)interval;
 - (void)installSnapshot:(UIImage *)snapshot;

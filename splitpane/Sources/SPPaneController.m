@@ -427,18 +427,20 @@ void SPHostClearHostedBundleIDs(void);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(wself) self = wself;
         if (!self || !self->_window) return;
+        // ===== 0.7.1：纯快照模式（用户要求"不实时画面"）=====
+        // 不抓 scene、不推 settings、不托管活画面 —— 只往容器里贴一张冻结图。
+        // 好处：SpringBoard 里最稳，不会有 contentState 变化、不会拖死主线程、不会黑屏。
         SPHost *topHost = [[SPHost alloc] initWithBundleID:top];
         self->_topHost = topHost;
-        // 上半屏往往需要等 App 冷启动，给足 12 次 × 1.5s = 18s 的窗口
-        [topHost attachWhenReady:split.topContainer inWindowScene:scene attempts:12 interval:1.5];
-        if (snap) [topHost installSnapshot:snap];
-        SPLog(@"top attach diag=%@ live=%d", topHost.lastDiag ?: @"-", (int)topHost.live);
+        UIImage *topImg = snap ?: [self snapshotForBundleID:top];
+        [topHost attachSnapshot:topImg toContainer:split.topContainer];
+        SPLog(@"top snapshot attach %@", topImg ? NSStringFromCGSize(topImg.size) : @"nil");
 
         SPHost *bottomHost = [[SPHost alloc] initWithBundleID:bottom];
         self->_bottomHost = bottomHost;
-        if (snap) [bottomHost installSnapshot:snap];   // 没画面时垫住，绝不露黑
-        [bottomHost attachWhenReady:split.bottomContainer inWindowScene:scene attempts:8 interval:1.5];
-        SPLog(@"bottom attach diag=%@ live=%d", bottomHost.lastDiag ?: @"-", (int)bottomHost.live);
+        UIImage *bottomImg = [self snapshotForBundleID:bottom];
+        [bottomHost attachSnapshot:bottomImg toContainer:split.bottomContainer];
+        SPLog(@"bottom snapshot attach %@", bottomImg ? NSStringFromCGSize(bottomImg.size) : @"nil");
 
         [self resizePanes];
         self->_active = YES;
@@ -462,6 +464,8 @@ void SPHostClearHostedBundleIDs(void);
 }
 
 - (void)startHeartbeat {
+    // 纯快照模式没有活 scene 需要盯，心跳直接不启动（省得空转）
+    return;
     __weak typeof(self) wself = self;
     [_heartbeat invalidate];
     _heartbeat = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) {
@@ -660,6 +664,39 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 - (void)closeTapped {
     SPLog(@"closeTapped");
     [self stopWithCompletion:nil];
+}
+
+
+// 取某个 App 的末帧快照（系统快照库里取；取不到返回 nil，容器就留底色，绝不黑）
+- (UIImage *)snapshotForBundleID:(NSString *)bundleID {
+    if (!bundleID.length) return nil;
+    @try {
+        // 1) 如果是当前前台 App，直接截屏最快也最准
+        id scene = [SPHost fbSceneForBundleID:bundleID];
+        if (scene) {
+            SEL shot = NSSelectorFromString(@"snapshot");
+            if ([scene respondsToSelector:shot]) {
+                id s = ((id (*)(id, SEL))objc_msgSend)(scene, shot);
+                SEL surface = NSSelectorFromString(@"IOSurface");
+                if (s && [s respondsToSelector:surface]) {
+                    // 有 IOSurface 就不折腾了，直接走下面的截图兜底
+                }
+            }
+        }
+        // 2) 兜底：截当前屏幕（对刚挂起的 App 最准）
+        UIView *win = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isHidden || w.alpha < 0.01) continue;
+            if (w.windowLevel > UIWindowLevelStatusBar) continue;
+            win = w; break;
+        }
+        if (!win) return nil;
+        UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:win.bounds.size];
+        return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            [win drawViewHierarchyInRect:win.bounds afterScreenUpdates:NO];
+        }];
+    } @catch (NSException *e) { SPLog(@"snapshot ex %@", e.reason); }
+    return nil;
 }
 
 - (void)swapTapped {

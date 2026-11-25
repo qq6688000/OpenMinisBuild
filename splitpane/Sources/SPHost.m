@@ -695,6 +695,28 @@ static void SPFitHostView(UIView *host, UIView *container, CGSize reference) {
     host.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
+
+// 纯快照：只贴图，零 scene 操作。
+- (BOOL)attachSnapshot:(UIImage *)image toContainer:(UIView *)container {
+    if (!container) return NO;
+    _containerView = container;
+    [self detach];
+
+    UIImageView *iv = [[UIImageView alloc] initWithImage:image];
+    iv.contentMode = UIViewContentModeScaleAspectFit;
+    iv.userInteractionEnabled = NO;
+    iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [container addSubview:iv];
+    iv.frame = container.bounds;
+    _snapshotView = iv;
+    _snapshotActive = YES;
+    _attached = NO;      // 没有托管活 scene
+    _live = NO;
+    SPLog(@"attach SNAPSHOT %@ img=%@", _bundleID,
+          image ? NSStringFromCGSize(image.size) : @"nil");
+    return YES;
+}
+
 - (BOOL)attachToContainer:(UIView *)container inWindowScene:(UIWindowScene *)windowScene {
     if (!container) return NO;
     _containerView = container;
