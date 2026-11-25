@@ -590,13 +590,43 @@ static void SPPrepareSceneHost(UIView *v, NSMutableString *diag) {
 // 之前固定竖屏 → 横屏下画面被压扁；按容器宽高比 → 竖屏下被误判横屏。
 // 唯一可靠的是「整个窗口场景的坐标空间尺寸」。
 static NSInteger SPDeviceOrientation(void) {
-    // ⚠️ 不能用 windowScene.coordinateSpace.bounds —— 旋转后它仍是竖屏尺寸（日志实证）。
-    // UIDevice.orientation 才是真实方向。
+    // 三层探测，实测这台机器上前两层都不更新（日志：横屏时 coordinateSpace 仍是 430x932，
+    // UIDevice.orientation 也停在 Portrait）。SpringBoard 里最准的是它自己的
+    // _SBInterfaceOrientationController 或 statusBarOrientation。
+    // UIInterfaceOrientation: 1=Portrait 2=PortraitUpsideDown 3=LandscapeRight 4=LandscapeLeft
+
+    // 1) SpringBoard 的接口方向控制器
+    Class oc = NSClassFromString(@"SBInterfaceOrientationController");
+    id ctrl = nil;
+    if (oc) {
+        if ([oc respondsToSelector:NSSelectorFromString(@"sharedInstance")])
+            ctrl = ((id (*)(id, SEL))objc_msgSend)(oc, NSSelectorFromString(@"sharedInstance"));
+        if (!ctrl && [oc respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")])
+            ctrl = ((id (*)(id, SEL))objc_msgSend)(oc, NSSelectorFromString(@"sharedInstanceIfExists"));
+    }
+    if (ctrl) {
+        for (NSString *sn in @[@"interfaceOrientation", @"currentInterfaceOrientation"]) {
+            SEL sel = NSSelectorFromString(sn);
+            if ([ctrl respondsToSelector:sel]) {
+                @try {
+                    NSInteger v = ((NSInteger (*)(id, SEL))objc_msgSend)(ctrl, sel);
+                    if (v >= 1 && v <= 4) { SPLog(@"orient via SBInterfaceOrientationController.%@ = %ld", sn, (long)v); return v; }
+                } @catch (__unused NSException *e) {}
+            }
+        }
+    }
+
+    // 2) statusBarOrientation
+    @try {
+        NSInteger v = [UIApplication sharedApplication].statusBarOrientation;
+        if (v >= 1 && v <= 4) return v;
+    } @catch (__unused NSException *e) {}
+
+    // 3) 兜底：设备方向
     UIDeviceOrientation o = [[UIDevice currentDevice] orientation];
-    if (o == UIDeviceOrientationLandscapeLeft)  return 3;   // UIInterfaceOrientationLandscapeRight
-    if (o == UIDeviceOrientationLandscapeRight) return 4;   // 注意与 UIKit 命名相反
-    if (o == UIDeviceOrientationPortraitUpsideDown) return 2;
-    return 1;   // Portrait（含 Unknown/FaceUp 兜底）
+    if (o == UIDeviceOrientationLandscapeLeft)  return 4;
+    if (o == UIDeviceOrientationLandscapeRight) return 3;
+    return 1;
 }
 
 static BOOL SPSubmitSceneSettingsEx(id scene, CGSize pane, NSInteger orient, BOOL touchForeground, NSString **diag) {

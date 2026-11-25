@@ -254,8 +254,19 @@ void SPHostClearHostedBundleIDs(void);
 // windowScene.coordinateSpace.bounds 不随旋转更新，必须自己换算。
 static CGRect SPCurrentScreenBounds(void) {
     CGSize s = [UIScreen mainScreen].bounds.size;
-    UIDeviceOrientation o = [[UIDevice currentDevice] orientation];
-    if (o == UIDeviceOrientationLandscapeLeft || o == UIDeviceOrientationLandscapeRight) {
+    // 与 SPHost 里同源的方向判断（statusBarOrientation 优先，实测 UIDevice 在 SpringBoard 不更新）
+    NSInteger o = 1;
+    @try {
+        Class oc = NSClassFromString(@"SBInterfaceOrientationController");
+        id ctrl = nil;
+        if (oc && [oc respondsToSelector:NSSelectorFromString(@"sharedInstance")])
+            ctrl = ((id (*)(id, SEL))objc_msgSend)(oc, NSSelectorFromString(@"sharedInstance"));
+        if (ctrl && [ctrl respondsToSelector:NSSelectorFromString(@"interfaceOrientation")])
+            o = ((NSInteger (*)(id, SEL))objc_msgSend)(ctrl, NSSelectorFromString(@"interfaceOrientation"));
+        else
+            o = [UIApplication sharedApplication].statusBarOrientation;
+    } @catch (__unused NSException *e) {}
+    if (o == 3 || o == 4) {   // 横屏
         if (s.height > s.width) { CGFloat t = s.width; s.width = s.height; s.height = t; }
     }
     return CGRectMake(0, 0, s.width, s.height);
