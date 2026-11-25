@@ -330,6 +330,18 @@ static const CGFloat kStatusStrip = 54.0;    // 状态栏双击命中区
     NSString *front = [self frontmostBundleID];
     if (!front.length) { SPLog(@"no frontmost"); return NO; }
 
+    // ===== 分屏中上划：从底部起手 → 把分屏缩成桌面悬浮小窗（不死锁在容器里） =====
+    if (SPPaneController.shared.active) {
+        if (!fromBottom) return NO;
+        if (SPPaneController.shared.suspended) {
+            SPLog(@"pan: 已缩成小窗，放行系统手势");
+            return NO;
+        }
+        SPLog(@"pan: 分屏中上划 -> 缩成桌面小窗");
+        [SPPaneController.shared suspendToCardWithCompletion:nil];
+        return YES;
+    }
+
     // ===== 主路径（PV 式）：全屏 App 内从底部上划到「灵动岛高度」松手 → 挂起该 App =====
     // 之后用户自己点开任意 App，SPParked 监听到新的前台 App 就自动组建分屏。
     // 判定：从底部起手 + 手指越过灵动岛以下约 120pt 的区域（约屏幕顶部 15%）

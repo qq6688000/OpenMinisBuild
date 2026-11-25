@@ -161,6 +161,7 @@ static const CGFloat kMaxPaneRatio = 0.95;
 @property (nonatomic, strong) UITapGestureRecognizer *cardTap;
 @property (nonatomic, strong) UIView *homeBar;
 @property (nonatomic, strong) UIView *homeBarPill;
+@property (nonatomic, strong) UITapGestureRecognizer *doubleTapExit;
 @property (nonatomic, strong) SPHost *topHost;
 @property (nonatomic, strong) SPHost *bottomHost;
 @property (nonatomic, copy, readwrite) NSString *topBundleID;
@@ -193,7 +194,10 @@ void SPHostClearHostedBundleIDs(void);
 // 自建一条自己的，用户操作意图明确，也不和 App 内滚动打架。
 - (void)addHomeBarToView:(UIView *)host width:(CGFloat)width height:(CGFloat)height {
     UIView *bar = [UIView new];
-    bar.frame = CGRectMake(0, height - 34, width, 34);
+    // 热区 60pt 高：只做 34pt 太窄，手指从底部上划时经常起手在它外面。
+    // 视觉胶囊仍画在底部 34pt 内，上面多出来的 26pt 是透明的可点区域。
+    CGFloat barH = 60.0;
+    bar.frame = CGRectMake(0, height - barH, width, barH);
     bar.backgroundColor = [UIColor clearColor];
     bar.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
     bar.layer.zPosition = 2500;
@@ -202,7 +206,7 @@ void SPHostClearHostedBundleIDs(void);
     // 视觉上仿系统 home 指示条
     UIView *pill = [UIView new];
     CGFloat pw = 140, ph = 5;
-    pill.frame = CGRectMake((width - pw) / 2.0, (34 - ph) / 2.0, pw, ph);
+    pill.frame = CGRectMake((width - pw) / 2.0, barH - 34 + (34 - ph) / 2.0, pw, ph);
     pill.backgroundColor = [UIColor colorWithWhite:1 alpha:0.55];
     pill.layer.cornerRadius = ph / 2.0;
     pill.userInteractionEnabled = NO;
@@ -220,7 +224,7 @@ void SPHostClearHostedBundleIDs(void);
     [host addSubview:bar];
     _homeBar = bar;
     _homeBarPill = pill;
-    SPLog(@"home bar added y=%.0f w=%.0f", height - 34, width);
+    SPLog(@"home bar added y=%.0f h=%.0f w=%.0f", height - barH, barH, width);
 }
 
 - (void)homeBarTapped {
@@ -350,6 +354,15 @@ void SPHostClearHostedBundleIDs(void);
     [vc.view bringSubviewToFront:chrome];
     [self addFloatingButtonsToView:vc.view width:w.bounds.size.width];
     [self addHomeBarToView:vc.view width:w.bounds.size.width height:w.bounds.size.height];
+
+    // 兜底出口：双击画面任意处也能缩成桌面小窗（不依赖点中底部热区）
+    UITapGestureRecognizer *dbl = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(homeBarTapped)];
+    dbl.numberOfTapsRequired = 2;
+    dbl.cancelsTouchesInView = NO;
+    dbl.delegate = (id<UIGestureRecognizerDelegate>)self;
+    [w addGestureRecognizer:dbl];
+    _doubleTapExit = dbl;
+    SPLog(@"double-tap exit installed");
 
     // 出口 1：三指下滑
     // 单指从底部上划 → 挂起成任务卡片（不退出分屏）
