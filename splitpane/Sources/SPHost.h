@@ -40,6 +40,7 @@
 + (BOOL)homePress;
 + (BOOL)homePressInWindowScene:(UIWindowScene *)ws;
 + (BOOL)forceHomeScreen;
++ (void)dumpOrientationAPIs;
 + (BOOL)pushSceneToBackground:(NSString *)bundleID;
 + (void)dumpHomeAPIs;
 // 只做激活（毫秒级，不启动进程），用来让 App 自己重排成全屏

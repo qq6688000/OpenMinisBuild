@@ -274,6 +274,8 @@ static CGRect SPCurrentScreenBounds(void) {
 
 - (void)spOrientationChanged:(NSNotification *)n {
     if (!_window) return;
+    static int probeCount = 0;
+    if (probeCount++ < 2) @try { [SPHost dumpOrientationAPIs]; } @catch (__unused NSException *e) {}
     // ⚠️ windowScene.coordinateSpace.bounds 在旋转后仍然是竖屏尺寸（日志实证：横屏时读到 430x932），
     // 不能用它判断方向。用设备方向 + 屏幕尺寸换算出真实屏幕框。
     CGRect b = SPCurrentScreenBounds();

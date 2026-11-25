@@ -291,6 +291,42 @@ static NSMutableSet *gHomeTried = nil;
     return NO;
 }
 
+
+// 一次性探测所有可能的方向来源，把真实值打出来定名。
++ (void)dumpOrientationAPIs {
+    NSArray *classes = @[@"SBInterfaceOrientationController", @"SBScreenRotationController",
+                         @"SBDeviceOrientationController", @"SBOrientationController",
+                         @"SBSceneManager", @"SBMainDisplaySceneManager"];
+    for (NSString *cn in classes) {
+        Class c = NSClassFromString(cn);
+        if (!c) { SPLog(@"orientAPI %@ = nil", cn); continue; }
+        NSMutableArray *hits = [NSMutableArray array];
+        unsigned n = 0;
+        Method *ms = class_copyMethodList(c, &n);
+        for (unsigned i = 0; i < n; i++) {
+            const char *nm = sel_getName(method_getName(ms[i]));
+            if (!nm) continue;
+            NSString *s = @(nm);
+            if ([s rangeOfString:@"rient" options:NSCaseInsensitiveSearch].location != NSNotFound)
+                [hits addObject:s];
+        }
+        free(ms);
+        SPLog(@"orientAPI %@(%lu): %@", cn, (unsigned long)hits.count,
+              [hits componentsJoinedByString:@" | "]);
+    }
+    // UIApplication 的 statusBarOrientation 实际值
+    SPLog(@"orientAPI statusBarOrientation=%ld device=%ld",
+          (long)[UIApplication sharedApplication].statusBarOrientation,
+          (long)[[UIDevice currentDevice] orientation]);
+    // 每个 scene 的 interfaceOrientation
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *w = (UIWindowScene *)sc;
+        SPLog(@"orientAPI scene %@ io=%ld sz=%@", NSStringFromClass([w class]),
+              (long)w.interfaceOrientation, NSStringFromCGSize(w.coordinateSpace.bounds.size));
+    }
+}
+
 + (BOOL)homePressInWindowScene:(UIWindowScene *)ws {
     if (!ws) return NO;
     Class uic = NSClassFromString(@"SBUIController");
@@ -594,6 +630,14 @@ static NSInteger SPDeviceOrientation(void) {
     // UIDevice.orientation 也停在 Portrait）。SpringBoard 里最准的是它自己的
     // _SBInterfaceOrientationController 或 statusBarOrientation。
     // UIInterfaceOrientation: 1=Portrait 2=PortraitUpsideDown 3=LandscapeRight 4=LandscapeLeft
+
+    // 0) UIWindowScene.interfaceOrientation —— 公开 API，最可靠
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *w = (UIWindowScene *)sc;
+        NSInteger v = (NSInteger)w.interfaceOrientation;
+        if (v >= 1 && v <= 4) { return v; }
+    }
 
     // 1) SpringBoard 的接口方向控制器
     Class oc = NSClassFromString(@"SBInterfaceOrientationController");
