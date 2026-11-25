@@ -518,47 +518,27 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     if (!_active || !_window) return NO;
     if (_suspended) { if (completion) completion(); return YES; }
 
-    // ===== 照 InteractivePiP Duo 的 parkSessionInAppSwitcher 做 =====
-    // Duo 源码注释（DPWindowManager.m）：
-    //   "Hide the overlay completely. Lowering the level and keeping it visible
-    //    left a solid black rectangle ... sitting on top of the home screen.
-    //    The session itself stays alive in memory, so nothing has to be rebuilt."
+    // ===== 最稳的「挂起」：把窗口沉到桌面窗口之下 =====
+    // 试过但不行的两条路：
+    //   · 做成悬浮卡片挂上去 → 挡桌面视野（用户否定）
+    //   · 窗口 hidden + 把 App 推后台 → SpringBoard 直接卡死
     //
-    // 也就是说：真正要做的不是「做一张好看的卡片挂上去」（那永远挡视野），
-    // 而是把整个 overlay 窗口 hidden 掉 —— 屏幕完全交还给系统桌面/切换器。
-    // 分屏里那两块 App 的 scene 仍然活着（宿主视图只置 alpha=0），
-    // 用户下次打开系统 App 切换器时，看到的就是这两个真实运行的 App 卡片。
-
+    // 现在这条路不碰 App、不碰 scene、不碰系统状态，只调一个窗口层级：
+    //   窗口降到 SBHomeScreenWindow 下层 → 桌面完整盖住它，用户看到的就是干净桌面；
+    //   分屏内容仍在内存里实时渲染，恢复时把层级提回来即可，零重建。
     _suspended = YES;
-    SPLog(@"suspend: 分屏停靠到后台（窗口完全隐藏）");
-
     _supersededWindowLevel = _window.windowLevel;
-    _supersededRootTransform = _window.rootViewController.view.transform;
-    _supersededRootFrame = _window.rootViewController.view.frame;
+    SPLog(@"suspend: 窗口下沉到桌面之下 (原层级=%.0f)", _supersededWindowLevel);
 
     UIView *v = _window.rootViewController.view;
-
-    [UIView animateWithDuration:0.18 delay:0
+    [UIView animateWithDuration:0.15 delay:0
                         options:UIViewAnimationOptionCurveEaseIn
-                     animations:^{
-        v.alpha = 0.0;
-    } completion:^(BOOL finished) {
-        // 会话保持活着，只是不在屏幕上：窗口 hidden + 层级降到 Normal
-        self->_window.hidden = YES;
-        self->_window.windowLevel = UIWindowLevelNormal;
-        v.transform = CGAffineTransformIdentity;
-        v.frame = self->_window.bounds;
-        v.layer.cornerRadius = 0;
-        v.layer.shadowOpacity = 0;
-        self->_window.layer.shadowOpacity = 0;
-        self->_cardBlur.hidden = YES;
-        self->_cardBlur.alpha = 0;
-        // 窗口没了，但两个 App 的 scene 可能还被认为是前台，
-        // 那样桌面仍然不出现。把它们推成后台，SpringBoard 才会显示桌面/切换器。
-        NSString *t = self->_topBundleID, *b = self->_bottomBundleID;
-        if (t.length) @try { [SPHost pushSceneToBackground:t]; } @catch (__unused NSException *e) {}
-        if (b.length) @try { [SPHost pushSceneToBackground:b]; } @catch (__unused NSException *e) {}
-        SPLog(@"suspend done: 桌面完全交还给系统 (bg top=%@ bottom=%@)", t, b);
+                     animations:^{ v.alpha = 0.0; }
+                     completion:^(BOOL finished) {
+        // 关键：降到 Normal - 10。桌面窗口是 -2，我们的窗口在它下面，
+        // 系统桌面自然完整可见，不需要任何额外操作。
+        self->_window.windowLevel = UIWindowLevelNormal - 10.0;
+        SPLog(@"suspend done: 桌面已完整可见");
         if (completion) completion();
     }];
     return YES;
@@ -578,7 +558,7 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
     v.transform = CGAffineTransformIdentity;
     v.layer.cornerRadius = 0;
     v.alpha = 0.0;
-    _window.windowLevel = _supersededWindowLevel ?: (UIWindowLevelStatusBar + 10);
+    _window.windowLevel = _supersededWindowLevel > 0 ? _supersededWindowLevel : (UIWindowLevelStatusBar + 10);
     _window.hidden = NO;
     _homeBar.hidden = NO;
     _split.singlePaneMode = NO;
