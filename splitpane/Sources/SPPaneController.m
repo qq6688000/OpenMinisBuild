@@ -515,8 +515,10 @@ static const CGFloat kCardScale = 0.30;   // 卡片相对全屏的缩放比
 }
 
 - (BOOL)suspendToCardWithCompletion:(void (^)(void))completion {
-    if (!_active || !_window) return NO;
-    if (_suspended) { if (completion) completion(); return YES; }
+    SPLog(@"suspend enter: active=%d window=%@ suspended=%d",
+          (int)_active, _window ? @"Y" : @"nil", (int)_suspended);
+    if (!_active || !_window) { SPLog(@"suspend abort: 条件不满足"); return NO; }
+    if (_suspended) { SPLog(@"suspend: 已经在小窗态"); if (completion) completion(); return YES; }
 
     // ===== 最稳的「挂起」：把窗口沉到桌面窗口之下 =====
     // 试过但不行的两条路：

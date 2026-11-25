@@ -238,6 +238,10 @@ __attribute__((constructor)) static void SPSplitPaneInit(void) {
     @autoreleasepool {
         NSString *bid = nil;
         @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch (__unused NSException *e) {}
+        // 打印自身 dylib 的真实路径：RootHide 下可能装了多份，靠这个能一眼看出跑的是哪一份
+        Dl_info info; const char *selfPath = "?";
+        if (dladdr((void *)&SPSplitPaneInit, &info) && info.dli_fname) selfPath = info.dli_fname;
+        SPLog(@"dylib path = %s", selfPath);
         SPLog(@"=== SplitPane %@ loaded (bundle=%@ pid=%d log=%@) ===",
               SPBundleVersion(),
               bid ?: @"?", getpid(), SPLogPath() ?: @"NSLog-only");
